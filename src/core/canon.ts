@@ -574,6 +574,8 @@ export async function runCanonChecks(store: Store, opts: { root: string; head: s
 // ------------------------------------------------------------------ the archivist (deterministic)
 
 const FIXED = /\b(must|never|always|only|required|requires|mandatory|policy|compliance|gdpr|dsgvo|muss|müssen|nie|niemals|immer|nur|pflicht|vorgabe|verboten|darf nicht)\b/i;
+/** Facts describe what IS; only clearly normative ones are candidates (not "only X was used", not to-dos). */
+const NORMATIVE = /\b(must (?:be|stay|remain|run|use|not|never|always|have)|never|always|required|mandatory|policy|compliance|gdpr|dsgvo|niemals|pflicht|vorgabe|verboten|darf nicht|darf nie|dürfen nicht|(?:muss|müssen) (?:immer|stets|bleiben|nie)|zwingend|vorgeschrieben)\b|\b(?:muss|müssen)\b[^.;]{0,50}\b(?:werden|bleiben)\b/i;
 const FUTURE = /\b(by|until|deadline|launch|release|scale|users?|requests?|req\/s|rps|load|peak|black friday|bis|ab|stichtag|nutzer|anfragen|last)\b/i;
 
 export interface CanonSuggestion extends CanonInput {
@@ -620,7 +622,7 @@ export function suggestCanon(store: Store, nodes: ScenariaNode[], path: Scenaria
     (n.facts ?? []).forEach((f, k) => {
       const conf = n.factInfo?.[k]?.confidence;
       if (conf !== undefined && conf < 0.8) return;
-      if (FIXED.test(f)) push({ kind: FUTURE.test(f) && /\d/.test(f) ? "future" : "past", text: f, evidence: [`${n.id}.f${k + 1}`], why: `fact ${n.id}.f${k + 1} is phrased as an obligation` });
+      if (NORMATIVE.test(f)) push({ kind: FUTURE.test(f) && /\d/.test(f) ? "future" : "past", text: f, evidence: [`${n.id}.f${k + 1}`], why: `fact ${n.id}.f${k + 1} is phrased as an obligation` });
     });
     if (n.expectedOutcome && n.type === "decision" && FUTURE.test(n.expectedOutcome) && /\d/.test(n.expectedOutcome)) {
       push({ kind: "future", text: n.expectedOutcome, evidence: [n.id], why: `expected outcome of decision ${n.id} names a measurable target` });
