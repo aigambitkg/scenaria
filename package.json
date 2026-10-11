@@ -1,0 +1,58 @@
+{
+  "name": "scenaria",
+  "version": "0.1.0",
+  "description": "Quicksave & checkpoints for AI agents: a decision tree you can rewind, fork and verify — via MCP, CLI, Claude Code hooks and a visual scenario map.",
+  "type": "module",
+  "bin": {
+    "scenaria": "dist/cli.js"
+  },
+  "main": "dist/core/index.js",
+  "types": "dist/core/index.d.ts",
+  "files": [
+    "dist",
+    "templates",
+    "README.md",
+    "README.de.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "npm run build:core && npm run build:ui",
+    "build:core": "tsc -p tsconfig.json && node scripts/chmod-bin.mjs",
+    "build:ui": "vite build --config ui/vite.config.ts",
+    "dev:ui": "vite --config ui/vite.config.ts",
+    "test": "node --test --test-concurrency=1 test/*.test.mjs",
+    "demo": "node scripts/demo.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "ai-agents",
+    "mcp",
+    "checkpoint",
+    "rewind",
+    "decision-tree",
+    "claude-code",
+    "agent-observability",
+    "context-engineering"
+  ],
+  "author": "Kevin Grundmann <kevin.grundmann@ai-gambit.com> (AI-Gambit)",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@fontsource-variable/instrument-sans": "^5.3.0",
+    "@fontsource/stix-two-text": "^5.3.0",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "@xyflow/react": "^12.12.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4"
+  }
+}
