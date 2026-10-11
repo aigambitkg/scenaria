@@ -14,6 +14,12 @@ export type { Forecast, ForecastOption, QuickForecast };
 import type { ExpertReport, FactSheet, Finding, Recommendation } from "../../src/core/expert";
 import type { KnownProject } from "../../src/core/projects";
 export type { ExpertReport, FactSheet, Finding, Recommendation, KnownProject };
+export interface ProjectsPage {
+  current: { name: string; root?: string };
+  canSwitch: boolean;
+  person: boolean;
+  projects: { name: string; root: string; lastSeen: string; exists: boolean; current: boolean }[];
+}
 export interface ExpertPage {
   reports: { id: string; createdAt: string; scope: ExpertReport["scope"]; model: string | null; maturity: ExpertReport["maturity"]; findings: number; recommendations: number; projects: string[]; verified?: boolean }[];
   facts: FactSheet;
@@ -141,6 +147,9 @@ export const api = {
   relays: () => req<RelayReport[]>("/api/relay"),
   gate: () => req<GateMatrix>("/api/canon/gate"),
   runGate: (lines?: string[]) => req<GateMatrix>("/api/canon/gate", { lines }),
+  projects: () => req<ProjectsPage>("/api/projects"),
+  switchProject: (root: string) => req<{ ok: boolean; name: string; root: string }>("/api/projects/switch", { root }),
+  forgetProject: (root: string) => req<{ ok: boolean }>("/api/projects/forget", { root }),
   expert: () => req<ExpertPage>("/api/expert"),
   expertReport: (id: string) => req<ExpertReport>(`/api/expert/report?id=${encodeURIComponent(id)}`),
   runExpert: (b: { scope: "project" | "line" | "all"; head?: string; noModel?: boolean; lang: string; llm?: Partial<LlmCall> }) => req<ExpertReport>("/api/expert", b),

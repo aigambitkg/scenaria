@@ -223,7 +223,9 @@ test("review fixes: automatic multiverse is opt-in, uses only the person's model
     s.checkpoint({ title: "tick" });
     await new Promise((r) => setTimeout(r, 2500));
     assert.equal(llm.seen.length, 0, "never the project's model for automatic forecasts");
-    // 3. the person's model + opt-in → exactly one (daily limit 1)
+    // 3. the person's model + opt-in → exactly one (daily limit 1; the budget is one for all projects,
+    //    so start today's count fresh — earlier tests in this file spent from it)
+    (await import("node:fs")).rmSync(join(process.env.SCENARIA_HOME, "forecast-budget"), { recursive: true, force: true });
     writeSettings({ llm: { default: { provider: "fake", model: "m", baseUrl: llm.base } }, forecast: { auto: true, dailyLimit: 1 } });
     const d2 = s.decide({ question: "Reminder channel?", options: [{ label: "Push notification", description: "mobile push" }, { label: "E-mail digest", description: "daily mail" }] });
     for (let i = 0; i < 40 && !listForecasts(s).some((f) => f.mode === "multiverse"); i++) await new Promise((r) => setTimeout(r, 200));

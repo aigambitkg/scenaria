@@ -484,10 +484,10 @@ export function evaluateForecasts(s: Scenaria): { forecasts: Forecast[]; calibra
  * Budget of the automatic mode, kept OUTSIDE the project (an agent must not be able to reset it):
  * every attempt counts, failed ones too.
  */
-export function autoBudget(s: Scenaria) {
-  // Keyed by the project folder (stable; the project id is only created with the first signature).
-  const key = createHash("sha256").update(s.root).digest("hex").slice(0, 20);
-  const file = join(dirname(globalConfigPath()), "forecast-budget", `${key}.json`);
+export function autoBudget(_s?: Scenaria) {
+  // One budget for the person across ALL projects (the dashboard can switch between them):
+  // the daily limit in Settings is a total, not per project.
+  const file = join(dirname(globalConfigPath()), "forecast-budget", "all.json");
   const today = new Date().toISOString().slice(0, 10);
   const read = (): { date: string; used: number } => {
     try {

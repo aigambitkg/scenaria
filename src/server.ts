@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,7 +13,7 @@ function defaultUserName() {
     return "local user";
   }
 }
-import type { Scenaria } from "./core/engine.js";
+import { Scenaria } from "./core/engine.js";
 import { callTool, toolSchemas, type SchemaFormat, type ToolContext } from "./tools.js";
 import { handleProxy } from "./proxy.js";
 import { UI_DIR, embeddedUi, hasDiskUi } from "./assets.js";
@@ -30,7 +30,7 @@ import { chat } from "./chat.js";
 import { TARGETS, agentStatus, connectionSnippets, setupAgents, type Target } from "./setup.js";
 import { callLlm } from "./core/analysis.js";
 import { adoptRecommendation, expertAnalysis, factSheet, getReport, listPersonalReports, listReports } from "./core/expert.js";
-import { listProjects, registerProject } from "./core/projects.js";
+import { forgetProject, listProjects, registerProject } from "./core/projects.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
 export const VERSION = "0.7.2";
@@ -134,6 +134,10 @@ export interface AppOptions {
   approvalSecret?: string;
   /** Automatic multiverse forecasts for open decisions (default: per the person's Settings). */
   autoForecast?: boolean;
+  /** Shared between the apps of one server when the person switches projects (single-use link state). */
+  linkState?: { secret?: string };
+  /** The server can switch the dashboard to another of the person's projects (local mode only). */
+  onSwitch?: (root: string) => Promise<{ name: string; root: string }>;
 }
 
 function approvalCookie(req: IncomingMessage): string | undefined {
@@ -175,7 +179,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
   // Local mode: the link works ONCE (the browser Scenaria opens redeems it within a second), so a copy
   // that shows up later in a log or a process list is useless — and if someone else used it first,
   // your own click fails visibly. Team mode: the configured approver token.
-  let approvalLinkSecret = opts.token ? opts.approverToken : opts.approvalCode;
+  const link = opts.linkState ?? { secret: opts.token ? opts.approverToken : opts.approvalCode };
   const isApprover = (req: IncomingMessage) => tokenMatches(approvalCookie(req), approvalSecret);
   let lastVersion = s.store.version();
   // Automatic multiverse forecasts for open decisions on the current line — only when the person
@@ -294,8 +298,8 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         res.writeHead(302, { location: "/" });
         return res.end();
       }
-      if (approvalLinkSecret && tokenMatches(url.searchParams.get("approve") ?? undefined, approvalLinkSecret)) {
-        if (!opts.token) approvalLinkSecret = undefined; // single use
+      if (link.secret && tokenMatches(url.searchParams.get("approve") ?? undefined, link.secret)) {
+        if (!opts.token) link.secret = undefined; // single use (also across project switches)
         res.writeHead(302, { location: "/", "set-cookie": `scenaria_approval=${encodeURIComponent(approvalSecret)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000` });
         return res.end();
       }
@@ -412,7 +416,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         // Binding canon actions, the person's settings, the built-in chat and the relay: only with the
         // approval session (not with the API/agent token) — they act for the person or use the person's keys.
         // (The archivist and the analysis also spend the person's quota with the person's keys.)
-        const personOnly = p.startsWith("/api/canon") || p.startsWith("/api/settings") || p.startsWith("/api/agents") || p === "/api/chat" || p === "/api/relay" || p.startsWith("/api/forecast") || p === "/api/analysis/run" || p === "/api/analysis/config" || p.startsWith("/api/expert");
+        const personOnly = p.startsWith("/api/canon") || p.startsWith("/api/settings") || p.startsWith("/api/agents") || p === "/api/chat" || p === "/api/relay" || p.startsWith("/api/forecast") || p === "/api/analysis/run" || p === "/api/analysis/config" || p.startsWith("/api/expert") || p.startsWith("/api/projects");
         if (personOnly && req.method === "POST" && !isApprover(req)) {
           return send(res, 403, { error: "This is the person's action (approvals, settings, chat, relay, analysis with your keys): open the approval link from the terminal running Scenaria (scenaria start/ui). Agents can only propose.", code: "approval_required" });
         }
@@ -580,6 +584,39 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           const b = await readBody(req);
           return send(res, 200, acceptRule(s, String(b?.id ?? ""), Number(b?.index)));
         }
+        // ---------- the person's projects (switch the dashboard) ----------
+        if (req.method === "GET" && p === "/api/projects") {
+          // The list (names, folders) is the person's: only with the approval session, never in team mode.
+          const person = isApprover(req) && !token;
+          const here = realRoot(s.root);
+          return send(res, 200, {
+            current: { name: s.config().projectName, root: person ? s.root : undefined },
+            canSwitch: Boolean(opts.onSwitch) && !token,
+            person,
+            projects: person ? listProjects({ includeMissing: true }).map((x) => ({ name: x.name, root: x.root, lastSeen: x.lastSeen, exists: x.exists, current: realRoot(x.root) === here })) : [],
+          });
+        }
+        if (req.method === "POST" && p === "/api/projects/switch") {
+          if (!opts.onSwitch || token) return send(res, 400, { error: "Switching projects is available in the local dashboard (scenaria start)." });
+          const b = await readBody(req);
+          const target = String(b?.root ?? "").trim();
+          if (!target) return send(res, 400, { error: "root required" });
+          if (!existsSync(join(target, ".scenaria", "config.json"))) return send(res, 400, { error: `No Scenaria project in ${target} — run "scenaria start" (or "scenaria init") in that folder once.`, code: "not_a_project" });
+          try {
+            const r = await opts.onSwitch(target);
+            return send(res, 200, { ok: true, ...r });
+          } catch (err: any) {
+            return send(res, 400, { error: err?.message ?? String(err) });
+          }
+        }
+        if (req.method === "POST" && p === "/api/projects/forget") {
+          const b = await readBody(req);
+          const target = String(b?.root ?? "");
+          if (realRoot(target) === realRoot(s.root)) return send(res, 400, { error: "The open project cannot be forgotten." });
+          forgetProject(target);
+          return send(res, 200, { ok: true });
+        }
+
         // ---------- expert analyst (report to optimise with) ----------
         if (req.method === "GET" && p === "/api/expert") {
           // Reports across projects and the list of projects are the person's (other projects' data):
@@ -717,7 +754,20 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
       send(res, 400, { error: err?.message ?? String(err) });
     }
   };
-  return { handler, close: () => clearInterval(timer) };
+  return {
+    handler,
+    /** reason "switch": open dashboards are told to reload the new project. */
+    close: (reason?: "switch") => {
+      clearInterval(timer);
+      for (const c of clients) {
+        try {
+          if (reason === "switch") c.write(`event: project\ndata: switched\n\n`);
+          c.end();
+        } catch {}
+      }
+      clients.clear();
+    },
+  };
 }
 
 function openBrowser(url: string) {
@@ -727,6 +777,14 @@ function openBrowser(url: string) {
     spawn(cmd, args, { stdio: "ignore", detached: true }).unref();
   } catch {
     /* ignore */
+  }
+}
+
+function realRoot(p: string) {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
   }
 }
 
@@ -752,8 +810,33 @@ export async function startServer(
   const showLink = opts.showApprovalLink ?? Boolean(process.stdout.isTTY);
   const approverToken = opts.approverToken ?? process.env.SCENARIA_APPROVER_TOKEN;
   registerProject(s.root, s.config().projectName);
-  const app = createApp(s, { token: opts.token, approvalCode, approverToken });
-  const server = createServer(app.handler);
+  // One server, one approval session for the person; the dashboard can switch between their projects.
+  // Every app keeps its own project: requests already running finish in the project they started in.
+  const approvalSecret = randomBytes(24).toString("hex");
+  const linkState = { secret: opts.token ? approverToken : approvalCode };
+  let current = s;
+  const make = (proj: Scenaria): ReturnType<typeof createApp> =>
+    createApp(proj, {
+      token: opts.token,
+      approvalCode,
+      approverToken,
+      approvalSecret,
+      linkState,
+      onSwitch: opts.token
+        ? undefined
+        : async (root: string) => {
+            const next = Scenaria.open(root);
+            registerProject(next.root, next.config().projectName);
+            const old = app;
+            current = next;
+            app = make(next);
+            old.close("switch");
+            if (!opts.quiet) process.stdout.write(`Scenaria → project: ${next.root}\n`);
+            return { name: next.config().projectName, root: next.root };
+          },
+    });
+  let app = make(s);
+  const server = createServer((req, res) => app.handler(req, res));
   const host = opts.host ?? "127.0.0.1";
   let port = opts.port ?? 4477;
   await new Promise<void>((resolve, reject) => {
@@ -790,5 +873,5 @@ export async function startServer(
   );
   if (opts.open) openBrowser(opts.token ? uiUrl : `${url}/?approve=${approvalCode}`);
   const approvalUrl = opts.token ? (approverToken ? `${url}/?approve=<approver token>` : null) : showLink ? `${url}/?approve=${approvalCode}` : null;
-  return { server, url, approvalUrl, close: () => { app.close(); server.close(); } };
+  return { server, url, approvalUrl, project: () => current, close: () => { app.close(); server.close(); } };
 }

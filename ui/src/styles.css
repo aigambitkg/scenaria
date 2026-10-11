@@ -309,7 +309,8 @@ code { font-family: var(--mono); font-size: 0.88em; }
 @media (max-width: 900px) {
   .main { grid-template-columns: 1fr; grid-template-rows: 55vh auto; overflow: auto; }
   .panel { border-left: 0; border-top: 1px solid var(--rule); }
-  .project, .live { display: none; }
+  .live { display: none; }
+  .pj-btn { max-width: 150px; }
   .topbar { flex-wrap: wrap; gap: 10px; }
   .mission-select select { max-width: 60vw; }
   .statusbar .root { display: none; }
@@ -649,3 +650,25 @@ table.gate tr.current td:first-child { box-shadow: inset 4px 0 0 var(--marker-so
   .llm-form { grid-template-columns: 1fr !important; }
   table.log { display: block; overflow-x: auto; }
 }
+
+/* ---------- project switcher ---------- */
+.pj { position: relative; min-width: 0; }
+.pj-btn { background: none; border: none; border-left: 1px solid var(--rule); cursor: pointer; font: inherit; font-size: 13px; color: var(--ink-2); max-width: 260px; }
+.pj-btn:hover, .pj-btn[aria-expanded="true"] { color: var(--ink); text-decoration: underline; text-decoration-color: var(--marker-solid); text-decoration-thickness: 2px; }
+.pj-menu { position: absolute; top: calc(100% + 8px); left: 0; z-index: 60; width: min(460px, calc(100vw - 24px)); background: var(--surface); border: 1.5px solid var(--ink); border-radius: 3px; box-shadow: var(--shadow-modal); padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.pj-head { display: flex; flex-direction: column; gap: 2px; }
+.pj-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 50vh; overflow: auto; }
+.pj-list li { display: flex; align-items: center; gap: 6px; }
+.pj-item { flex: 1; min-width: 0; display: grid; grid-template-columns: 1fr auto; gap: 0 10px; text-align: left; background: none; border: 1px solid var(--rule); border-radius: 3px; padding: 6px 8px; cursor: pointer; font: inherit; color: var(--ink); }
+.pj-item:hover:not(:disabled) { border-color: var(--ink); }
+.pj-item:disabled { cursor: default; }
+.pj-list li.on .pj-item { border-color: var(--marker-solid); background: color-mix(in srgb, var(--marker) 25%, transparent); }
+.pj-list li.gone .pj-item { opacity: 0.55; }
+.pj-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pj-path { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pj-open input { min-width: 0; }
+@media (max-width: 900px) {
+  .pj-menu { position: fixed; left: 12px; right: 12px; top: 64px; width: auto; }
+}
+.pj-open { display: flex; gap: 6px; }
+.pj-open input { flex: 1; min-width: 0; }

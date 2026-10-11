@@ -248,6 +248,21 @@ are the person's (approval session / interactive terminal / chat card); reading 
 CLI: `scenaria analyst [--scope project|line|all] [--head n12] [--no-model]`, `scenaria analyst x3
 [--adopt 0] [--out-file report.md]`.
 
+## Switching projects (v0.8)
+
+The person's projects are remembered in `~/.config/scenaria/projects.json` (dashboard, MCP server and
+`scenaria init` register them). The dashboard's project name is a switcher: one click shows the list
+(name, folder, last use; missing folders greyed out, removable without touching files) and switches.
+
+- One server, one approval session: `startServer` keeps one approval secret and the single-use link
+  state for its lifetime; switching creates a fresh app for the new project and closes the old one
+  (its open dashboards get an SSE `project` event and remount; requests already running finish in the
+  project they started in, and the old automatic-forecast timer stops).
+- The list and the switch are the person's (approval session) and only in local mode; agents only see
+  the current project's name, never folders. Agents (MCP/CLI) keep working in their own project.
+- The UI keeps the session API keys (memory only) across switches; everything else is reloaded.
+- The daily limit of automatic forecasts is one budget for all projects together.
+
 ## Workspace, references and handoffs
 
 - **Board** (`core/workspace.ts`): items on the HEAD path, in sections goals, decisions, facts, questions (current task only), rules, lessons and risks (irreversible effects, failed checks).

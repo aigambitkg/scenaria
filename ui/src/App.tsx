@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { api, type Fidelity, type Graph, type ScenariaEvent, type ScenariaNode } from "./api";
 import { dict, initialLang, saveLang, type Lang } from "./i18n";
+import { ProjectSwitcher } from "./Projects";
 import { layoutTree, taskOf } from "./layout";
 import { NodeId, ScenarioMap } from "./Map";
 import { NodePanel } from "./NodePanel";
@@ -19,7 +20,7 @@ function fmtK(n: number) {
   return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n);
 }
 
-export function App() {
+export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction<SessionKeys>>; onProjectSwitched: () => void }) {
   const [graph, setGraph] = useState<Graph | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [live, setLive] = useState(false);
@@ -44,8 +45,10 @@ export function App() {
   /** Forecasts page: false = closed, null = open without focus, "n12" = focused on a decision. */
   const [forecastFocus, setForecastFocus] = useState<string | null | false>(false);
   const [side, setSide] = useState<"node" | "chat">("node");
-  /** API keys typed into Settings: memory only (never stored, gone when the tab closes). */
-  const [keys, setKeys] = useState<SessionKeys>({});
+  /** API keys typed into Settings: memory only (never stored, gone when the tab closes) — kept across project switches. */
+  const { keys, setKeys } = props;
+  const switched = useRef(props.onProjectSwitched);
+  switched.current = props.onProjectSwitched;
   const [toasts, setToasts] = useState<{ id: number; msg: string }[]>([]);
   const toastId = useRef(0);
   const t = dict[lang];
@@ -74,6 +77,8 @@ export function App() {
       es = new EventSource("/api/events");
       es.addEventListener("hello", () => setLive(true));
       es.addEventListener("change", () => load());
+      // The person switched the dashboard to another project (here or in another tab).
+      es.addEventListener("project", () => switched.current());
       es.onerror = () => setLive(false);
     } catch {
       poll = setInterval(load, 3000);
@@ -200,7 +205,7 @@ export function App() {
             <path d="M11 16 21 8M11 16l10 8" stroke="currentColor" strokeWidth="2" />
           </svg>
           <span className="brand-name">Scenaria</span>
-          {graph && <span className="project">{graph.config.projectName}</span>}
+          {graph && <ProjectSwitcher t={t} lang={lang} name={graph.config.projectName} toast={toast} onSwitched={props.onProjectSwitched} />}
         </div>
         {graph && (
           <div className={`goalbar ${root?.goal ? "" : "missing"}`}>
