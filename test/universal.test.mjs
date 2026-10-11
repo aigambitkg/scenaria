@@ -63,7 +63,7 @@ test("CLI call works for shell agents and records agent/model attribution", () =
   assert.equal(cli(p.dir, ["init"]).status, 0);
   const r1 = cli(p.dir, ["call", "scenaria_start_mission", '{"title":"Refactor","goal":"JWT"}', "--agent", "aider", "--model", "gpt-5", "--user", "kev"]);
   assert.equal(r1.status, 0, r1.stderr);
-  const r2 = cli(p.dir, ["call", "decide", '{"question":"Lib?","options":["jose",{"label":"jsonwebtoken"}],"chosen":2}', "--json"]);
+  const r2 = cli(p.dir, ["call", "decide", '{"question":"Lib?","options":["jose",{"label":"jsonwebtoken"}],"chosen":2,"rationale":"already in use"}', "--json"]);
   assert.equal(JSON.parse(r2.stdout).chosen, "b");
   const bad = cli(p.dir, ["call", "decide", "not json"]);
   assert.notEqual(bad.status, 0);
@@ -110,7 +110,7 @@ test("HTTP v1 API: schemas, tool calls, OpenAI-style string arguments, errors, e
     assert.equal(r1.ok, true);
     assert.equal(r1.data.agent, "n8n");
     assert.equal(r1.data.model, "mistral-large");
-    const r2 = await (await post("/api/v1/tools/scenaria_decide", { arguments: JSON.stringify({ question: "Q", options: ["A", "B"], chosen: "B" }) })).json();
+    const r2 = await (await post("/api/v1/tools/scenaria_decide", { arguments: JSON.stringify({ question: "Q", options: ["A", "B"], chosen: "B", rationale: "simpler" }) })).json();
     assert.equal(r2.data.chosen, "b");
     const bad = await post("/api/v1/tools/scenaria_decide", { question: "Q" });
     assert.equal(bad.status, 400);
@@ -119,7 +119,7 @@ test("HTTP v1 API: schemas, tool calls, OpenAI-style string arguments, errors, e
     assert.equal(noHeader.status, 403);
     const exp = await (await fetch(`${base}/api/v1/export`)).json();
     assert.equal(exp.format, "scenaria-export");
-    assert.equal(exp.nodes.length, 2);
+    assert.equal(exp.nodes.length, 3, "n0 project, n1 task, n2 decision");
   } finally {
     close();
   }
@@ -178,7 +178,7 @@ test("export as JSON and Markdown via CLI", () => {
   cli(p.dir, ["init"]);
   cli(p.dir, ["mission", "Audit me"]);
   const j = JSON.parse(cli(p.dir, ["export"]).stdout);
-  assert.equal(j.nodes[0].title, "Audit me");
+  assert.equal(j.nodes.find((n) => n.type === "goal").title, "Audit me");
   assert.match(cli(p.dir, ["export", "--format", "md"]).stdout, /# Scenaria protocol/);
   const out = join(p.dir, "audit.json");
   assert.equal(cli(p.dir, ["export", "--out-file", out]).status, 0);
@@ -196,7 +196,7 @@ from scenaria_client import ScenariaClient, ScenariaError
 sc = ScenariaClient(${JSON.stringify(base)}, agent="crewai", model="llama3.3")
 assert sc.health()["ok"]
 sc.start_mission("Python run", goal="Prove the client works")
-d = sc.decide("Approach?", ["fast", {"label": "safe", "description": "with tests"}], chosen="safe", confidence=0.9)
+d = sc.decide("Approach?", ["fast", {"label": "safe", "description": "with tests"}], chosen="safe", rationale="tests first", confidence=0.9)
 assert d["chosen"] == "b", d
 open(${JSON.stringify(join(p.dir, "out.txt"))}, "w").write("x")
 c = sc.checkpoint("wrote out.txt", outputs=["\`out.txt\` written"])

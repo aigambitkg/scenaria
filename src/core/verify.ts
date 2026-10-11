@@ -67,7 +67,7 @@ export function autoChecks(node: ScenariaNode, repo: ShadowRepo | null, o: AutoV
           : `${claims.length} file claim(s) confirmed`,
       });
     }
-  } else if (node.type !== "mission") {
+  } else if (node.type !== "mission" && node.type !== "goal") {
     checks.push({ name: "snapshot restorable", status: "warning", detail: "node has no file snapshot" });
   }
 
@@ -77,6 +77,12 @@ export function autoChecks(node: ScenariaNode, repo: ShadowRepo | null, o: AutoV
       name: "decision documented",
       status: complete ? "passed" : "warning",
       detail: complete ? "option + rationale recorded" : !node.chosen ? "no option chosen yet" : "rationale missing",
+    });
+    const ctx = Boolean(node.context || node.trigger);
+    checks.push({
+      name: "decision context",
+      status: ctx && node.servesGoal ? "passed" : "warning",
+      detail: !ctx ? "no context recorded (why did this decision come up?)" : !node.servesGoal ? "link to the main goal missing (servesGoal)" : "context + goal link recorded",
     });
     if (node.confidence !== undefined && node.confidence < 0.5) {
       checks.push({ name: "confidence", status: "warning", detail: `low confidence (${Math.round(node.confidence * 100)} %)` });

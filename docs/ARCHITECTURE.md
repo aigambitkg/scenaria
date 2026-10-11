@@ -13,7 +13,7 @@ Every decision point of an agent run leaves a **restorable, verifiable state**. 
    Gemini, Codex…) │                  │                  │                                │            │
                    ▼                  ▼                  ▼                                ▼            ▼
              ┌──────────────────────────────────────────────────────────────────────────────────────┐
-             │  tools.ts — ONE vendor-neutral tool registry (13 tools, zod schemas, validation)      │
+             │  tools.ts — ONE vendor-neutral tool registry (15 tools, zod schemas, validation)      │
              └───────────────────────────────────────────┬──────────────────────────────────────────┘
                                                          ▼
                      ┌─────────────────────┐        ┌──────────────────┐
@@ -34,7 +34,11 @@ Every decision point of an agent run leaves a **restorable, verifiable state**. 
 | Store | `src/core/store.ts` | JSON files, append-only event log, cross-process lock |
 | Snapshots | `src/core/snapshot.ts` | Private shadow git repository |
 | Engine | `src/core/engine.ts` | All operations; the only writer |
-| Context | `src/core/context.ts` | Resume capsule, token estimate |
+| Context | `src/core/context.ts` | Budgeted resume capsule, task rollups, token estimate |
+| Recall | `src/core/recall.ts` | BM25 search over nodes and conversations |
+| Analysis | `src/core/analysis.ts` | Health check, dossier, provider-neutral LLM analysis, stored insights |
+| Blocks | `src/core/blocks.ts` | ` ```scenaria ` decision blocks from plain chats |
+| Prompts | `src/core/prompts.ts` | Ready-made agent prompts and the per-prompt reminder |
 | Verify | `src/core/verify.ts` | Deterministic checks |
 | Protocol | `src/core/protocol.ts` | Knowledge-base notes, audit protocol |
 | **Tools** | `src/tools.ts` | Vendor-neutral tool registry + schema export (OpenAI, Anthropic, Gemini, JSON, MCP) |
@@ -58,10 +62,11 @@ Every decision point of an agent run leaves a **restorable, verifiable state**. 
 
 ## Data model
 
-A **mission** is the root of a tree. Each node has a `type`:
+Each project has exactly **one tree**. Its root `n0` (type `mission`) holds the project name and the **main goal**. Each node has a `type`:
 
-- `mission`: goal and brief.
-- `decision`: question, `options[]` (ids `a`, `b`, …), `chosen`, rationale, assumptions, confidence.
+- `mission`: the project root `n0`, holding the main goal (`goal`) and its history (`meta.goalHistory`).
+- `goal`: a task (sub-goal) on the project line: title, task goal, `status` (active/done/abandoned), `summary`.
+- `decision`: question, `options[]` (ids `a`, `b`, …), `chosen`, rationale, `context`, `servesGoal`, `expectedOutcome`, `trigger` (auto), assumptions, confidence.
 - `checkpoint`: a progress save holding outputs, facts, open questions, irreversible effects and changed files.
 - `branch`: the start of an alternative explored via `fork`. Its `viaOption` names the option.
 - `autosave`: an automatic save, made before a rewind or a risky command.
@@ -69,6 +74,20 @@ A **mission** is the root of a tree. Each node has a `type`:
 Children of a decision carry `viaOption`, which records the option they continue. Options that no child has taken are drawn as dashed "ghost" nodes, and you can start any of them at any time.
 
 `state.json` holds `head`. New nodes attach under HEAD, and rewind and fork move it.
+
+### One project tree (schema 3)
+
+- **Tasks are created lazily.** A hook, the proxy or an API call registers a session's request with `noteTask(key, title)`. The goal node is created right before the session's first real node, keyed per session or conversation. Questions without any work therefore leave the map untouched.
+  - A lazily created task shares the previous snapshot, i.e. the state at task start.
+  - Its `meta.since` lets the opening conversation be linked to the task.
+- **Explicit tasks.** `scenaria_start_mission` / `scenaria task` start a task right away with a fresh snapshot. Calling it twice without any work in between refines the task instead of stacking a second one.
+- **Leaving a task finishes it** (`status: done`). `checkpoint {taskDone, summary}` sets the summary that later capsules carry.
+- **Scenarios** still mean "a linear line of work". A straight project is `s1` from `n0` to HEAD. A new scenario starts only for a fork, a non-chosen option, or new work after a rewind.
+- **Migration from schema 2 (one tree per mission)** is idempotent and runs under the lock:
+  - The node files and `state.json` are backed up to `.scenaria/backups/schema2-*`.
+  - `n0` is created; every former root becomes a `goal`.
+  - Each former root is attached to the node that was HEAD when it was started, found by replaying `events.jsonl`. Fallback: the newest earlier node.
+  - Scenario ids are recomputed, and version refs are rewritten.
 
 ## Snapshots
 
@@ -92,15 +111,48 @@ Children of a decision carry `viaOption`, which records the option they continue
 
 ## Resume capsule (non-anticipativity)
 
-This idea comes from stochastic scenario trees: at node *n*, you may only know what happened on the path to *n*. The capsule therefore contains:
+This idea comes from stochastic scenario trees: at node *n*, you may only know what happened on the path to *n*. Sibling branches are never included. The only things that cross branches are explicit lessons and project rules.
 
-- the mission goal and brief,
-- every decision on the path with the option taken *on this path*, its rationale and the alternatives,
-- the last N checkpoints in full, older ones as single lines,
-- facts established on the path, the target's own capsule and its changed files,
-- lessons, irreversible effects, verification verdicts, and the last node that passed verification.
+The capsule is assembled from prioritised items within a **token budget** (`contextBudget`, default 1,500):
 
-Sibling branches are never included. The only things that cross branches are explicit lessons. A typical capsule is 150–600 tokens. The Stop hook also records `transcriptTokens` (≈ transcript size / 4), so the dashboard can show the saving.
+| Priority | Content |
+|---|---|
+| always | Project and main goal; current task and its goal; state of the target node; latest user request; last-good node |
+| 1 | Project rules (`memory.json`); irreversible effects on the path |
+| 2 | Decisions of the current task, with rationale, context, goal link and expected outcome |
+| 3 | Lessons on the path |
+| 4 | One line per earlier task on the path (stored `summary`, or a deterministic rollup of the path segment with the option actually taken); older tasks drop first |
+| 5–7 | Checkpoints of the current task, changed files, established facts, steps before the first task |
+
+Items are kept by priority and rendered in reading order. What is left out is counted, and the capsule points to `scenaria_recall` (BM25 over nodes and messages, offline) and `scenaria_get_node`.
+
+On a 30-task project a 600-token capsule still holds the goal, the rules, the current task and the newest rollups. `context()` also reports `historyTokens`, the raw conversation on the same path, so the dashboard can show the saving.
+
+## Decision context and analysis
+
+- **Recording.** `scenaria_decide` requires `rationale` when an option is chosen (`requireRationale`). It accepts `context`, `servesGoal` and `expectedOutcome`, and stores the latest user request of the current task as `trigger`. The tool result names missing fields. The map flags them (`!` rationale, `?` context or goal link).
+- **Health check (`metrics`)** is deterministic and costs no tokens.
+  - Decision quality is the share of six fields present: chosen, rationale, context, servesGoal, ≥2 alternatives, confidence.
+  - Each decision gets an outcome: kept, passed, revised, abandoned, failed or open.
+  - Findings: goal missing, no rationale, no context or goal link, single option, open decision, low confidence never verified, work built on a failed check, tasks with ≥3 branches, done tasks without a result.
+  - Statistics per agent and per model, plus a health score from 0 to 100.
+- **Dossier.** The same history as compact lines (`D n12 task=n9 by=agent/model conf=… outcome=… | Q | chosen | alts | why | ctx | goal | expected`), plus tasks, lessons and failed checks. The newest decisions are kept when `maxTokens` is tight.
+- **LLM run.** There are two code paths. The OpenAI-compatible one (`/chat/completions`) covers OpenAI, Ollama, LM Studio, Gemini, Mistral, OpenRouter, Groq, Azure-style and custom URLs; the other is Anthropic `/v1/messages`.
+  - Keys come from env vars (`OPENAI_API_KEY`, …, or `apiKeyEnv`), or from a per-request key. They are never written to disk.
+  - Team mode forbids custom base URLs, against request forgery.
+  - The answer is parsed tolerantly as JSON (summary, goal alignment, patterns, issues, rules, token tips) and stored in `.scenaria/analyses/`.
+- **Rules.** Accepted rules go to `memory.json` and are carried by every capsule, every agent prompt and the per-prompt reminder.
+
+## Capture paths and prompts
+
+- **Claude Code hooks.** Each prompt returns a short `additionalContext` reminder: main goal, task, how to record, top rules.
+- **Agent prompts** (`scenaria prompt`, dashboard → *Agent prompt*) come in three kinds, in German or English, optionally with the capsule attached:
+  - `mcp`: tool calls;
+  - `cli`: `scenaria call …` / HTTP;
+  - `chat`: plain chats without tools.
+- **Decision blocks.** Models without tools append ` ```scenaria ` JSON blocks: decision, task, checkpoint, lesson, projectGoal or rule.
+  - They are read from proxy answers, from Claude Code's final message and from text pasted into the dashboard (`/api/v1/ingest-text`).
+  - Each block is applied once (sha1 of the item, claimed under the lock).
 
 ## Verification
 

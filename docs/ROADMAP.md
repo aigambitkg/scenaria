@@ -40,13 +40,22 @@
 - [x] Snapshot folders per version (hardlinked, read-only, `index.md`), `scenaria open`, `--copy-to`
 - [x] `scenaria mirror`: versions as `refs/scenaria/*` in the project repo
 
+## Done in 0.4 (one project tree, context, analysis)
+
+- [x] One tree per project: root `n0` with the main goal, tasks as sub-goals, lazy task creation per session, automatic migration of multi-root projects
+- [x] Decisions with `context`, `servesGoal`, `expectedOutcome`, auto `trigger`; rationale required when an option is chosen; quality flags on the map
+- [x] Deterministic health check (per agent / model), dossier, LLM analysis with any provider (OpenAI-compatible or Anthropic, local or API), stored insights
+- [x] Project rules (`memory.json`) carried by every capsule, prompt and reminder; accept rules from an analysis
+- [x] Token-budgeted capsule with task rollups, `scenaria_recall` (BM25), folded tree view
+- [x] Ready-made agent prompts (MCP / shell / chat, DE/EN) in the dashboard and CLI; per-prompt reminder for Claude Code
+- [x] ```scenaria decision blocks from plain chats (proxy, transcript, paste)
+
 ## Next: capture everywhere
 
 - [ ] Browser extension for ChatGPT / Claude.ai / Gemini web (live capture without exports)
 - [ ] Homebrew tap and winget package
 - [ ] Gemini native API (`generateContent`) and Bedrock/Vertex shapes in the proxy
 - [ ] Map ChatGPT conversation branches (edited messages) to Scenaria scenarios on import
-- [ ] Conversation search across all providers
 
 ## Phase 4: Verifier and protocol
 

@@ -314,3 +314,100 @@ code { font-family: var(--mono); font-size: 0.88em; }
   .mission-select select { max-width: 60vw; }
   .statusbar .root { display: none; }
 }
+
+/* ---------- v0.4: one project tree, goal bar, prompts, analysis ---------- */
+.goalbar { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; font-size: 13px; }
+.goalbar-label { color: var(--ink-3); font-size: 12px; white-space: nowrap; }
+.goalbar-text {
+  border: 0; background: none; padding: 3px 6px; color: var(--ink); font: inherit; font-weight: 550; text-align: left; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 56ch; border-radius: 2px;
+  box-shadow: inset 0 -3px 0 var(--marker);
+}
+.goalbar-text span { color: var(--ink-3); font-weight: 400; margin-left: 4px; }
+.goalbar-text:hover { background: var(--paper); }
+.goalbar.missing .goalbar-text { color: var(--warn); box-shadow: inset 0 -2px 0 var(--warn); }
+.goalbar-edit { display: flex; gap: 6px; flex: 1; min-width: 0; }
+.goalbar-edit input { flex: 1; min-width: 0; padding: 5px 8px; border: 1px solid var(--ink); border-radius: 3px; background: var(--paper); color: var(--ink); font: inherit; }
+.btn.accent { box-shadow: inset 0 -3px 0 var(--marker-solid); font-weight: 600; }
+.hchip { margin-left: 6px; font-size: 11px; font-weight: 700; padding: 0 5px; border-radius: 2px; border: 1px solid currentColor; }
+.hchip.good, .hbig.good { color: var(--pass); }
+.hchip.mid, .hbig.mid { color: var(--warn); }
+.hchip.low, .hbig.low { color: var(--fail); }
+
+.sc-node.t-goal { border-width: 2px; border-top-width: 5px; }
+.sc-node.t-goal.st-done:not(.on-path) { opacity: 0.9; }
+.sc-node.t-goal.is-folded { box-shadow: 4px 4px 0 -1.5px var(--surface), 4px 4px 0 0 var(--ink); }
+.sc-node.t-goal.is-folded.on-path { box-shadow: 0 0 0 4px var(--marker), 6px 6px 0 -1.5px var(--surface), 6px 6px 0 0 var(--ink); }
+.sc-node.no-goal .sc-sub { color: var(--warn); font-weight: 600; }
+.fold {
+  position: absolute; right: -11px; top: 50%; transform: translateY(-50%); width: 20px; height: 20px; border-radius: 50%;
+  border: 1.5px solid var(--ink); background: var(--surface); color: var(--ink); font-size: 13px; line-height: 1; cursor: pointer; padding: 0; z-index: 2;
+}
+.fold:hover { background: var(--marker-solid); }
+.head-tab.inside { background: var(--ink-2); }
+.q-flag {
+  position: absolute; top: -8px; right: 14px; width: 16px; height: 16px; border-radius: 50%; font-size: 11px; font-weight: 800;
+  display: grid; place-items: center; color: var(--surface); z-index: 2;
+}
+.q-flag.q-bad { background: var(--fail); }
+.q-flag.q-warn { background: var(--warn); }
+.q-flag.q-info { background: var(--ink-3); }
+.qnote { margin-top: 10px !important; font-size: 12.5px; font-weight: 600; }
+.qnote.q-bad { color: var(--fail); }
+.qnote.q-warn { color: var(--warn); }
+.qnote.q-info { color: var(--ink-3); }
+.p-sec.goal.missing p { color: var(--warn); font-size: 13.5px; }
+.p-sec.goal.task p { font-size: 14px; }
+.p-sec.goal .row { margin-top: 8px; }
+.chip.st-done { border-color: var(--pass); color: var(--pass); }
+.chip.st-active { border-color: var(--ink); color: var(--ink); }
+
+.tabs { display: flex; gap: 0; border-bottom: 1.5px solid var(--ink); margin-bottom: 10px; flex-wrap: wrap; }
+.tabs button { border: 0; background: none; padding: 7px 12px; font: inherit; font-size: 13px; color: var(--ink-2); cursor: pointer; border-radius: 3px 3px 0 0; }
+.tabs button.on { background: var(--ink); color: var(--surface); font-weight: 600; }
+.hint { font-size: 12.5px; color: var(--ink-2); margin: 0 0 10px !important; max-width: 80ch; }
+.prompt-text, .paste textarea, .analysis input, .analysis select {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--rule); border-radius: 3px; background: var(--paper); color: var(--ink); font-size: 12.5px;
+}
+.prompt-text { font-family: var(--mono); line-height: 1.5; resize: vertical; }
+.row.between { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+.row.between .check { margin: 0; margin-right: auto; }
+.paste { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--rule); }
+.paste h3 { margin: 0 0 4px; font-size: 13px; }
+.paste .row, .a-sec .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+.paste summary { cursor: pointer; font-size: 12.5px; color: var(--ink-2); margin-top: 8px; }
+
+.analysis .a-sec { padding: 12px 0; border-bottom: 1px solid var(--rule); }
+.analysis .a-sec:last-child { border-bottom: 0; }
+.analysis h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.analysis h4 { margin: 10px 0 4px; font-size: 12px; color: var(--ink-2); }
+.analysis ul { margin: 0; padding-left: 18px; font-size: 13px; }
+.analysis li { margin: 3px 0; }
+.health { display: flex; gap: 18px; align-items: center; }
+.hbig { display: flex; flex-direction: column; align-items: center; border: 2px solid currentColor; border-radius: 3px; padding: 6px 14px; min-width: 92px; }
+.hnum { font-family: var(--math); font-size: 38px; line-height: 1; }
+.hlabel { font-size: 11px; font-weight: 600; }
+.hfacts p { margin: 2px 0; font-size: 13px; }
+.issues li.sev-high::marker { color: var(--fail); }
+.issues li.sev-mid::marker { color: var(--warn); }
+.issues li.sev-high { color: var(--ink); }
+.issues .nid { font-size: 13px; }
+.patterns li.good::marker { color: var(--pass); }
+.patterns li.bad::marker { color: var(--warn); }
+.rules { list-style: none; padding: 0 !important; }
+.rules li { padding: 4px 0; border-bottom: 1px dashed var(--rule); }
+.rules .btn { margin-left: 6px; font-size: 12px; padding: 2px 8px; }
+.evidence .btn.link { margin-left: 4px; }
+.evidence .nid { font-size: 12.5px; }
+.grow { flex: 1; min-width: 200px; }
+.llm-form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; margin-bottom: 8px; }
+.llm-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink-2); }
+.llm-form label.wide { grid-column: 1 / -1; }
+.result p { margin: 4px 0 8px; font-size: 13.5px; max-width: 80ch; }
+.hist { width: auto !important; margin-left: auto; font-size: 12px; padding: 3px 6px !important; }
+@media (max-width: 900px) {
+  .goalbar { order: 3; flex-basis: 100%; }
+  .llm-form { grid-template-columns: 1fr; }
+}
+.sc-node.ghost.chosen { border-color: var(--ink-2); border-style: dotted; }
+.sc-node.ghost.chosen .sc-title { color: var(--ink); font-weight: 600; }

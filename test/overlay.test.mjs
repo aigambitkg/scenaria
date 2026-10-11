@@ -80,38 +80,66 @@ test("every node gets uid, scenario and version; new work after a rewind opens a
   const d = s.decide({ question: "Q", options: ["A", "B"], chosen: "A" });
   const f = s.fork(d.id, "B");
   assert.match(m.uid, /^[0-9A-HJKMNP-TV-Z]{26}$/);
-  assert.deepEqual([m.scenarioId, m.version], ["s1", 0]);
-  assert.deepEqual([c1.scenarioId, c1.version, c2.scenarioId, c2.version], ["s1", 1, "s1", 2]);
-  assert.deepEqual([c3.scenarioId, c3.version, c3.forkedFrom], ["s2", 2, c1.id]);
+  // n0 = project root (s1/v0), the task hangs on the same line.
+  assert.deepEqual([s.node("n0").scenarioId, s.node("n0").version], ["s1", 0]);
+  assert.deepEqual([m.type, m.scenarioId, m.version], ["goal", "s1", 1]);
+  assert.deepEqual([c1.scenarioId, c1.version, c2.scenarioId, c2.version], ["s1", 2, "s1", 3]);
+  assert.deepEqual([c3.scenarioId, c3.version, c3.forkedFrom], ["s2", 3, c1.id]);
   assert.equal(d.scenarioId, "s2");
   assert.deepEqual([f.branch.scenarioId, f.branch.forkedFrom], ["s3", d.id]);
   const refs = s.repo.git(["for-each-ref", "--format=%(refname)", "refs/scenaria/scenarios"]);
-  assert.match(refs, /refs\/scenaria\/scenarios\/s2\/v2/);
+  assert.match(refs, /refs\/scenaria\/scenarios\/s2\/v3/);
   const uids = new Set(s.store.listNodes().map((n) => n.uid));
   assert.equal(uids.size, s.store.listNodes().length);
-  assert.match(s.context(c3.id).markdown, /— n\d+ \(s2\/v2\)/);
+  assert.match(s.context(c3.id).markdown, /— n\d+ \(s2\/v3\)/);
 });
 
-test("old projects are migrated to the id/scenario schema", () => {
+test("old projects with several mission roots are joined into ONE project tree", () => {
   const p = tempProject();
   const s = Scenaria.init(p.dir);
-  s.startMission({ title: "m" });
-  p.write("a", "1");
-  s.checkpoint({ title: "c" });
-  // simulate a v0.2 project
-  for (const n of s.store.listNodes()) {
-    delete n.uid;
-    delete n.scenarioId;
-    delete n.version;
-    s.store.writeNode(n);
-  }
-  const st = s.store.readState();
-  delete st.schema;
-  s.store.writeState(st);
+  // Simulate a v0.2/0.3 project: one root per mission, no uid/scenario fields, no schema.
+  const t = (m) => new Date(Date.UTC(2026, 9, 1, 10, m)).toISOString();
+  const nodes = [
+    { id: "n1", type: "mission", missionId: "n1", parentId: null, title: "Session 2026-10-01", createdAt: t(0), source: "hook", meta: { autoBaseline: true } },
+    { id: "n2", type: "checkpoint", missionId: "n1", parentId: "n1", title: "Setup", createdAt: t(1), source: "hook" },
+    { id: "n3", type: "decision", missionId: "n1", parentId: "n2", title: "DB?", question: "DB?", options: [{ id: "a", label: "SQLite" }, { id: "b", label: "Postgres" }], chosen: "a", createdAt: t(2), source: "mcp" },
+    { id: "n4", type: "mission", missionId: "n4", parentId: null, title: "Testdaten", goal: "20 Spiele", createdAt: t(3), source: "mcp" },
+    { id: "n5", type: "checkpoint", missionId: "n4", parentId: "n4", title: "Daten", createdAt: t(4), source: "mcp" },
+    { id: "n6", type: "mission", missionId: "n6", parentId: null, title: "Radar", createdAt: t(5), source: "mcp" },
+  ];
+  for (const n of nodes) s.store.writeNode(n);
+  writeFileSync(join(p.dir, ".scenaria/events.jsonl"), ["mission:n1", "checkpoint:n2", "decision:n3", "mission:n4", "checkpoint:n5", "rewind:n3", "mission:n6"].map((x, i) => {
+    const [type, id] = x.split(":");
+    return JSON.stringify(type === "rewind" ? { ts: t(i), type, nodeId: id, data: { from: "n5", to: id } } : { ts: t(i), type, nodeId: id });
+  }).join("\n") + "\n");
+  s.store.writeState({ head: "n6", activeMission: "n6", counter: 6 });
+
   const s2 = Scenaria.open(p.dir);
-  const nodes = s2.store.listNodes();
-  assert.ok(nodes.every((n) => n.uid && n.scenarioId && n.version !== undefined));
-  assert.equal(s2.store.readState().schema, 2);
+  const all = s2.store.listNodes();
+  const by = Object.fromEntries(all.map((n) => [n.id, n]));
+  assert.equal(s2.store.readState().schema, 3);
+  assert.equal(s2.store.readState().projectRoot, "n0");
+  assert.equal(all.filter((n) => !n.parentId).length, 1, "exactly one root");
+  assert.equal(by.n0.type, "mission");
+  assert.deepEqual([by.n1.type, by.n1.parentId], ["goal", "n0"]);
+  // n4 was started while n3 was HEAD; n6 after the rewind back to n3 → a real branch.
+  assert.deepEqual([by.n4.type, by.n4.parentId, by.n4.viaOption], ["goal", "n3", "a"]);
+  assert.deepEqual([by.n6.type, by.n6.parentId], ["goal", "n3"]);
+  assert.ok(all.every((n) => n.missionId === "n0" && n.uid));
+  assert.deepEqual(["n0", "n1", "n2", "n3", "n4", "n5"].map((id) => by[id].scenarioId), ["s1", "s1", "s1", "s1", "s1", "s1"]);
+  assert.deepEqual([by.n6.scenarioId, by.n6.forkedFrom, by.n6.version], ["s2", "n3", 4]);
+  assert.equal(by.n6.status, "active");
+  assert.equal(by.n4.status, "done");
+  assert.equal(s2.store.readState().head, "n6");
+  assert.equal(s2.currentTask().id, "n6");
+  assert.ok(readFileSync(join(p.dir, ".scenaria/events.jsonl"), "utf8").includes('"migrate"'));
+  const backups = execFileSync("ls", [join(p.dir, ".scenaria/backups")], { encoding: "utf8" });
+  assert.match(backups, /schema2-/);
+  // idempotent
+  const again = Scenaria.open(p.dir).store.listNodes();
+  assert.deepEqual(again.map((n) => [n.id, n.parentId, n.scenarioId]), all.map((n) => [n.id, n.parentId, n.scenarioId]));
+  // the text tree folds finished tasks and shows the main line
+  assert.match(s2.treeText(), /n4 \[SQLite\] Testdaten \[done/);
 });
 
 // ---------------------------------------------------------------- snapshot folders
@@ -202,7 +230,9 @@ test("hooks ingest the Claude Code transcript incrementally and link it to the t
   assert.equal(msgs[1].model, "claude-opus-5-5");
   const cp = s.head();
   assert.equal(cp.type, "checkpoint");
-  assert.deepEqual(s.conversations.messagesLeadingTo(cp).map((m) => m.text), ["Build a todo app", "Creating files", "ok", "Done."]);
+  const task = s.node(cp.parentId);
+  assert.deepEqual([task.type, task.title, task.parentId], ["goal", "Build a todo app", "n0"]);
+  assert.deepEqual(s.messagesLeadingTo(cp.id).map((m) => m.text), ["Build a todo app", "Creating files", "ok", "Done."]);
 });
 
 test("imports: ChatGPT export (current branch), Claude.ai export, OpenAI list, JSONL", () => {
@@ -267,8 +297,12 @@ test("proxy: OpenAI (json + stream) and Anthropic (stream) pass through and are 
     assert.deepEqual(msgs.map((m) => m.text), ["sys", "Write notes", "Plain answer", "stream please", "Streamed answer"]);
     assert.equal(msgs[4].agent, "my-app");
     const nodes = s.store.listNodes();
-    assert.equal(nodes[0].title, "Write notes", "first request became the mission");
-    assert.ok(nodes.some((n) => n.type === "checkpoint" && n.changedFiles?.includes("+ notes.md")), "auto-checkpoint after the answer");
+    assert.equal(nodes[0].id, "n0", "one project root");
+    const tasks = nodes.filter((n) => n.type === "goal");
+    assert.deepEqual(tasks.map((t) => t.title), ["Write notes"], "the conversation that produced work became a task; the chat without changes did not");
+    const cp = nodes.find((n) => n.type === "checkpoint" && n.changedFiles?.includes("+ notes.md"));
+    assert.ok(cp, "auto-checkpoint after the answer");
+    assert.equal(cp.parentId, tasks[0].id);
   } finally {
     close();
     up.close();
@@ -357,20 +391,47 @@ test("scenaria start: wires agents, baseline, dashboard and auto-save in one com
     assert.equal((await fetch(`http://127.0.0.1:${port}/api/v1/health`)).status, 200);
     assert.ok(existsSync(join(p.dir, ".cursor/mcp.json")) && existsSync(join(p.dir, "AGENTS.md")));
     const s = Scenaria.open(p.dir);
-    assert.equal(s.head().meta?.autoBaseline, true);
+    assert.equal(s.head().id, "n0", "the project root is the baseline");
     assert.ok(s.repo.listFiles(s.head().snapshot.commit).includes(".cursor/mcp.json"), "baseline taken after wiring");
   } finally {
     child.kill();
   }
 });
 
-test("first real request renames the auto-baseline mission", () => {
+test("one project tree: requests without work leave the map alone, each working session becomes one task", () => {
   const p = tempProject();
   const s = Scenaria.init(p.dir);
   s.ensureBaseline();
-  const m = s.claimMission("Build the API", "Build the API with auth");
-  assert.equal(m.title, "Build the API");
-  assert.equal(s.store.listNodes().filter((n) => n.type === "mission").length, 1);
+  s.noteTask("chat:1", "What does this repo do?");
+  assert.equal(s.store.listNodes().length, 1, "a question without work creates no node");
+  s.noteTask("chat:1", "Build the API", "Build the API with auth");
+  p.write("api.js", "1");
+  const c1 = s.checkpoint({ title: "api", task: { key: "chat:1", title: "Build the API", goal: "Build the API with auth" } });
+  p.write("api.js", "2");
+  const c2 = s.checkpoint({ title: "api 2", task: { key: "chat:1", title: "Build the API" } });
+  const t1 = s.node(c1.parentId);
+  assert.deepEqual([t1.type, t1.title, t1.parentId, c2.parentId], ["goal", "Build the API", "n0", c1.id], "same session → same task");
+  // a second session continues the same line (no new tree, no new scenario)
+  p.write("ui.js", "1");
+  const c3 = s.checkpoint({ title: "ui", task: { key: "chat:2", title: "Build the UI" } });
+  const t2 = s.node(c3.parentId);
+  assert.deepEqual([t2.type, t2.parentId, t2.scenarioId], ["goal", c2.id, "s1"]);
+  assert.equal(s.node(t1.id).status, "done", "leaving a task finishes it");
+  assert.equal(s.store.listNodes().filter((n) => !n.parentId).length, 1);
+  // an explicit task without work in between is refined, not stacked
+  const a = s.startMission({ title: "Docs" });
+  const b = s.startMission({ title: "Docs and README", goal: "explain setup" });
+  assert.equal(a.id, b.id);
+  assert.equal(s.node(b.id).goal, "explain setup");
+  // the main goal lives on n0
+  s.startMission({ projectGoal: "A todo SaaS for small teams" });
+  assert.equal(s.project().goal, "A todo SaaS for small teams");
+  assert.match(s.context().markdown, /Main goal: A todo SaaS for small teams/);
+  assert.match(s.context().markdown, /Earlier tasks on this path/);
+  // finishing a task stores a summary later capsules carry
+  p.write("README.md", "x");
+  s.checkpoint({ title: "readme", taskDone: true, summary: "README explains setup" });
+  assert.equal(s.node(b.id).summary, "README explains setup");
 });
 
 test("setup --global writes user-level configs into HOME, enables auto-init, and HOME stays a non-project", () => {
@@ -442,7 +503,9 @@ test("auto-init only in real projects: never home, never unresolved templates", 
   writeFileSync(join(scenariaHome, "config.json"), JSON.stringify({ autoInit: true }));
   const r = cli(q.dir, ["hook", "user-prompt"], { SCENARIA_HOME: scenariaHome, CLAUDE_PROJECT_DIR: q.dir }, JSON.stringify({ session_id: "s", cwd: q.dir, prompt: "Refactor auth" }));
   assert.equal(r.status, 0);
-  assert.equal(Scenaria.open(q.dir).head().title, "Refactor auth");
+  const qs = Scenaria.open(q.dir);
+  assert.equal(qs.head().id, "n0");
+  assert.equal(qs.store.readState().pendingTask.title, "Refactor auth");
 });
 
 test("MCP server refuses to initialize a non-project folder unless the root is explicit", async () => {

@@ -25,6 +25,14 @@ const s = Scenaria.init(dir);
 const agent = { agent: "claude-code", model: "claude-opus-5-5", user: "kev", source: "mcp" };
 const altAgent = { agent: "cursor", model: "gpt-5", user: "kev", source: "mcp" };
 
+// One project tree: n0 carries the main goal, each piece of work is a task on the line.
+s.startMission({
+  projectGoal: L(
+    "Website der Bäckerei Sonnenkorn, die Anfragen zuverlässig zum Vertrieb bringt – DSGVO-konform und günstig im Betrieb.",
+    "Website for Sonnenkorn bakery that reliably brings enquiries to sales — GDPR-compliant and cheap to run.",
+  ),
+  ...agent,
+});
 s.startMission({
   title: L("Kontaktformular mit Mailversand", "Contact form with email delivery"),
   goal: L(
@@ -53,6 +61,9 @@ s.decide({
   ],
   chosen: "Astro",
   rationale: L("Statische Seite, kaum Interaktion, schnelles Hosting", "Static site, little interactivity, cheap hosting"),
+  context: L("Kleine Firmenwebsite, ein Formular, kein Login", "Small company website, one form, no login"),
+  servesGoal: L("Günstiger Betrieb, schnelle Seite", "Cheap to run, fast site"),
+  expectedOutcome: L("Lighthouse > 95, statisches Hosting", "Lighthouse > 95, static hosting"),
   assumptions: [L("Hosting unterstützt statische Seiten", "Hosting supports static sites")],
   confidence: 0.8,
   ...agent,
@@ -77,6 +88,7 @@ s.decide({
   ],
   chosen: 1,
   rationale: L("Kunde nutzt n8n bereits für andere Abläufe", "Client already runs n8n for other workflows"),
+  context: L("Anfragen müssen beim Vertrieb ankommen, Kunde hat n8n", "Enquiries must reach sales; client runs n8n"),
   confidence: 0.55,
   ...agent,
 });
@@ -159,6 +171,10 @@ const alt = s.checkpoint({
   ...altAgent,
 });
 s.verify(alt.id, { by: "scenaria-auto" });
+s.addRule(
+  L("Behauptete Dateien und externe Effekte erst nach Prüfung festhalten", "Record claimed files and external effects only after checking them"),
+  "lesson",
+);
 s.writeProtocol();
 
 console.log(`Demo project ready: ${dir}`);

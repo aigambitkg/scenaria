@@ -3,12 +3,15 @@ import { Scenaria } from "./core/engine.js";
 import { findRoot } from "./core/store.js";
 import { ingestClaudeTranscript } from "./ingest.js";
 import { isPlausibleProject, readGlobalConfig } from "./core/global.js";
+import { promptReminder } from "./core/prompts.js";
+import { applyBlocks } from "./core/blocks.js";
+import type { TaskHint } from "./core/engine.js";
 
 /**
  * Claude Code hook handlers. Contract: never block the agent, never fail
  * loudly — every error is logged to .scenaria/hook-errors.log and we exit 0.
  *
- *   user-prompt   (UserPromptSubmit)  remember the prompt; auto-start a mission
+ *   user-prompt   (UserPromptSubmit)  remember the prompt as the session's task; add a one-line reminder
  *   post-tool     (PostToolUse)       AskUserQuestion / ExitPlanMode → decision nodes
  *   pre-tool      (PreToolUse: Bash)  autosave before destructive commands, flag external side effects
  *   stop          (Stop)              checkpoint at the end of a turn if files changed
@@ -31,6 +34,9 @@ interface Session {
   sessionId?: string;
   pendingPrompt?: string;
   pendingIrreversible?: string[];
+  /** The session's task (becomes a goal node with the session's first real node). */
+  taskTitle?: string;
+  taskGoal?: string;
 }
 
 const AGENT = "claude-code";
@@ -166,25 +172,53 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
   }
   try {
     const s = Scenaria.open(root);
-    // Session scratch is shared by parallel hook processes → always read-modify-write under the lock.
-    const updSession = (fn: (cur: Session) => void) => s.store.updateScratch<Session>("session", {}, fn);
-    const session = updSession((cur) => {
-      if (input.session_id && cur.sessionId !== input.session_id) {
-        cur.sessionId = input.session_id;
-        cur.pendingIrreversible = [];
-        cur.pendingPrompt = undefined;
-      }
-    });
+    // One scratch entry per Claude Code session (parallel sessions must not overwrite each other).
+    // Shared file, so every change is a read-modify-write under the lock.
+    // Prefixed key: a crafted id like "__proto__" can never touch Object.prototype.
+    const sid = `s:${String(input.session_id ?? "default").replace(/[^\w.-]/g, "_").slice(0, 80)}`;
+    type SessionsFile = { sessions?: Record<string, Session & { touched?: string }> };
+    const updSession = (fn: (cur: Session) => void): Session => {
+      let out: Session = {};
+      s.store.updateScratch<SessionsFile>("session", {}, (file) => {
+        const all: Record<string, Session & { touched?: string }> = Object.create(null);
+        if (file.sessions && typeof file.sessions === "object") for (const [k, v] of Object.entries(file.sessions)) if (k.startsWith("s:")) all[k] = v;
+        const cur = all[sid] ?? {};
+        fn(cur);
+        all[sid] = { ...cur, touched: new Date().toISOString() };
+        // Keep the 50 most recently used sessions.
+        const ids = Object.keys(all).sort((a, b) => String(all[b].touched ?? "").localeCompare(String(all[a].touched ?? "")));
+        for (const old of ids.slice(50)) delete all[old];
+        for (const k of Object.keys(file)) if (k !== "sessions") delete (file as any)[k]; // drop the pre-0.4 single-session format
+        file.sessions = { ...all };
+        out = { ...all[sid] };
+      });
+      return out;
+    };
+    const readSession = (): Session => s.store.readScratch<SessionsFile>("session", {}).sessions?.[sid] ?? {};
+    const session = updSession(() => {});
     const name = event || input.hook_event_name || "";
+    const taskKey = `claude-code:${input.session_id ?? "session"}`;
+    const task = (): TaskHint | undefined => {
+      const cur = readSession();
+      return cur.taskTitle ? { key: taskKey, title: cur.taskTitle, goal: cur.taskGoal } : undefined;
+    };
 
     switch (name) {
       case "user-prompt":
       case "UserPromptSubmit": {
         const prompt = (input.prompt ?? "").trim();
         if (!prompt || prompt.startsWith("/")) break;
-        s.claimMission(excerpt(prompt, 80), excerpt(prompt, 600), { agent: "user", source: "hook" });
+        // The session's task: titled after the request that leads to work (updated until the task node exists).
+        s.noteTask(taskKey, excerpt(prompt, 80), excerpt(prompt, 600), { agent: "user", source: "hook" });
+        const st = s.store.readState();
+        const pendingHere = st.pendingTask?.key === taskKey;
         updSession((cur) => {
           cur.pendingPrompt = excerpt(prompt, 300);
+          // Title the session's task after the request that leads to work (until its task node exists).
+          if (pendingHere || !cur.taskTitle) {
+            cur.taskTitle = excerpt(prompt, 80);
+            cur.taskGoal = excerpt(prompt, 600);
+          }
         });
         // Conversation overlay: catch up on the transcript, then record this prompt.
         ingestClaudeTranscript(s, input.transcript_path, input.session_id);
@@ -193,6 +227,9 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
           [{ role: "user", text: prompt, agent: "claude-code" }],
           "append",
         );
+        if (s.config().promptReminder !== false) {
+          return JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: promptReminder(s) } });
+        }
         break;
       }
 
@@ -215,9 +252,11 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
               options: opts.length ? opts : [answer!],
               chosen: q?.multiSelect ? first : answer,
               rationale: answer ? `Answered by the user${q?.multiSelect && answer.includes(",") ? ` (multi-select: ${answer})` : ""}` : undefined,
+              context: q?.header ? `Clarifying question (${q.header}) asked by the agent` : "Clarifying question asked by the agent",
               agent: "user",
               source: "hook",
               tags: ["clarifying-question"],
+              task: task(),
             });
           }
         } else if (input.tool_name === "ExitPlanMode") {
@@ -228,9 +267,11 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
             options: [{ label: "Approve plan", description: excerpt(plan, 300) }, { label: "Revise plan" }],
             chosen: "Approve plan",
             rationale: "Plan approved by the user (plan mode)",
+            context: "Plan mode: the agent proposed an implementation plan",
             agent: "user",
             source: "hook",
             tags: ["plan"],
+            task: task(),
             meta: { plan: plan.slice(0, 6000) },
           });
         }
@@ -254,6 +295,7 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
           onlyIfChanged: true,
           agent: AGENT,
           source: "hook",
+          task: task(),
         });
         break;
       }
@@ -264,6 +306,8 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
         ingestClaudeTranscript(s, input.transcript_path, input.session_id);
         const irreversible = session.pendingIrreversible ?? [];
         const summary = lastAssistantText(input.transcript_path);
+        // Decisions written as ```scenaria blocks (agents without MCP tools).
+        if (summary?.includes("```scenaria")) applyBlocks(s, summary, { agent: AGENT, source: "hook" }, task());
         const transcriptTokens = input.transcript_path && existsSync(input.transcript_path) ? Math.round(statSync(input.transcript_path).size / 4) : undefined;
         const node = s.checkpoint({
           title: session.pendingPrompt ? excerpt(session.pendingPrompt, 110) : "End of turn",
@@ -273,6 +317,7 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
           agent: AGENT,
           source: "hook",
           meta: transcriptTokens ? { transcriptTokens } : undefined,
+          task: task(),
         });
         if (node || irreversible.length === 0) {
           updSession((cur) => {
@@ -287,8 +332,7 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
       case "SessionStart": {
         if (!s.config().injectContextOnSessionStart || !s.head()) break;
         const c = s.context();
-        const body = c.markdown.length > 3500 ? c.markdown.slice(0, 3500) + "\n…" : c.markdown;
-        const additionalContext = `${body}\n\n(Scenaria is active: use scenaria_decide at decision points, scenaria_checkpoint after steps, scenaria_rewind/fork to go back.)`;
+        const additionalContext = `${c.markdown}\n\n(Scenaria is active: ONE project tree. New work → scenaria_start_mission (task); real choices → scenaria_decide with context, rationale, servesGoal; steps → scenaria_checkpoint; older details → scenaria_recall.)`;
         return JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext } });
       }
     }

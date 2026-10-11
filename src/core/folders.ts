@@ -168,11 +168,21 @@ export class SnapshotFolders {
   /** Overview of all versions with relative links. */
   writeIndex(nodes: ScenariaNode[], cfg: SnapshotFolderConfig, projectName: string) {
     const base = resolve(this.root, cfg.path);
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    const taskOf = (n: ScenariaNode): string => {
+      let cur: ScenariaNode | undefined = n;
+      const seen = new Set<string>();
+      while (cur && cur.type !== "goal" && cur.parentId && !seen.has(cur.id)) {
+        seen.add(cur.id);
+        cur = byId.get(cur.parentId);
+      }
+      return cur?.type === "goal" ? cur.id : "—";
+    };
     const rows = nodes
       .filter((n) => n.snapshotFolder)
       .map((n) => {
         const rel = relative(base, resolve(this.root, n.snapshotFolder!)).split("\\").join("/");
-        return `| ${n.missionId} | ${n.scenarioId ?? ""} | ${n.version ?? ""} | [${n.id}](${encodeURI(rel)}/) | ${n.type} | ${n.title.replace(/\|/g, "\\|")} | ${n.createdAt.replace("T", " ").slice(0, 16)} | ${n.model ?? n.agent ?? ""} |`;
+        return `| ${taskOf(n)} | ${n.scenarioId ?? ""} | ${n.version ?? ""} | [${n.id}](${encodeURI(rel)}/) | ${n.type} | ${n.title.replace(/\|/g, "\\|")} | ${n.createdAt.replace("T", " ").slice(0, 16)} | ${n.model ?? n.agent ?? ""} |`;
       });
     const md = [
       `# Scenaria snapshots — ${projectName}`,
@@ -180,7 +190,7 @@ export class SnapshotFolders {
       "Each folder is the complete project state at that point (read-only, deduplicated via hardlinks).",
       "`.scenaria-version/` inside each folder holds the decision, fact capsule and the conversation that led there.",
       "",
-      "| Mission | Scenario | Version | Node | Type | Title | Time | Model/agent |",
+      "| Task | Scenario | Version | Node | Type | Title | Time | Model/agent |",
       "|---|---|---|---|---|---|---|---|",
       ...rows,
       "",

@@ -1,6 +1,7 @@
-import type { ConversationMessage, ConversationSession, ScenariaConfig, ScenariaEvent, ScenariaNode, ScenariaState } from "../../src/core/types";
+import type { AnalysisConfig, ConversationMessage, ConversationSession, ProjectRule, ScenariaConfig, ScenariaEvent, ScenariaNode, ScenariaState } from "../../src/core/types";
+import type { AnalysisRecord, Metrics } from "../../src/core/analysis";
 
-export type { ScenariaNode, ScenariaEvent, ConversationMessage, ConversationSession };
+export type { ScenariaNode, ScenariaEvent, ConversationMessage, ConversationSession, ProjectRule, AnalysisRecord, Metrics, AnalysisConfig };
 
 export interface Graph {
   config: ScenariaConfig;
@@ -24,7 +25,7 @@ async function req<T>(path: string, body?: unknown): Promise<T> {
 
 export const api = {
   graph: () => req<Graph>("/api/graph"),
-  context: (id: string) => req<{ nodeId: string; markdown: string; tokens: number }>(`/api/node/${id}/context`),
+  context: (id: string) => req<{ nodeId: string; markdown: string; tokens: number; historyTokens: number; omitted: number }>(`/api/node/${id}/context`),
   diff: (from: string, to?: string) =>
     req<{ from: string; to: string; stat: string; patch: string; truncated: boolean }>(
       `/api/diff?from=${encodeURIComponent(from)}${to ? `&to=${encodeURIComponent(to)}` : ""}`,
@@ -43,4 +44,20 @@ export const api = {
   conversations: () => req<ConversationSession[]>("/api/v1/conversations"),
   conversation: (id: string) => req<{ session: ConversationSession; messages: ConversationMessage[] }>(`/api/v1/conversations/${encodeURIComponent(id)}`),
   versions: () => req<any[]>("/api/v1/versions"),
+  setGoal: (goal: string) => req<ScenariaNode>("/api/goal", { goal }),
+  updateNode: (id: string, patch: Record<string, string>) => req<ScenariaNode>("/api/node/update", { id, ...patch }),
+  prompt: (kind: string, lang: string, context: boolean) =>
+    req<{ text: string; tokens: number }>(`/api/v1/prompt?kind=${kind}&lang=${lang}${context ? "&context=1" : ""}`),
+  ingestText: (text: string) => req<{ created: { id: string; type: string; title: string }[]; errors: string[]; skipped: number }>("/api/v1/ingest-text", { text, log: true }),
+  analysis: () => req<Metrics>("/api/analysis"),
+  analyses: () => req<AnalysisRecord[]>("/api/analysis/list"),
+  dossier: (lang: string) => req<{ text: string; tokens: number; decisions: number; omitted: number }>(`/api/analysis/dossier?lang=${lang}`),
+  analysisConfig: () => req<{ config: AnalysisConfig | null; envKeys: string[]; teamMode: boolean }>("/api/analysis/config"),
+  saveAnalysisConfig: (c: AnalysisConfig) => req<{ ok: boolean }>("/api/analysis/config", c),
+  runAnalysis: (body: Partial<AnalysisConfig> & { apiKey?: string; lang: string }) => req<AnalysisRecord>("/api/analysis/run", body),
+  importAnalysis: (text: string, lang: string) => req<AnalysisRecord>("/api/analysis/import", { text, lang }),
+  acceptRule: (id: string, index: number) => req<ProjectRule>("/api/analysis/accept", { id, index }),
+  rules: () => req<ProjectRule[]>("/api/rules"),
+  addRule: (text: string) => req<ProjectRule>("/api/rules", { text }),
+  deleteRule: (id: string) => req<{ ok: boolean }>("/api/rules/delete", { id }),
 };

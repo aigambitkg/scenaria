@@ -36,6 +36,47 @@ scenaria setup --global     # Agenten-Konfiguration auf Nutzerebene; Projekte ri
 
 Scenaria richtet sich nie im Home-Ordner oder in Ordnern ein, die nicht nach Projekt aussehen.
 
+**Muss ich dem Agenten sagen, dass er Scenaria nutzen soll?** Bei Claude Code nicht: Die Hooks erfassen Prompts, Rückfragen, Pläne und Dateiänderungen, und jeder Prompt bekommt automatisch eine einzeilige Scenaria-Erinnerung. Für alle anderen Agenten und Chats gibt es im Dashboard den Knopf **Agent-Prompt** (oder `scenaria prompt`) mit einem fertigen Text zum Kopieren, in drei Varianten: MCP-Agenten, Shell-Agenten und normale Chats ohne Tools.
+
+## Ein Projektbaum, ein Hauptziel
+
+Jedes Projekt hat genau **einen** Entscheidungsbaum. Die Wurzel `n0` steht für das Projekt und sein **Hauptziel**. Jede Arbeit wird ein **Teilziel** auf dieser Linie, ob Agent-Sitzung, Unterhaltung über den Proxy oder `scenaria task`. Erledigte Teilziele klappen auf der Karte zu einem Knoten zusammen; so bleibt auch ein monatelanges Projekt übersichtlich. Ein neues Szenario (`s2`, `s3`, …) entsteht nur, wenn die Linie wirklich abzweigt: bei einem Fork oder bei neuer Arbeit nach einem Rücksprung. So siehst du, wann das Projekt wo abgebogen ist, wer entschieden hat und warum.
+
+Ein Teilziel entsteht erst, wenn eine Sitzung wirklich etwas erzeugt. Eine kurze Frage ohne Änderung lässt die Karte unberührt. Projekte aus älteren Versionen (ein Baum pro Mission) werden beim ersten Öffnen automatisch zu einem Projektbaum zusammengeführt; eine Sicherung liegt in `.scenaria/backups/`.
+
+## Jede Entscheidung mit Kontext – analysierbar mit jedem LLM
+
+Eine Entscheidung enthält mehr als Frage, Optionen und Wahl:
+- `rationale`: warum diese Option. Pflicht, sobald eine Option gewählt wird; abschaltbar mit `requireRationale: false`.
+- `context`: die Ausgangslage.
+- `servesGoal`: wie die Wahl dem Hauptziel dient.
+- `expectedOutcome`: woran man erkennt, ob sie richtig war.
+- `trigger`: die Nutzeranfrage, die zur Entscheidung führte. Scenaria erfasst sie automatisch.
+
+Fehlende Angaben werden auf der Karte und im Tool-Ergebnis markiert.
+
+- **Projekt-Check ohne LLM, ohne Token:** `scenaria analyze` bzw. Dashboard → *Analyse*. Er prüft:
+  - ob das Hauptziel gesetzt ist;
+  - ob Entscheidungen Kontext, Begründung und Zielbezug haben;
+  - ob Arbeit auf fehlgeschlagenen Prüfungen aufbaut;
+  - offene Entscheidungen und solche mit niedriger Konfidenz;
+  - Teilziele mit vielen Neustarts;
+  - die Qualität je Agent und Modell.
+- **Mustererkennung mit beliebigem Modell:** `scenaria analyze --llm ollama --model llama3.3` (oder `openai`, `anthropic`, `gemini`, `mistral`, `openrouter`, `groq`, jede OpenAI-kompatible URL; lokal oder per API).
+  - Gesendet wird nur ein kompaktes Dossier mit Token-Budget.
+  - API-Schlüssel kommen aus Umgebungsvariablen oder werden im Dashboard nur für einen Lauf eingegeben, nie gespeichert.
+  - Ganz ohne API: `scenaria analyze --dossier` kopiert das Dossier für jeden Chat, das Ergebnis fügst du wieder ein.
+- **Der Kreis schließt sich:** Übernommene Empfehlungen werden **Projektregeln**, die ab dann jede Kontext-Kapsel und jeder Agent-Prompt enthält.
+
+## Wenig Token, langes Gedächtnis
+
+- Die **Kontext-Kapsel** hat ein Token-Budget (Standard 1.500 Token):
+  - Hauptziel, Projektregeln und das aktuelle Teilziel im Detail;
+  - jedes frühere Teilziel als eine Zeile (Zusammenfassung, wichtigste Entscheidungen, Ergebnis, Lektion).
+- Was nicht hineinpasst, holt **`scenaria_recall`** gezielt hervor: eine Stichwortsuche (BM25, offline) über Entscheidungen, Begründungen, Lektionen, Checkpoints und Unterhaltungen. Agenten laden Details nur bei Bedarf, statt lange Verläufe neu zu lesen.
+- `scenaria_tree` faltet erledigte Teilziele auf je eine Zeile.
+- Das Dashboard zeigt die Kapselgröße neben dem rohen Gesprächsverlauf, den sie ersetzt.
+
 ## Ein Overlay für jede Unterhaltung – egal welcher Anbieter
 
 | Quelle | So wird erfasst |
@@ -86,7 +127,7 @@ Unveränderte Dateien werden nur einmal gespeichert – auf macOS (APFS) als Cop
 
 ## Funktioniert mit jedem LLM und Agenten-Stack
 
-Claude Code (MCP + Hooks), Cursor, VS Code/Copilot, Gemini CLI, Codex, Windsurf (MCP + `AGENTS.md`), jede API mit Function Calling (`scenaria tools --format openai|anthropic|gemini`), LangChain/CrewAI/AutoGen über den Python-Client, n8n/Make über HTTP, Shell-Agenten über `scenaria call`. Alle Wege nutzen dieselben 13 Werkzeuge.
+Claude Code (MCP + Hooks), Cursor, VS Code/Copilot, Gemini CLI, Codex, Windsurf (MCP + `AGENTS.md`), jede API mit Function Calling (`scenaria tools --format openai|anthropic|gemini`), LangChain/CrewAI/AutoGen über den Python-Client, n8n/Make über HTTP, Shell-Agenten über `scenaria call`. Alle Wege nutzen dieselben 15 Werkzeuge.
 
 ## Für Organisationen
 

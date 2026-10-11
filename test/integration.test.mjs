@@ -46,7 +46,9 @@ test("hooks capture prompt, clarifying question, risky command and turn end", ()
     assert.equal(r.status, 0, r.stderr);
     return r.stdout;
   };
-  hook("user-prompt", { prompt: "Build a todo app with React" });
+  const reminder = JSON.parse(hook("user-prompt", { prompt: "Build a todo app with React" }));
+  assert.equal(reminder.hookSpecificOutput.hookEventName, "UserPromptSubmit");
+  assert.match(reminder.hookSpecificOutput.additionalContext, /ONE project tree/);
   hook("post-tool", {
     tool_name: "AskUserQuestion",
     tool_input: { questions: [{ question: "Storage?", header: "Storage", multiSelect: false, options: [{ label: "localStorage" }, { label: "SQLite" }] }] },
@@ -67,12 +69,18 @@ test("hooks capture prompt, clarifying question, risky command and turn end", ()
 
   const s = Scenaria.open(p.dir);
   const nodes = s.store.listNodes();
-  assert.deepEqual(nodes.map((n) => n.type), ["mission", "decision", "checkpoint"]);
-  assert.equal(nodes[0].goal, "Build a todo app with React");
-  assert.equal(nodes[1].options[nodes[1].options.findIndex((o) => o.id === nodes[1].chosen)].label, "SQLite");
-  assert.deepEqual(nodes[2].irreversible, ["git push origin main"]);
-  assert.deepEqual(nodes[2].outputs, ["created `App.tsx`", "added SQLite schema"]);
-  assert.ok(nodes[2].meta.transcriptTokens > 0);
+  // One project tree: n0 project root → n1 the session's task → decision → checkpoint.
+  assert.deepEqual(nodes.map((n) => n.type), ["mission", "goal", "decision", "checkpoint"]);
+  assert.equal(nodes[0].id, "n0");
+  assert.equal(nodes[1].goal, "Build a todo app with React");
+  assert.deepEqual(nodes.map((n) => n.parentId), [null, "n0", "n1", "n2"]);
+  assert.ok(nodes.every((n) => n.scenarioId === "s1"), "a straight line stays one scenario");
+  assert.equal(nodes[2].options[nodes[2].options.findIndex((o) => o.id === nodes[2].chosen)].label, "SQLite");
+  assert.match(nodes[2].context, /Clarifying question/);
+  assert.equal(nodes[2].trigger, "Build a todo app with React");
+  assert.deepEqual(nodes[3].irreversible, ["git push origin main"]);
+  assert.deepEqual(nodes[3].outputs, ["created `App.tsx`", "added SQLite schema"]);
+  assert.ok(nodes[3].meta.transcriptTokens > 0);
   const parsed = JSON.parse(out);
   assert.equal(parsed.hookSpecificOutput.hookEventName, "SessionStart");
   assert.match(parsed.hookSpecificOutput.additionalContext, /SQLite/);
@@ -110,8 +118,13 @@ test("MCP server exposes tools and runs a full decision cycle", async () => {
       const r = await client.callTool({ name, arguments: args });
       return { text: r.content.map((c) => c.text).join("\n"), isError: r.isError };
     };
-    await call("scenaria_start_mission", { title: "API", goal: "Todo REST API" });
-    await call("scenaria_decide", { question: "DB?", options: ["Postgres", { label: "SQLite" }], chosen: "SQLite", confidence: 0.6 });
+    const started = await call("scenaria_start_mission", { title: "API", goal: "Todo REST API" });
+    assert.match(started.text, /main goal is not set/);
+    const noWhy = await call("scenaria_decide", { question: "DB?", options: ["Postgres", "SQLite"], chosen: "SQLite" });
+    assert.ok(noWhy.isError, "a chosen option needs a rationale");
+    assert.match(noWhy.text, /rationale is required/);
+    const d = await call("scenaria_decide", { question: "DB?", options: ["Postgres", { label: "SQLite" }], chosen: "SQLite", rationale: "single user, zero ops", confidence: 0.6 });
+    assert.match(d.text, /missing context, servesGoal/);
     p.write("schema.sql", "create table t();");
     const cp = await call("scenaria_checkpoint", { title: "schema", outputs: ["`schema.sql` created"] });
     assert.match(cp.text, /Checkpoint saved/);
@@ -142,7 +155,7 @@ test("dashboard API serves graph and requires header for writes", async () => {
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
     const g = await (await fetch(`${base}/api/graph`)).json();
-    assert.equal(g.nodes.length, 2);
+    assert.equal(g.nodes.length, 3);
     const ctx = await (await fetch(`${base}/api/node/${cp.id}/context`)).json();
     assert.ok(ctx.tokens > 0);
     const denied = await fetch(`${base}/api/rewind`, { method: "POST", body: JSON.stringify({ id: "n1" }) });

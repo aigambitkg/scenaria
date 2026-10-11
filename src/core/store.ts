@@ -104,9 +104,12 @@ export class Store {
 
   // ---------- nodes ----------
   nodeFile(id: string) {
+    // Ids come from APIs and tools: never let one escape the nodes folder.
+    if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) throw new Error(`Invalid node id "${String(id).slice(0, 40)}"`);
     return this.path("nodes", `${id}.json`);
   }
   hasNode(id: string) {
+    if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) return false;
     return existsSync(this.nodeFile(id));
   }
   readNode(id: string): ScenariaNode {
@@ -122,7 +125,14 @@ export class Store {
     if (!existsSync(d)) return [];
     return readdirSync(d)
       .filter((f) => f.endsWith(".json"))
-      .map((f) => readJson<ScenariaNode>(join(d, f)))
+      .map((f) => {
+        try {
+          return readJson<ScenariaNode>(join(d, f));
+        } catch {
+          return null; // a half-written or foreign file must not break the whole project
+        }
+      })
+      .filter((n): n is ScenariaNode => Boolean(n && typeof n.id === "string"))
       .sort((a, b) => numId(a.id) - numId(b.id));
   }
 

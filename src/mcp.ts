@@ -28,7 +28,7 @@ export function createMcpServer(root?: string) {
     user: process.env.SCENARIA_USER || undefined,
     source: "mcp",
   };
-  const server = new McpServer({ name: "scenaria", version: "0.3.0" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "scenaria", version: "0.4.0" }, { instructions: INSTRUCTIONS });
   for (const t of TOOLS) {
     server.registerTool(
       t.name,

@@ -8,8 +8,14 @@ import type { Scenaria } from "./core/engine.js";
 import { callTool, toolSchemas, type SchemaFormat, type ToolContext } from "./tools.js";
 import { handleProxy } from "./proxy.js";
 import { UI_DIR, embeddedUi, hasDiskUi } from "./assets.js";
+import { agentPrompt, type PromptKind } from "./core/prompts.js";
+import { applyBlocks } from "./core/blocks.js";
+import { recall } from "./core/recall.js";
+import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
-export const VERSION = "0.3.0";
+export const VERSION = "0.4.0";
+
+const KEY_ENVS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "AZURE_OPENAI_API_KEY"];
 
 function header(req: IncomingMessage, name: string): string | undefined {
   const v = req.headers[name];
@@ -259,6 +265,88 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           return send(res, 200, { ok: true, session: r.session, added: r.added.length, messages: r.added });
         }
 
+        // ---------- prompts, chat capture, recall ----------
+        if (req.method === "GET" && p === "/api/v1/prompt") {
+          const kind = (url.searchParams.get("kind") ?? "mcp") as PromptKind;
+          if (!["mcp", "cli", "chat"].includes(kind)) return send(res, 400, { error: "kind must be mcp, cli or chat" });
+          const text = agentPrompt(s, { kind, lang: url.searchParams.get("lang") === "en" ? "en" : "de", withContext: url.searchParams.get("context") === "1" });
+          return send(res, 200, { kind, text, tokens: Math.ceil(text.length / 4) });
+        }
+        if (req.method === "POST" && p === "/api/v1/ingest-text") {
+          const b = await readBody(req);
+          const text = String(b?.text ?? "");
+          if (!text.trim()) return send(res, 400, { ok: false, error: "text required" });
+          if (b.log) s.logMessages({ externalId: `paste:${ctx.agent}`, source: "api", agent: ctx.agent, title: "Pasted answers" }, [{ role: "assistant", text: text.slice(0, 50_000) }], "append");
+          const r = applyBlocks(s, text, { agent: b.agent ?? ctx.agent, model: b.model ?? ctx.model, source: "api" });
+          return send(res, 200, { ok: true, created: r.created.map((n) => ({ id: n.id, type: n.type, title: n.title })), errors: r.errors, skipped: r.skipped });
+        }
+        if (req.method === "GET" && p === "/api/v1/recall") {
+          const q = url.searchParams.get("q") ?? "";
+          const head = s.store.readState().head;
+          const hits = recall(s.store.listNodes(), s.conversations.allMessages(), q, { limit: Number(url.searchParams.get("limit") ?? 12), pathIds: head ? new Set(s.path(head).map((n) => n.id)) : undefined });
+          return send(res, 200, hits);
+        }
+
+        // ---------- analysis & rules ----------
+        if (req.method === "GET" && p === "/api/analysis") return send(res, 200, projectMetrics(s));
+        if (req.method === "GET" && p === "/api/analysis/list") return send(res, 200, listAnalyses(s));
+        if (req.method === "GET" && p === "/api/analysis/dossier") {
+          const lang = url.searchParams.get("lang") === "en" ? "en" : "de";
+          const d = dossier(s, { maxTokens: Number(url.searchParams.get("maxTokens") ?? 8000) });
+          return send(res, 200, { ...d, prompt: analysisPrompt(lang), text: `${analysisPrompt(lang)}\n\n--- DOSSIER ---\n${d.text}` });
+        }
+        if (req.method === "GET" && p === "/api/analysis/config") {
+          return send(res, 200, { config: s.config().analysis ?? null, envKeys: KEY_ENVS.filter((k) => Boolean(process.env[k])), teamMode: Boolean(token) });
+        }
+        if (req.method === "POST" && p === "/api/analysis/config") {
+          const b = await readBody(req);
+          const c = s.config();
+          if (!b?.provider || !b?.model) return send(res, 400, { error: "provider and model required" });
+          if (token && b.baseUrl) return send(res, 400, { error: "custom base URLs are disabled in team mode (use proxy.upstreams in config.json)" });
+          c.analysis = { provider: String(b.provider).slice(0, 40), model: String(b.model).slice(0, 120), baseUrl: b.baseUrl ? String(b.baseUrl).slice(0, 300) : undefined, apiKeyEnv: b.apiKeyEnv ? String(b.apiKeyEnv).slice(0, 80) : undefined };
+          s.store.writeConfig(c);
+          return send(res, 200, { ok: true, config: c.analysis });
+        }
+        if (req.method === "POST" && p === "/api/analysis/run") {
+          const b = await readBody(req);
+          if (token && b?.baseUrl) return send(res, 400, { error: "custom base URLs are disabled in team mode" });
+          try {
+            const rec = await runAnalysis(s, { provider: b?.provider, model: b?.model, baseUrl: b?.baseUrl, apiKey: b?.apiKey, apiKeyEnv: b?.apiKeyEnv, lang: b?.lang === "en" ? "en" : "de", maxTokens: b?.maxTokens });
+            return send(res, 200, rec);
+          } catch (err: any) {
+            return send(res, 502, { error: err?.message ?? String(err) });
+          }
+        }
+        if (req.method === "POST" && p === "/api/analysis/import") {
+          const b = await readBody(req);
+          return send(res, 200, importAnalysis(s, String(b?.text ?? ""), { provider: b?.provider, model: b?.model, lang: b?.lang === "en" ? "en" : "de" }));
+        }
+        if (req.method === "POST" && p === "/api/analysis/accept") {
+          const b = await readBody(req);
+          return send(res, 200, acceptRule(s, String(b?.id ?? ""), Number(b?.index)));
+        }
+        if (req.method === "GET" && p === "/api/rules") return send(res, 200, s.rules());
+        if (req.method === "POST" && p === "/api/rules") {
+          const b = await readBody(req);
+          return send(res, 200, s.addRule(String(b?.text ?? ""), "manual"));
+        }
+        if (req.method === "POST" && p === "/api/rules/delete") {
+          const b = await readBody(req);
+          return send(res, 200, { ok: s.removeRule(String(b?.id ?? "")) });
+        }
+        if (req.method === "POST" && p === "/api/goal") {
+          const b = await readBody(req);
+          if (!String(b?.goal ?? "").trim()) return send(res, 400, { error: "goal required" });
+          return send(res, 200, s.setProjectGoal(String(b.goal).slice(0, 2000), { agent: "dashboard", user: ctx.user, source: "ui" }));
+        }
+        if (req.method === "POST" && p === "/api/node/update") {
+          const b = await readBody(req);
+          const patch: Record<string, unknown> = {};
+          for (const k of ["title", "goal", "summary", "rationale", "context", "servesGoal", "expectedOutcome"]) if (typeof b?.[k] === "string") patch[k] = b[k].slice(0, 2000);
+          if (["active", "done", "abandoned"].includes(b?.status)) patch.status = b.status;
+          return send(res, 200, s.update(String(b?.id ?? ""), patch as any));
+        }
+
         if (req.method === "GET" && p === "/api/graph") {
           const g = s.graph();
           return send(res, 200, { ...g, version: s.store.version(), snapshots: Boolean(s.repo) });
@@ -305,7 +393,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         m = p.match(/^\/api\/node\/([\w-]+)\/messages$/);
         if (req.method === "GET" && m) {
           const node = s.node(m[1]);
-          return send(res, 200, { leading: s.conversations.messagesLeadingTo(node), after: s.conversations.messagesAt(node.id) });
+          return send(res, 200, { leading: s.messagesLeadingTo(node.id), after: s.conversations.messagesAt(node.id) });
         }
         m = p.match(/^\/api\/node\/([\w-]+)\/folder$/);
         if (req.method === "POST" && m) {

@@ -1,9 +1,14 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Scenaria } from "./core/engine.js";
 import { Store, resolveRoot } from "./core/store.js";
 import { optionLabel } from "./core/context.js";
+import { agentPrompt, type PromptKind } from "./core/prompts.js";
+import { recall, renderRecall } from "./core/recall.js";
+import { applyBlocks } from "./core/blocks.js";
+import { dossier, analysisPrompt, projectMetrics, renderMetrics, runAnalysis } from "./core/analysis.js";
 import type { ScenariaNode } from "./core/types.js";
 
 const HELP = `Scenaria — quicksave & checkpoints for AI agents (any LLM, any framework)
@@ -24,14 +29,17 @@ Setup
   mcp                                   MCP server (stdio) for any MCP client
   watch [--interval 3] [--quiet 15]     Auto-save whenever files change (agents without MCP/hooks)
 
-Record
-  mission "<title>" [--goal ..] [--brief ..]
-  decide "<question>" -o A -o B [--chosen A] [--why ..] [--assume ..] [--confidence 0.8]
+Record (one project tree: n0 = project + main goal, tasks hang on the line)
+  goal ["<main goal>"]                  Show or set the project's main goal
+  task "<title>" [--goal ..] [--brief ..]   Start a task (alias: mission)
+  decide "<question>" -o A -o B [--chosen A] [--why ..] [--context ..] [--serves ..] [--expect ..]
+         [--assume ..] [--confidence 0.8]
   choose <decisionId> <option> [--why ..]
-  checkpoint "<title>" [--out ..] [--fact ..] [--open ..] [--irreversible ..] [--if-changed]
+  checkpoint "<title>" [--out ..] [--fact ..] [--open ..] [--irreversible ..] [--if-changed] [--done [--summary ..]]
 
 Navigate
-  status | tree [missionId] | show <id> | context [id]
+  status | tree [id] [--full] | show <id> | context [id] [--budget 1500]
+  recall "<keywords>" [--limit 8]       Search decisions, lessons, tasks and conversations
   rewind <id> [--lesson ..] [--no-files]
   fork <decisionId> <option> [--lesson ..]
   diff <fromId> [toId|working]
@@ -47,6 +55,14 @@ Versions, folders & conversations
                                         Import chat history (ChatGPT/Claude.ai exports, transcripts, message lists)
   log-message --role user|assistant --text ".." [--session <id>] [--title ..]
                                         Record a message from any tool
+
+Prompts, analysis & rules
+  prompt [--kind mcp|cli|chat] [--lang de|en] [--with-context]
+                                        Ready-to-paste prompt so any agent/chat uses Scenaria on its own
+  ingest-text [file|-]                  Read \`\`\`scenaria blocks from a chat answer (stdin or file)
+  analyze [--llm <provider> --model <m> [--base-url ..] [--api-key-env ..]] [--lang de|en] [--dossier]
+                                        Health check; with --llm: pattern analysis by ANY LLM (Ollama, OpenAI, Anthropic, …)
+  rules [add "<rule>" | rm <id>]        Project rules every capsule and prompt carries
 
 Verify & document
   verify <id> [--status passed|warning|failed] [--notes ..] [--by ..] [--run] [--no-auto]
@@ -115,6 +131,22 @@ const opts = {
   run: { type: "boolean" },
   "no-auto": { type: "boolean" },
   agent: { type: "string" },
+  context: { type: "string" },
+  serves: { type: "string" },
+  expect: { type: "string" },
+  done: { type: "boolean" },
+  summary: { type: "string" },
+  full: { type: "boolean" },
+  budget: { type: "string" },
+  kind: { type: "string" },
+  lang: { type: "string" },
+  "with-context": { type: "boolean" },
+  llm: { type: "string" },
+  "base-url": { type: "string" },
+  "api-key-env": { type: "string" },
+  "max-tokens": { type: "string" },
+  dossier: { type: "boolean" },
+  limit: { type: "string" },
 } as const;
 
 const C = process.stdout.isTTY
@@ -175,6 +207,13 @@ function startWatch(s: Scenaria, o: { interval: number; quiet: number; agent: st
   };
   tick();
   return setInterval(tick, o.interval);
+}
+
+async function readStdinText(): Promise<string> {
+  if (process.stdin.isTTY) throw new Error("Pipe the text in (… | scenaria ingest-text) or pass a file.");
+  const chunks: Buffer[] = [];
+  for await (const c of process.stdin) chunks.push(c as Buffer);
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 async function main() {
@@ -406,11 +445,80 @@ async function main() {
       process.stdout.write(content);
       return;
     }
+    case "task":
     case "mission": {
       const s = Scenaria.openOrInit(v.root);
-      if (!p[0]) throw new Error('Usage: scenaria mission "<title>" [--goal ..]');
+      if (!p[0]) throw new Error('Usage: scenaria task "<title>" [--goal ..]');
       const n = s.startMission({ title: p[0], goal: v.goal, brief: v.brief, ...actor });
       return out(describe(n), n);
+    }
+    case "goal": {
+      const s = Scenaria.openOrInit(v.root);
+      if (p[0]) {
+        const n = s.setProjectGoal(p.join(" "), actor);
+        return out(`Main goal of ${s.config().projectName}: ${n.goal}`, n);
+      }
+      const root = s.project();
+      return out(root?.goal ? `Main goal of ${s.config().projectName}: ${root.goal}` : `No main goal set. Set it: scenaria goal "<what the project must achieve>"`, { goal: root?.goal ?? null });
+    }
+    case "prompt": {
+      const s = Scenaria.openOrInit(v.root);
+      const kind = (v.kind ?? "mcp") as PromptKind;
+      if (!["mcp", "cli", "chat"].includes(kind)) throw new Error("--kind must be mcp, cli or chat");
+      const text = agentPrompt(s, { kind, lang: v.lang === "en" ? "en" : "de", withContext: v["with-context"] });
+      return out(text, { text });
+    }
+    case "recall": {
+      const s = Scenaria.open(v.root);
+      if (!p[0]) throw new Error('Usage: scenaria recall "<keywords>"');
+      const head = s.store.readState().head;
+      const hits = recall(s.store.listNodes(), s.conversations.allMessages(), p.join(" "), { limit: v.limit ? Number(v.limit) : 8, pathIds: head ? new Set(s.path(head).map((n) => n.id)) : undefined });
+      return out(renderRecall(hits), hits);
+    }
+    case "ingest-text": {
+      const s = Scenaria.openOrInit(v.root);
+      const text = !p[0] || p[0] === "-" ? await readStdinText() : readFileSync(p[0], "utf8");
+      const r = applyBlocks(s, text, actor);
+      return out([`${r.created.length} node(s) recorded${r.skipped ? `, ${r.skipped} block(s) already known` : ""}.`, ...r.created.map((n) => `- ${n.id} [${n.type}] ${n.title}`), ...r.errors.map((e) => `! ${e}`)].join("\n"), r);
+    }
+    case "analyze": {
+      const s = Scenaria.open(v.root);
+      const lang = v.lang === "en" ? "en" : "de";
+      if (v.dossier) {
+        const d = dossier(s, { maxTokens: v["max-tokens"] ? Number(v["max-tokens"]) : undefined });
+        const text = `${analysisPrompt(lang)}\n\n--- DOSSIER ---\n${d.text}`;
+        return out(text, { ...d, prompt: analysisPrompt(lang) });
+      }
+      const m = projectMetrics(s);
+      if (!v.llm && !s.config().analysis) {
+        return out(`${renderMetrics(m, 30)}\n\n${C.dim}Pattern analysis with any LLM: scenaria analyze --llm ollama --model llama3.3   (or openai/anthropic/… with the API key in its env var)\nOr copy the dossier into any chat: scenaria analyze --dossier${C.reset}`, m);
+      }
+      process.stderr.write(`${C.dim}Analysing with ${v.llm ?? s.config().analysis?.provider} …${C.reset}\n`);
+      const rec = await runAnalysis(s, { provider: v.llm, model: v.model, baseUrl: v["base-url"], apiKeyEnv: v["api-key-env"], lang, maxTokens: v["max-tokens"] ? Number(v["max-tokens"]) : undefined });
+      const ins = rec.insights;
+      const human = [
+        `${C.bold}Analysis ${rec.id}${C.reset} · ${rec.provider}/${rec.model} · health ${rec.health}/100`,
+        ins.summary ?? "",
+        ins.goalAlignment ? `Goal alignment: ${ins.goalAlignment.score ?? "?"}/100 — ${ins.goalAlignment.notes ?? ""}` : "",
+        ...(ins.patterns ?? []).map((x) => `${x.kind === "good" ? C.green + "+" : C.yellow + "−"}${C.reset} ${x.title}${x.evidence?.length ? C.dim + ` (${x.evidence.join(", ")})` + C.reset : ""}`),
+        ...(ins.issues ?? []).map((x) => `${C.red}!${C.reset} [${x.severity ?? "?"}] ${x.title}${x.fix ? ` → ${x.fix}` : ""}`),
+        ...(ins.rules ?? []).map((r, i) => `rule #${i}: ${r.text}`),
+        ins.rules?.length ? `${C.dim}Accept a rule: scenaria rules add "<text>"  (or in the dashboard → Analyse)${C.reset}` : "",
+      ].filter(Boolean);
+      return out(human.join("\n"), rec);
+    }
+    case "rules": {
+      const s = Scenaria.open(v.root);
+      if (p[0] === "add") {
+        const r = s.addRule(p.slice(1).join(" "), "manual");
+        return out(`${r.id}: ${r.text}`, r);
+      }
+      if (p[0] === "rm" || p[0] === "remove") {
+        const ok = s.removeRule(p[1] ?? "");
+        return out(ok ? `Removed ${p[1]}` : `No rule ${p[1]}`, { ok });
+      }
+      const rules = s.rules();
+      return out(rules.length ? rules.map((r) => `${r.id}  ${r.text}  ${C.dim}(${r.source})${C.reset}`).join("\n") : 'No project rules yet. Add one: scenaria rules add "<rule>"', rules);
     }
     case "decide": {
       const s = Scenaria.openOrInit(v.root);
@@ -420,6 +528,9 @@ async function main() {
         options: v.option,
         chosen: v.chosen,
         rationale: v.why,
+        context: v.context,
+        servesGoal: v.serves,
+        expectedOutcome: v.expect,
         assumptions: v.assume,
         confidence: v.confidence ? Number(v.confidence) : undefined,
         ...actor,
@@ -440,6 +551,8 @@ async function main() {
         openQuestions: v.open,
         irreversible: v.irreversible,
         onlyIfChanged: v["if-changed"],
+        taskDone: v.done,
+        summary: v.summary,
         ...actor,
       });
       return out(n ? describe(n) : "No file changes since HEAD — nothing saved.", n);
@@ -450,16 +563,17 @@ async function main() {
       const h = st.head;
       const human = [
         `${C.bold}Scenaria${C.reset} · ${st.projectName}  ${C.dim}${st.root}${C.reset}`,
-        `mission: ${st.mission ? `${st.mission.id} ${st.mission.title}` : "—"}`,
-        `HEAD:    ${h ? `${h.id} [${h.type}] ${h.title}` : "—"}${st.dirty ? `  ${C.yellow}(unsaved changes)${C.reset}` : ""}`,
-        `nodes ${st.counts.nodes} · decisions ${st.counts.decisions} · checkpoints ${st.counts.checkpoints} · branches ${st.counts.branches} · verified ${st.counts.verified} · failed ${st.counts.failed}`,
+        `goal:    ${st.project?.goal ?? `${C.yellow}not set — scenaria goal "<main goal>"${C.reset}`}`,
+        `task:    ${st.task ? `${st.task.id} ${st.task.title}` : "—"}`,
+        `HEAD:    ${h ? `${h.id} [${h.type}${h.scenarioId ? ` ${h.scenarioId}/v${h.version}` : ""}] ${h.title}` : "—"}${st.dirty ? `  ${C.yellow}(unsaved changes)${C.reset}` : ""}`,
+        `tasks ${st.counts.tasks} · decisions ${st.counts.decisions} · checkpoints ${st.counts.checkpoints} · branches ${st.counts.branches} · verified ${st.counts.verified} · failed ${st.counts.failed} · rules ${st.rules}`,
         st.snapshots ? "" : `${C.yellow}file snapshots disabled (git not found)${C.reset}`,
       ].filter(Boolean);
       return out(human.join("\n"), st);
     }
     case "tree": {
       const s = Scenaria.open(v.root);
-      return out(s.treeText(p[0]), s.graph());
+      return out(s.treeText(p[0], { full: v.full }), s.graph());
     }
     case "show": {
       const s = Scenaria.open(v.root);
@@ -468,8 +582,9 @@ async function main() {
     }
     case "context": {
       const s = Scenaria.open(v.root);
-      const c = s.context(p[0]);
-      return out(`${c.markdown}\n\n${C.dim}≈ ${c.tokens} tokens${C.reset}`, c);
+      const c = s.context(p[0], { budget: v.budget ? Number(v.budget) : undefined });
+      const saved = c.historyTokens > c.tokens ? ` instead of ≈ ${c.historyTokens} tokens of conversation history` : "";
+      return out(`${c.markdown}\n\n${C.dim}≈ ${c.tokens} tokens${saved}${C.reset}`, c);
     }
     case "rewind": {
       const s = Scenaria.open(v.root);

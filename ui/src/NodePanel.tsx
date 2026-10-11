@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api, type ConversationMessage, type ScenariaNode } from "./api";
 import type { Dict } from "./i18n";
 import type { Placed } from "./layout";
-import { NodeId } from "./Map";
+import { NodeId, qualityFlag } from "./Map";
 
 function List({ title, items, tone }: { title: string; items?: string[]; tone?: string }) {
   if (!items?.length) return null;
@@ -57,6 +57,20 @@ export function MessageList({ msgs, t, limit = 6 }: { msgs: ConversationMessage[
   );
 }
 
+function countInside(goalId: string, all: ScenariaNode[]) {
+  const kids = new Map<string, ScenariaNode[]>();
+  for (const x of all) if (x.parentId) kids.set(x.parentId, [...(kids.get(x.parentId) ?? []), x]);
+  const out: ScenariaNode[] = [];
+  const stack = [...(kids.get(goalId) ?? [])];
+  while (stack.length) {
+    const x = stack.pop()!;
+    if (x.type === "goal") continue;
+    out.push(x);
+    stack.push(...(kids.get(x.id) ?? []));
+  }
+  return { steps: out.length, decisions: out.filter((x) => x.type === "decision").length, failed: out.filter((x) => x.verification?.status === "failed").length };
+}
+
 function fmtTime(iso: string) {
   const d = new Date(iso);
   return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
@@ -77,9 +91,13 @@ export function NodePanel(props: {
   onVerify: (id: string, body: { status?: string; notes?: string; auto?: boolean }) => Promise<void>;
   toast: (msg: string) => void;
   graphVersion?: number;
+  folded: Set<string>;
+  onToggleFold: (id: string) => void;
+  onEditGoal: () => void;
+  onUpdate: (id: string, patch: Record<string, string>) => Promise<void>;
 }) {
   const { placed, allNodes, t } = props;
-  const [ctx, setCtx] = useState<{ tokens: number; markdown: string } | null>(null);
+  const [ctx, setCtx] = useState<{ tokens: number; markdown: string; historyTokens?: number } | null>(null);
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [msgs, setMsgs] = useState<{ leading: ConversationMessage[]; after: ConversationMessage[] } | null>(null);
@@ -110,7 +128,7 @@ export function NodePanel(props: {
     return (
       <aside className="panel">
         <header className="p-head">
-          <span className="p-kind">{t.types.ghost}</span>
+          <span className="p-kind">{g.chosen ? t.ghostChosen : t.types.ghost}</span>
           <h2 className="p-title">{g.label}</h2>
           <p className="p-meta">
             <NodeId id={g.decision.id} />
@@ -123,7 +141,7 @@ export function NodePanel(props: {
           </section>
         )}
         <section className="p-sec">
-          <p className="muted">{t.ghostHint}</p>
+          <p className="muted">{g.chosen ? t.ghostChosenHint : t.ghostHint}</p>
         </section>
         <div className="p-actions">
           <button className="btn primary" onClick={() => props.onFork(g.decision, g.optionId, g.label)}>
@@ -138,7 +156,10 @@ export function NodePanel(props: {
   const v = n.verification?.status ?? "unverified";
   const kids = allNodes.filter((k) => k.parentId === n.id);
   const exploredOptions = new Set(kids.map((k) => k.viaOption));
-  const transcriptTokens = typeof n.meta?.transcriptTokens === "number" ? (n.meta.transcriptTokens as number) : null;
+  const transcriptTokens =
+    typeof n.meta?.transcriptTokens === "number" ? (n.meta.transcriptTokens as number) : ctx?.historyTokens && ctx.historyTokens > ctx.tokens ? ctx.historyTokens : null;
+  const q = qualityFlag(n, t);
+  const inside = n.type === "goal" ? countInside(n.id, allNodes) : null;
 
   const verify = async (body: { status?: string; notes?: string; auto?: boolean }) => {
     setBusy(true);
@@ -174,10 +195,42 @@ export function NodePanel(props: {
       </header>
 
       <div className="p-body">
-        {n.goal && (
-          <section className="p-sec goal">
+        {n.type === "mission" && (
+          <section className={`p-sec goal ${n.goal ? "" : "missing"}`}>
             <h3>{t.goal}</h3>
-            <p>{n.goal}</p>
+            <p>{n.goal ?? t.goalMissingLong}</p>
+            <button className="btn link" onClick={props.onEditGoal}>
+              {n.goal ? t.editGoal : t.setGoal}
+            </button>
+          </section>
+        )}
+        {n.type === "goal" && (
+          <section className="p-sec goal task">
+            <h3>
+              {t.taskGoal} <span className={`chip st-${n.status ?? "active"}`}>{t.taskStatus[n.status ?? "active"]}</span>
+            </h3>
+            {n.goal && n.goal !== n.title && <p>{n.goal}</p>}
+            {inside && (
+              <p className="muted">
+                {inside.steps} {t.steps} · {inside.decisions} {t.decisionsShort}
+                {inside.failed ? ` · ${inside.failed} ✘` : ""}
+              </p>
+            )}
+            {n.summary && (
+              <p className="rationale">
+                <strong>{t.summary}:</strong> {n.summary}
+              </p>
+            )}
+            <div className="row">
+              <button className="btn" onClick={() => props.onToggleFold(n.id)}>
+                {props.folded.has(n.id) ? t.expand : t.collapse}
+              </button>
+              {n.status !== "done" && (
+                <button className="btn" onClick={() => props.onUpdate(n.id, { status: "done" })}>
+                  {t.markDone}
+                </button>
+              )}
+            </div>
           </section>
         )}
         {n.brief && n.brief !== n.goal && (
@@ -214,9 +267,30 @@ export function NodePanel(props: {
                 );
               })}
             </ol>
+            {q && <p className={`qnote ${q.cls}`}>{q.text}</p>}
             {n.rationale && (
               <p className="rationale">
                 <strong>{t.rationale}:</strong> {n.rationale}
+              </p>
+            )}
+            {(n.context || n.trigger) && (
+              <p className="rationale">
+                <strong>{n.context ? t.contextLabel : t.trigger}:</strong> {n.context ?? n.trigger}
+              </p>
+            )}
+            {n.context && n.trigger && (
+              <p className="rationale muted">
+                <strong>{t.trigger}:</strong> {n.trigger}
+              </p>
+            )}
+            {n.servesGoal && (
+              <p className="rationale">
+                <strong>{t.servesGoal}:</strong> {n.servesGoal}
+              </p>
+            )}
+            {n.expectedOutcome && (
+              <p className="rationale">
+                <strong>{t.expectedOutcome}:</strong> {n.expectedOutcome}
               </p>
             )}
             {n.confidence !== undefined && (

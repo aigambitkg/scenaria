@@ -2,7 +2,8 @@ import type { ScenariaEvent, ScenariaNode } from "./types.js";
 import { optionLabel } from "./context.js";
 
 const TYPE_LABEL: Record<string, string> = {
-  mission: "Mission",
+  mission: "Project",
+  goal: "Task",
   decision: "Decision",
   checkpoint: "Checkpoint",
   branch: "Branch",
@@ -37,7 +38,8 @@ export function renderNodeNote(n: ScenariaNode, children: ScenariaNode[]): strin
   if (n.parentId) body.push(`Parent: [[${n.parentId}]]`);
   if (children.length) body.push(`Children: ${children.map((c) => `[[${c.id}]]`).join(", ")}`);
   body.push("");
-  if (n.goal) body.push("## Main goal", n.goal, "");
+  if (n.goal) body.push(n.type === "goal" ? "## Task goal" : "## Main goal", n.goal, "");
+  if (n.summary) body.push("## Summary", n.summary, "");
   if (n.brief && n.brief !== n.goal) body.push("## Brief", n.brief, "");
   if (n.type === "decision") {
     body.push("## Decision", n.question ?? n.title, "");
@@ -46,6 +48,10 @@ export function renderNodeNote(n: ScenariaNode, children: ScenariaNode[]): strin
       body.push(`- [${mark}] **${o.label}**${o.description ? ` — ${o.description}` : ""}`);
     }
     if (n.rationale) body.push("", `**Rationale:** ${n.rationale}`);
+    if (n.context) body.push(`**Context:** ${n.context}`);
+    if (n.servesGoal) body.push(`**Serves the goal:** ${n.servesGoal}`);
+    if (n.expectedOutcome) body.push(`**Expected outcome:** ${n.expectedOutcome}`);
+    if (n.trigger) body.push(`**Triggered by:** ${n.trigger}`);
     if (n.confidence !== undefined) body.push(`**Confidence:** ${Math.round(n.confidence * 100)} %`);
     body.push("");
   }
@@ -86,7 +92,8 @@ export function renderProtocol(projectName: string, events: ScenariaEvent[], nod
     const d = (e.data ?? {}) as Record<string, any>;
     switch (e.type) {
       case "mission":
-        details = n?.goal ? `Goal: ${n.goal}` : n?.title ?? "";
+      case "goal":
+        details = n?.goal ? `${n.title} — goal: ${n.goal}` : n?.title ?? "";
         break;
       case "decision":
       case "choose":

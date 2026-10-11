@@ -56,6 +56,47 @@ scenaria setup --global     # user-level agent configs; projects initialize them
 
 It never initializes your home folder or folders that don't look like a project.
 
+Claude Code needs no instructions: its hooks capture prompts, questions, plans and file changes, and every prompt carries a one-line Scenaria reminder. For any other agent or chat, click **Agent prompt** in the dashboard (or run `scenaria prompt`) and paste the ready-made text. There are three versions: MCP agents, shell agents, and plain chats without tools.
+
+## One project tree, one main goal
+
+Each project has exactly **one** decision tree. Its root `n0` holds the project and its **main goal**. Every piece of work becomes a **task** (sub-goal) on that line, whether an agent session, a proxied conversation or a manual `scenaria task`. Finished tasks fold into a single node on the map, so even a project that runs for months stays readable. A new scenario (`s2`, `s3`, …) appears only when the line really branches: a fork, or new work after a rewind. That way you can see where the project turned, who decided and why.
+
+A task is created only when a session actually produces something. A quick question that changes nothing leaves the map untouched. Projects from older versions, which had one tree per mission, are joined into one project tree automatically on first open. A backup is kept in `.scenaria/backups/`.
+
+## Every decision with context, analysed by any LLM
+
+A decision records more than question, options and choice:
+- `rationale`: why this option. It is required whenever an option is chosen; set `requireRationale: false` to turn this off.
+- `context`: the situation that made the decision necessary.
+- `servesGoal`: how it serves the main goal.
+- `expectedOutcome`: what should be observable if the choice was right.
+- `trigger`: the user request that led to it. Scenaria captures this automatically.
+
+Missing fields are flagged on the map and in the agent's tool result.
+
+- **Health check (no LLM, no tokens):** `scenaria analyze` / dashboard → *Analysis*. It checks:
+  - whether the main goal is set;
+  - whether decisions carry context, rationale and a goal link;
+  - work built on failed checks;
+  - open or low-confidence decisions;
+  - tasks that needed many restarts;
+  - quality per agent and per model.
+- **Pattern analysis with any model:** `scenaria analyze --llm ollama --model llama3.3` (or `openai`, `anthropic`, `gemini`, `mistral`, `openrouter`, `groq`, or any OpenAI-compatible URL).
+  - Only a compact, token-budgeted dossier is sent.
+  - API keys come from environment variables, or from a key entered for a single run in the dashboard. They are never stored.
+  - Without any API: `scenaria analyze --dossier` copies the dossier into any chat, and you paste the result back.
+- **The loop closes:** accepted recommendations become **project rules**. Every capsule and every agent prompt carries them from then on.
+
+## Few tokens, long memory
+
+- The **resume capsule** has a token budget (default 1,500 tokens):
+  - main goal, project rules and the current task in detail;
+  - each earlier task as a one-line rollup: its summary, key decisions, result and lesson.
+- Whatever doesn't fit stays reachable with **`scenaria_recall`**, a keyword search (BM25, offline) over decisions, rationales, lessons, checkpoints and conversations. Agents fetch details on demand instead of re-reading long histories.
+- `scenaria_tree` folds finished tasks to one line each.
+- The dashboard shows the capsule size next to the raw conversation history it replaces.
+
 ## One overlay for every conversation, any provider
 
 Scenaria records **conversations, decisions and project files on one timeline**, whichever AI you talk to:
@@ -124,7 +165,7 @@ Unchanged files are stored only once. On macOS (APFS) they are copy-on-write clo
 | **Aider · Open Interpreter · shell agents** | CLI | `scenaria call scenaria_checkpoint '{"title":"…"}'` |
 | **Agents without any tool support** | File watcher | `scenaria watch` |
 
-All paths use **one tool registry**: the same 13 tools with the same validation behave identically over MCP, HTTP, CLI and function calling.
+All paths use **one tool registry**: the same 15 tools with the same validation behave identically over MCP, HTTP, CLI and function calling.
 
 ## For organizations
 
@@ -139,9 +180,9 @@ All paths use **one tool registry**: the same 13 tools with the same validation 
 
 | Tool | Purpose |
 |---|---|
-| `scenaria_status` | Orientation: mission, HEAD, unsaved changes |
-| `scenaria_start_mission` | Root node with main goal and brief |
-| `scenaria_decide` | Record a decision point (snapshot included) |
+| `scenaria_status` | Orientation: main goal, current task, HEAD, unsaved changes |
+| `scenaria_start_mission` | Start a task in the project tree (or set the main goal with `projectGoal`) |
+| `scenaria_decide` | Record a decision point with rationale, context, goal link (snapshot included) |
 | `scenaria_choose` | Resolve a decision recorded as open |
 | `scenaria_checkpoint` | Quicksave with fact capsule |
 | `scenaria_tree` / `scenaria_get_node` | Inspect the tree |
@@ -151,6 +192,8 @@ All paths use **one tool registry**: the same 13 tools with the same validation 
 | `scenaria_diff` | Diff between nodes or against the working tree |
 | `scenaria_verify` | Checks + verdict (passed / warning / failed) |
 | `scenaria_last_good` | Safest rewind target |
+| `scenaria_recall` | Keyword search over the whole project memory |
+| `scenaria_health` | Deterministic quality check of the tree |
 
 Manual MCP config for any client:
 
@@ -165,22 +208,28 @@ With Claude Code, hooks capture events without the agent having to call anything
 
 | Source | Captured as |
 |---|---|
-| First prompt of a session | Mission with goal and brief |
+| Every prompt | One-line reminder: main goal, task, how to record (≈ 60–100 tokens) |
+| A session's first real step | A task (sub-goal) titled after the request that led to work |
 | `AskUserQuestion` answers | Decision node, the user's answer = chosen option |
 | Plan approval (`ExitPlanMode`) | Decision node with the plan |
 | Risky Bash (`rm -rf`, `git reset --hard`, …) | Autosave right before it |
 | External effects (`git push`, deploys, `curl -X POST`, …) | Flagged *irreversible* on the next node |
 | End of each turn with file changes | Checkpoint with bullets from the agent's final message |
+| ` ```scenaria ` blocks in an answer | Decisions / tasks / checkpoints |
 
-Other agents record through the tools, guided by `AGENTS.md`. `scenaria watch` adds automatic saves for any agent.
+Other agents record through the tools, guided by `AGENTS.md` and the dashboard's agent prompt. Plain chats (ChatGPT, Claude.ai, local UIs) add small ` ```scenaria ` blocks that the proxy picks up, or you paste the answer into the dashboard. `scenaria watch` adds automatic saves for any agent.
 
 ## CLI
 
 ```text
 scenaria start | setup --global | init [--for <agents>]
 scenaria ui | serve [--host --token] | mcp | watch
-scenaria mission "<title>" --goal ..     scenaria decide "<q>" -o A -o B --chosen A --why .. --confidence 0.7
-scenaria checkpoint "<title>" --out ..   scenaria status | tree | show <id> | context [id]
+scenaria goal ["<main goal>"]            scenaria task "<title>" --goal ..
+scenaria decide "<q>" -o A -o B --chosen A --why .. --context .. --serves .. --confidence 0.7
+scenaria checkpoint "<title>" --out .. [--done --summary ..]
+scenaria status | tree [id] [--full] | show <id> | context [id] [--budget 1500] | recall "<keywords>"
+scenaria prompt [--kind mcp|cli|chat] [--lang de|en] | ingest-text [file] | rules [add|rm]
+scenaria analyze [--llm <provider> --model <m>] [--dossier]
 scenaria rewind <id> [--lesson ..]       scenaria fork <decisionId> <option>      scenaria diff <from> [to]
 scenaria versions | open <id> [--copy-to dir] | mirror [--enable]
 scenaria conversations | conversation <id> | import <file> | log-message --role .. --text ..
@@ -195,7 +244,10 @@ Global flags: `--root`, `--json`, `--agent`, `--model`, `--user`.
 ```text
 .scenaria/
   config.json        settings (snapshot folders, proxy upstreams, mirror, verifyCommand, …)
-  state.json         HEAD, active mission, counters
+  state.json         HEAD, project root, current task, counters
+  memory.json        project rules (carried by every capsule and prompt)
+  analyses/          stored LLM analyses
+  backups/           node backups taken before schema migrations
   nodes/n7.json      one file per node, the source of truth
   events.jsonl       append-only event log
   conversations/     sessions.json + one JSONL per conversation (git-ignored)

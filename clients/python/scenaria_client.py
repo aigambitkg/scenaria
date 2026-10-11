@@ -115,8 +115,11 @@ class ScenariaClient:
     def status(self) -> dict:
         return self.call("scenaria_status")["data"]
 
-    def start_mission(self, title: str, goal: Optional[str] = None, brief: Optional[str] = None) -> dict:
-        return self.call("scenaria_start_mission", _clean(title=title, goal=goal, brief=brief))["data"]
+    def start_mission(self, title: Optional[str] = None, goal: Optional[str] = None, brief: Optional[str] = None, project_goal: Optional[str] = None) -> dict:
+        """Start a task in the project's single tree (or set the main goal with project_goal)."""
+        return self.call("scenaria_start_mission", _clean(title=title, goal=goal, brief=brief, projectGoal=project_goal))["data"]
+
+    start_task = start_mission
 
     def decide(
         self,
@@ -126,8 +129,14 @@ class ScenariaClient:
         rationale: Optional[str] = None,
         assumptions: Optional[list] = None,
         confidence: Optional[float] = None,
+        context: Optional[str] = None,
+        serves_goal: Optional[str] = None,
+        expected_outcome: Optional[str] = None,
     ) -> dict:
-        return self.call("scenaria_decide", _clean(question=question, options=list(options), chosen=chosen, rationale=rationale, assumptions=assumptions, confidence=confidence),
+        return self.call(
+            "scenaria_decide",
+            _clean(question=question, options=list(options), chosen=chosen, rationale=rationale, assumptions=assumptions, confidence=confidence,
+                   context=context, servesGoal=serves_goal, expectedOutcome=expected_outcome),
         )["data"]
 
     def checkpoint(
@@ -137,9 +146,20 @@ class ScenariaClient:
         facts: Optional[list] = None,
         open_questions: Optional[list] = None,
         irreversible: Optional[list] = None,
+        task_done: Optional[bool] = None,
+        summary: Optional[str] = None,
     ) -> Optional[dict]:
-        return self.call("scenaria_checkpoint", _clean(title=title, outputs=outputs, facts=facts, openQuestions=open_questions, irreversible=irreversible),
+        return self.call(
+            "scenaria_checkpoint",
+            _clean(title=title, outputs=outputs, facts=facts, openQuestions=open_questions, irreversible=irreversible, taskDone=task_done, summary=summary),
         )["data"]
+
+    def recall(self, query: str, limit: Optional[int] = None) -> list:
+        return self.call("scenaria_recall", _clean(query=query, limit=limit))["data"]
+
+    def project_health(self) -> dict:
+        """Deterministic quality check of the whole decision tree (no LLM)."""
+        return self.call("scenaria_health")["data"]
 
     def context(self, node_id: Optional[str] = None) -> str:
         return self.call("scenaria_context", _clean(id=node_id))["data"]["markdown"]

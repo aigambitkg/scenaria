@@ -2,23 +2,33 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { api, type Graph, type ScenariaEvent, type ScenariaNode } from "./api";
 import { dict, initialLang, saveLang, type Lang } from "./i18n";
-import { layoutTree } from "./layout";
+import { layoutTree, taskOf } from "./layout";
 import { NodeId, ScenarioMap } from "./Map";
 import { NodePanel } from "./NodePanel";
-import { ConversationsDialog, DiffDialog, ProtocolDialog, RewindDialog } from "./Dialogs";
+import { AnalysisDialog, ConversationsDialog, DiffDialog, PromptDialog, ProtocolDialog, RewindDialog } from "./Dialogs";
 
 type Pending =
   | { mode: "rewind"; node: ScenariaNode }
   | { mode: "fork"; decision: ScenariaNode; optionId: string; label: string }
   | null;
 
+function fmtK(n: number) {
+  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n);
+}
+
 export function App() {
   const [graph, setGraph] = useState<Graph | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [live, setLive] = useState(false);
   const [lang, setLang] = useState<Lang>(initialLang);
-  const [missionId, setMissionId] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  /** Tasks the user opened or closed by hand (otherwise: only the current task is open). */
+  const [foldOverride, setFoldOverride] = useState<Record<string, boolean>>({});
+  const [promptOpen, setPromptOpen] = useState(false);
+  const [analysisOpen, setAnalysisOpen] = useState(false);
+  const [editGoal, setEditGoal] = useState<string | null>(null);
+  const [health, setHealth] = useState<number | null>(null);
+  const [headCtx, setHeadCtx] = useState<{ tokens: number; historyTokens: number } | null>(null);
   const [pending, setPending] = useState<Pending>(null);
   const [diff, setDiff] = useState<{ from: string; to: string; stat: string; patch: string } | null>(null);
   const [log, setLog] = useState<ScenariaEvent[] | null>(null);
@@ -38,7 +48,6 @@ export function App() {
       const g = await api.graph();
       setGraph(g);
       setError(null);
-      setMissionId((m) => (m && g.nodes.some((n) => n.id === m) ? m : g.state.activeMission));
     } catch (e: any) {
       setError(e?.message ?? String(e));
     }
@@ -66,38 +75,60 @@ export function App() {
     document.documentElement.lang = lang;
   }, [lang]);
 
-  const missions = useMemo(() => (graph?.nodes ?? []).filter((n) => n.type === "mission"), [graph]);
   const headId = graph?.state.head ?? null;
+  const root = useMemo(() => {
+    const ns = graph?.nodes ?? [];
+    return ns.find((n) => n.id === (graph?.state.projectRoot ?? "n0")) ?? ns.find((n) => !n.parentId) ?? null;
+  }, [graph]);
+  const rootId = root?.id ?? null;
 
-  // When HEAD moves (agent activity) select it, unless the user picked something else in this mission.
+  // When HEAD moves (agent activity) select it.
   const lastHead = useRef<string | null>(null);
   useEffect(() => {
     if (headId && headId !== lastHead.current) {
       lastHead.current = headId;
-      const head = graph?.nodes.find((n) => n.id === headId);
-      if (head) {
-        setMissionId(head.missionId);
-        setSelected(headId);
-      }
+      setSelected(headId);
     }
-  }, [headId, graph]);
+  }, [headId]);
+
+  // Folding: every task is folded except the current one and the selected one, unless toggled by hand.
+  const folded = useMemo(() => {
+    const ns = graph?.nodes ?? [];
+    const open = new Set([taskOf(ns, headId), taskOf(ns, selected)].filter(Boolean) as string[]);
+    return new Set(ns.filter((n) => n.type === "goal" && (foldOverride[n.id] ?? !open.has(n.id))).map((n) => n.id));
+  }, [graph, headId, selected, foldOverride]);
+  const toggleFold = useCallback((id: string) => setFoldOverride((o) => ({ ...o, [id]: !folded.has(id) })), [folded]);
+
+  useEffect(() => {
+    api.analysis().then((m) => setHealth(m.health)).catch(() => setHealth(null));
+    if (headId) api.context(headId).then((c) => setHeadCtx(c)).catch(() => setHeadCtx(null));
+  }, [graph?.version, headId]);
 
   const placed = useMemo(() => {
-    if (!graph || !missionId || !selected) return null;
-    return layoutTree(graph.nodes, missionId).placed.find((p) => p.key === selected) ?? null;
-  }, [graph, missionId, selected]);
+    if (!graph || !rootId || !selected) return null;
+    return layoutTree(graph.nodes, rootId, folded).placed.find((p) => p.key === selected) ?? null;
+  }, [graph, rootId, selected, folded]);
 
   const stats = useMemo(() => {
-    const ns = (graph?.nodes ?? []).filter((n) => n.missionId === missionId);
+    const ns = graph?.nodes ?? [];
     return {
       nodes: ns.length,
+      tasks: ns.filter((n) => n.type === "goal").length,
       decisions: ns.filter((n) => n.type === "decision").length,
       branches: ns.filter((n) => n.type === "branch").length,
       verified: ns.filter((n) => n.verification?.status === "passed").length,
-      checked: ns.filter((n) => n.type !== "mission").length,
+      checked: ns.filter((n) => n.type !== "mission" && n.type !== "goal").length,
       failed: ns.filter((n) => n.verification?.status === "failed").length,
     };
-  }, [graph, missionId]);
+  }, [graph]);
+
+  const saveGoal = async (goal: string) => {
+    if (!goal.trim()) return;
+    await api.setGoal(goal.trim());
+    setEditGoal(null);
+    toast(t.goalSaved);
+    load();
+  };
 
   const switchLang = (l: Lang) => {
     setLang(l);
@@ -133,17 +164,28 @@ export function App() {
           <span className="brand-name">Scenaria</span>
           {graph && <span className="project">{graph.config.projectName}</span>}
         </div>
-        {missions.length > 0 && (
-          <label className="mission-select">
-            <span>{t.mission}</span>
-            <select value={missionId ?? ""} onChange={(e) => { setMissionId(e.target.value); setSelected(null); }}>
-              {missions.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.id} — {m.title}
-                </option>
-              ))}
-            </select>
-          </label>
+        {graph && (
+          <div className={`goalbar ${root?.goal ? "" : "missing"}`}>
+            <span className="goalbar-label">{t.goal}</span>
+            {editGoal !== null ? (
+              <form
+                className="goalbar-edit"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  saveGoal(editGoal);
+                }}
+              >
+                <input autoFocus value={editGoal} placeholder={t.goalPlaceholder} onChange={(e) => setEditGoal(e.target.value)} onKeyDown={(e) => e.key === "Escape" && setEditGoal(null)} />
+                <button className="btn primary" type="submit">
+                  {t.save}
+                </button>
+              </form>
+            ) : (
+              <button className="goalbar-text" title={t.editGoal} onClick={() => setEditGoal(root?.goal ?? "")}>
+                {root?.goal ?? t.setGoal} <span aria-hidden>✎</span>
+              </button>
+            )}
+          </div>
         )}
         <div className="top-actions">
           <span className={`live ${live ? "on" : ""}`}>{live ? t.live : t.offline}</span>
@@ -156,6 +198,13 @@ export function App() {
             }}
           >
             {t.saveNow}
+          </button>
+          <button className="btn accent" onClick={() => setPromptOpen(true)} title={t.promptHintShort}>
+            {t.agentPrompt}
+          </button>
+          <button className="btn" onClick={() => setAnalysisOpen(true)}>
+            {t.analysis}
+            {health !== null && <span className={`hchip ${health >= 80 ? "good" : health >= 55 ? "mid" : "low"}`}>{health}</span>}
           </button>
           <button className="btn" onClick={() => setConvos(true)}>
             {t.conversations}
@@ -177,9 +226,9 @@ export function App() {
       <main className="main">
         <section className="canvas" aria-label="Scenario map">
           {error && <div className="banner error">{error}</div>}
-          {graph && missionId ? (
+          {graph && rootId ? (
             <ReactFlowProvider>
-              <ScenarioMap nodes={graph.nodes} missionId={missionId} headId={headId} selectedKey={selected} onSelect={setSelected} t={t} />
+              <ScenarioMap nodes={graph.nodes} rootId={rootId} headId={headId} selectedKey={selected} onSelect={setSelected} folded={folded} onToggleFold={toggleFold} t={t} />
             </ReactFlowProvider>
           ) : graph ? (
             <div className="empty">
@@ -195,6 +244,13 @@ export function App() {
           t={t}
           toast={toast}
           graphVersion={graph?.version}
+          folded={folded}
+          onToggleFold={toggleFold}
+          onEditGoal={() => setEditGoal(root?.goal ?? "")}
+          onUpdate={async (id, patch) => {
+            await api.updateNode(id, patch);
+            await load();
+          }}
           onRewind={(node) => setPending({ mode: "rewind", node })}
           onFork={(decision, optionId, label) => setPending({ mode: "fork", decision, optionId, label })}
           onDiff={async (from, to) => {
@@ -219,6 +275,9 @@ export function App() {
           </span>
         )}
         <span>
+          {t.statusTasks} <strong>{stats.tasks}</strong>
+        </span>
+        <span>
           {t.statusNodes} <strong>{stats.nodes}</strong>
         </span>
         <span>
@@ -231,6 +290,11 @@ export function App() {
           {t.statusVerified} <strong>{stats.verified}</strong>/{stats.checked}
           {stats.failed ? <em className="failed">{stats.failed} ✘</em> : null}
         </span>
+        {headCtx && headCtx.historyTokens > headCtx.tokens && (
+          <span title={t.capsuleExplain}>
+            {t.capsule} ≈ <strong>{fmtK(headCtx.tokens)}</strong> {t.tokens} <span className="muted">({t.insteadOf} ≈ {fmtK(headCtx.historyTokens)})</span>
+          </span>
+        )}
         {graph && !graph.snapshots && <span className="warn">{t.snapshotsOff}</span>}
         <span className="root" title={graph?.root}>
           {graph?.root}
@@ -254,11 +318,7 @@ export function App() {
           events={log}
           onClose={() => setLog(null)}
           onSelect={(id) => {
-            const n = graph?.nodes.find((x) => x.id === id);
-            if (n) {
-              setMissionId(n.missionId);
-              setSelected(id);
-            }
+            if (graph?.nodes.some((x) => x.id === id)) setSelected(id);
             setLog(null);
           }}
         />
@@ -268,12 +328,25 @@ export function App() {
           t={t}
           onClose={() => setConvos(false)}
           onSelectNode={(id) => {
-            const n = graph?.nodes.find((x) => x.id === id);
-            if (n) {
-              setMissionId(n.missionId);
-              setSelected(id);
-            }
+            if (graph?.nodes.some((x) => x.id === id)) setSelected(id);
             setConvos(false);
+          }}
+        />
+      )}
+      {promptOpen && <PromptDialog t={t} lang={lang} toast={toast} onClose={() => setPromptOpen(false)} onApplied={load} />}
+      {analysisOpen && (
+        <AnalysisDialog
+          t={t}
+          lang={lang}
+          toast={toast}
+          onClose={() => setAnalysisOpen(false)}
+          onSelectNode={(id) => {
+            if (graph?.nodes.some((x) => x.id === id)) setSelected(id);
+            setAnalysisOpen(false);
+          }}
+          onEditGoal={() => {
+            setAnalysisOpen(false);
+            setEditGoal(root?.goal ?? "");
           }}
         />
       )}

@@ -6,7 +6,8 @@
  */
 
 export type NodeType =
-  | "mission" // root of a tree: goal + brief
+  | "mission" // the project root (n0): project name + main goal — exactly one per project
+  | "goal" // a task / sub-goal on the project line (started by an agent, a chat session or a person)
   | "decision" // a decision point: question, options, chosen option
   | "checkpoint" // progress save: what was produced
   | "branch" // start of an alternative explored via fork
@@ -72,15 +73,27 @@ export interface ScenariaNode {
   source: Source;
   snapshot?: Snapshot | null;
 
-  // mission
+  // project root + tasks
   goal?: string;
   brief?: string;
+  /** Task (goal node) state. */
+  status?: "active" | "done" | "abandoned";
+  /** Task rollup written when the task was finished (agent, LLM or deterministic). */
+  summary?: string;
 
   // decision
   question?: string;
   options?: DecisionOption[];
   chosen?: string;
   rationale?: string;
+  /** The situation that made this decision necessary (constraints, facts at hand). */
+  context?: string;
+  /** How the chosen option serves the project's main goal / the current task. */
+  servesGoal?: string;
+  /** What should be observable if the decision was right (checked later by verifier/analysis). */
+  expectedOutcome?: string;
+  /** Auto-captured: the latest user request when the decision was recorded. */
+  trigger?: string;
   assumptions?: string[];
   /** 0..1 — how sure the agent was. */
   confidence?: number;
@@ -136,16 +149,55 @@ export interface ScenariaConfig {
   injectContextOnSessionStart: boolean;
   /** How many recent checkpoints are shown in full in the resume context. */
   contextFullCheckpoints: number;
+  /** Token budget of the resume capsule (older parts are rolled up / left to recall). Default 1500. */
+  contextBudget?: number;
+  /** Claude Code: add a one-line Scenaria reminder to every prompt (≈60 tokens). Default true. */
+  promptReminder?: boolean;
+  /** Reject decisions that pick an option without a rationale. Default true. */
+  requireRationale?: boolean;
+  /** LLM used for `scenaria analyze` (any provider; keys come from env vars, never from this file). */
+  analysis?: AnalysisConfig;
+}
+
+export interface AnalysisConfig {
+  /** openai, anthropic, ollama, lmstudio, gemini, mistral, openrouter, groq, azure, or any proxy upstream name. */
+  provider: string;
+  model: string;
+  /** Override the base URL (default: proxy.upstreams[provider]). */
+  baseUrl?: string;
+  /** Name of the env var holding the API key (default per provider, e.g. OPENAI_API_KEY). */
+  apiKeyEnv?: string;
+}
+
+/** A durable project rule (learned lesson / accepted recommendation) that every capsule carries. */
+export interface ProjectRule {
+  id: string; // r1, r2, …
+  text: string;
+  source: "manual" | "analysis" | "lesson" | "agent";
+  evidence?: string[];
+  createdAt: string;
 }
 
 export interface ScenariaState {
   head: string | null;
   activeMission: string | null;
   counter: number;
-  /** Data schema version (2 = uid/scenario/version on every node). */
+  /** Data schema version (2 = uid/scenario/version on every node, 3 = one project tree). */
   schema?: number;
   scenarioCounter?: number;
   messageCounter?: number;
+  /** The single project root (n0). */
+  projectRoot?: string | null;
+  /** The task (goal node) new work is attached to, keyed by session/conversation. */
+  currentTask?: { key: string; nodeId: string } | null;
+  /** The latest request of a session whose task node does not exist yet (created lazily with the first real node). */
+  pendingTask?: { key: string; title: string; goal?: string; at: string } | null;
+  /** Session/conversation key → its task node (reused while that node is on the HEAD path). */
+  taskBindings?: Record<string, string>;
+  /** Set while a schema migration runs (relative backup path); an interrupted migration is rolled back. */
+  migrating?: string;
+  /** Latest user message (any source) — becomes a decision's `trigger`. */
+  lastUserMessage?: { text: string; ts: string } | null;
 }
 
 export type MessageRole = "user" | "assistant" | "system" | "tool";
@@ -201,7 +253,11 @@ export type EventType =
   | "rewind"
   | "verify"
   | "update"
-  | "messages";
+  | "messages"
+  | "goal"
+  | "migrate"
+  | "rule"
+  | "analysis";
 
 export interface ScenariaEvent {
   ts: string;

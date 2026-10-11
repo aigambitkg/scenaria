@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { api, type ConversationMessage, type ConversationSession, type ScenariaEvent } from "./api";
+import { api, type AnalysisRecord, type ConversationMessage, type ConversationSession, type Metrics, type ProjectRule, type ScenariaEvent } from "./api";
 import { MessageList } from "./NodePanel";
 import type { Dict } from "./i18n";
 import { NodeId } from "./Map";
@@ -234,5 +234,500 @@ export function ConversationsDialog(props: { t: Dict; onClose: () => void; onSel
         )}
       </div>
     </Modal>
+  );
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+type Kind = "mcp" | "cli" | "chat";
+
+/** Ready-to-paste prompts: nobody has to explain Scenaria to an agent by hand. */
+export function PromptDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: string) => void; onClose: () => void; onApplied: () => void }) {
+  const { t } = props;
+  const [kind, setKind] = useState<Kind>("mcp");
+  const [withCtx, setWithCtx] = useState(false);
+  const [text, setText] = useState("");
+  const [tokens, setTokens] = useState(0);
+  const [paste, setPaste] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    api
+      .prompt(kind, props.lang, withCtx)
+      .then((r) => {
+        setText(r.text);
+        setTokens(r.tokens);
+      })
+      .catch((e) => setText(String(e?.message ?? e)));
+  }, [kind, withCtx, props.lang]);
+  return (
+    <Modal wide title={t.promptTitle} onClose={props.onClose}>
+      <div className="modal-body prompt-dlg">
+        <div className="tabs" role="tablist">
+          {(["mcp", "cli", "chat"] as Kind[]).map((k) => (
+            <button key={k} role="tab" aria-selected={kind === k} className={kind === k ? "on" : ""} onClick={() => setKind(k)}>
+              {t.promptKinds[k]}
+            </button>
+          ))}
+        </div>
+        <p className="hint">{t.promptHints[kind]}</p>
+        <textarea ref={ref} className="prompt-text" readOnly value={text} rows={14} onFocus={(e) => e.currentTarget.select()} />
+        <div className="row between">
+          <label className="check">
+            <input type="checkbox" checked={withCtx} onChange={(e) => setWithCtx(e.target.checked)} />
+            <span>{t.withContext}</span>
+          </label>
+          <span className="muted">≈ {tokens} {t.tokens}</span>
+          <button
+            className="btn primary"
+            onClick={async () => {
+              if (await copyText(text)) props.toast(t.promptCopied);
+              else {
+                ref.current?.focus();
+                ref.current?.select();
+              }
+            }}
+          >
+            {t.copy}
+          </button>
+        </div>
+        {kind === "chat" && (
+          <section className="paste">
+            <h3>{t.pasteAnswer}</h3>
+            <p className="hint">{t.pasteHint}</p>
+            <textarea rows={5} value={paste} onChange={(e) => setPaste(e.target.value)} placeholder={"```scenaria\n{\"decision\": {…}}\n```"} />
+            <div className="row">
+              <button
+                className="btn"
+                disabled={busy || !paste.trim()}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    const r = await api.ingestText(paste);
+                    setResult(`${r.created.length} ${t.applied}${r.skipped ? ` · ${r.skipped} ${t.alreadyKnown}` : ""}${r.errors.length ? ` · ${r.errors.join("; ")}` : ""}`);
+                    if (r.created.length) {
+                      setPaste("");
+                      props.onApplied();
+                    }
+                  } catch (e: any) {
+                    setResult(String(e?.message ?? e));
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                {t.applyBlocks}
+              </button>
+              {result && <span className="muted">{result}</span>}
+            </div>
+          </section>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+const PROVIDERS = ["ollama", "lmstudio", "openai", "anthropic", "gemini", "mistral", "openrouter", "groq", "custom"];
+const MODEL_HINT: Record<string, string> = {
+  ollama: "llama3.3",
+  lmstudio: "local-model",
+  openai: "gpt-5-mini",
+  anthropic: "claude-sonnet-5-5",
+  gemini: "gemini-2.5-flash",
+  mistral: "mistral-large-latest",
+  openrouter: "meta-llama/llama-3.3-70b-instruct",
+  groq: "llama-3.3-70b-versatile",
+  custom: "model name",
+};
+
+function sevClass(s?: string) {
+  return s === "high" ? "sev-high" : s === "medium" ? "sev-mid" : "sev-low";
+}
+
+/** Health check (no LLM) + pattern analysis with any LLM + project rules. */
+export function AnalysisDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: string) => void; onClose: () => void; onSelectNode: (id: string) => void; onEditGoal: () => void }) {
+  const { t } = props;
+  const [m, setM] = useState<Metrics | null>(null);
+  const [rules, setRules] = useState<ProjectRule[]>([]);
+  const [newRule, setNewRule] = useState("");
+  const [records, setRecords] = useState<AnalysisRecord[]>([]);
+  const [current, setCurrent] = useState<AnalysisRecord | null>(null);
+  const [provider, setProvider] = useState("ollama");
+  const [model, setModel] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [envKeys, setEnvKeys] = useState<string[]>([]);
+  const [teamMode, setTeamMode] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [pasted, setPasted] = useState("");
+  const [showAllIssues, setShowAllIssues] = useState(false);
+
+  const reload = async () => {
+    const [mm, rr, recs] = await Promise.all([api.analysis(), api.rules(), api.analyses()]);
+    setM(mm);
+    setRules(rr);
+    setRecords(recs);
+    setCurrent((c) => recs.find((r) => r.id === c?.id) ?? recs[0] ?? null);
+  };
+  useEffect(() => {
+    reload().catch((e) => setErr(String(e?.message ?? e)));
+    api
+      .analysisConfig()
+      .then((c) => {
+        setEnvKeys(c.envKeys);
+        setTeamMode(c.teamMode);
+        if (c.config) {
+          setProvider(PROVIDERS.includes(c.config.provider) ? c.config.provider : "custom");
+          setModel(c.config.model);
+          setBaseUrl(c.config.baseUrl ?? "");
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const llm = () => ({ provider: provider === "custom" ? "custom" : provider, model: model || MODEL_HINT[provider], baseUrl: baseUrl || undefined });
+  const needsUrl = provider === "custom";
+  const issues = m ? (showAllIssues ? m.issues : m.issues.slice(0, 8)) : [];
+
+  return (
+    <Modal wide title={t.analysisTitle} onClose={props.onClose}>
+      <div className="modal-body analysis">
+        {err && <p className="error">{err}</p>}
+        {m && (
+          <section className="a-sec health">
+            <div className={`hbig ${m.health >= 80 ? "good" : m.health >= 55 ? "mid" : "low"}`}>
+              <span className="hnum">{m.health}</span>
+              <span className="hlabel">{t.health}</span>
+            </div>
+            <div className="hfacts">
+              <p>
+                {t.goal}:{" "}
+                {m.goalSet ? (
+                  <strong>✓</strong>
+                ) : (
+                  <button className="btn link" onClick={props.onEditGoal}>
+                    {t.setGoal}
+                  </button>
+                )}
+                {" · "}
+                {t.decisionQuality}: <strong>{Math.round(m.decisionQuality * 100)} %</strong>
+              </p>
+              <p className="muted">
+                {m.counts.tasks} {t.statusTasks} · {m.counts.decisions} {t.decisionsShort} · {m.counts.branches} {t.statusBranches} · {m.counts.rewinds} {t.rewinds} · {m.counts.passed}✓ / {m.counts.failed}✘
+              </p>
+            </div>
+          </section>
+        )}
+
+        {m && (
+          <section className="a-sec">
+            <h3>{t.issues}</h3>
+            {m.issues.length === 0 ? (
+              <p className="muted">{t.noIssues}</p>
+            ) : (
+              <ul className="issues">
+                {issues.map((i, k) => (
+                  <li key={k} className={sevClass(i.severity)}>
+                    {i.nodeId && (
+                      <button className="btn link" onClick={() => props.onSelectNode(i.nodeId!)}>
+                        <NodeId id={i.nodeId} />
+                      </button>
+                    )}{" "}
+                    {t.issueText[i.code] ? t.issueText[i.code](i.subject ?? "", i.value) : i.message}
+                  </li>
+                ))}
+                {m.issues.length > 8 && !showAllIssues && (
+                  <li>
+                    <button className="btn link" onClick={() => setShowAllIssues(true)}>
+                      {t.showMore} (+{m.issues.length - 8})
+                    </button>
+                  </li>
+                )}
+              </ul>
+            )}
+          </section>
+        )}
+
+        {m && Object.keys(m.byModel).length > 0 && (
+          <section className="a-sec">
+            <h3>{t.agentsModels}</h3>
+            <table className="log">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>{t.decisionsShort}</th>
+                  <th>{t.decisionQuality}</th>
+                  <th>{t.confidence}</th>
+                  <th>{t.revised}</th>
+                  <th>✘</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...Object.entries(m.byAgent).map(([k, v]) => [t.kindAgent, k, v] as const), ...Object.entries(m.byModel).map(([k, v]) => [t.kindModel, k, v] as const)].map(([kind, k, v]) => (
+                  <tr key={kind + k}>
+                    <td>
+                      <span className="muted">{kind}</span> {k}
+                    </td>
+                    <td>{v.decisions}</td>
+                    <td>{Math.round(v.avgQuality * 100)} %</td>
+                    <td>{v.avgConfidence === null ? "–" : `${Math.round(v.avgConfidence * 100)} %`}</td>
+                    <td>{v.revised}</td>
+                    <td>{v.failed}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+        )}
+
+        <section className="a-sec">
+          <h3>{t.rulesTitle}</h3>
+          <p className="hint">{t.rulesHint}</p>
+          {rules.length > 0 && (
+            <ul className="rules">
+              {rules.map((r) => (
+                <li key={r.id}>
+                  <span className="muted">{r.id}</span> {r.text}{" "}
+                  <button
+                    className="btn icon"
+                    aria-label={t.remove}
+                    title={t.remove}
+                    onClick={async () => {
+                      await api.deleteRule(r.id);
+                      reload();
+                    }}
+                  >
+                    ✕
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <form
+            className="row"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (!newRule.trim()) return;
+              await api.addRule(newRule);
+              setNewRule("");
+              reload();
+            }}
+          >
+            <input className="grow" value={newRule} placeholder={t.rulePlaceholder} onChange={(e) => setNewRule(e.target.value)} />
+            <button className="btn" type="submit" disabled={!newRule.trim()}>
+              {t.addRule}
+            </button>
+          </form>
+        </section>
+
+        <section className="a-sec">
+          <h3>{t.aiAnalysis}</h3>
+          <p className="hint">{t.aiHint}</p>
+          <div className="llm-form">
+            <label>
+              <span>{t.provider}</span>
+              <select
+                value={provider}
+                onChange={(e) => {
+                  setProvider(e.target.value);
+                  setModel("");
+                }}
+              >
+                {PROVIDERS.map((p) => (
+                  <option key={p} value={p}>
+                    {p === "custom" ? t.customProvider : p}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>{t.modelLabel}</span>
+              <input value={model} placeholder={MODEL_HINT[provider]} onChange={(e) => setModel(e.target.value)} />
+            </label>
+            {(needsUrl || baseUrl) && !teamMode && (
+              <label className="wide">
+                <span>{t.baseUrl}</span>
+                <input value={baseUrl} placeholder="http://127.0.0.1:11434/v1" onChange={(e) => setBaseUrl(e.target.value)} />
+              </label>
+            )}
+            {!["ollama", "lmstudio"].includes(provider) && (
+              <label className="wide">
+                <span>{t.apiKey}</span>
+                <input type="password" autoComplete="off" value={apiKey} placeholder={envKeys.length ? `${t.envKeyFound}: ${envKeys.join(", ")}` : t.apiKeyHint} onChange={(e) => setApiKey(e.target.value)} />
+              </label>
+            )}
+          </div>
+          <div className="row">
+            <button
+              className="btn primary"
+              disabled={busy || (needsUrl && !baseUrl)}
+              onClick={async () => {
+                setBusy(true);
+                setErr(null);
+                try {
+                  const rec = await api.runAnalysis({ ...llm(), apiKey: apiKey || undefined, lang: props.lang });
+                  setCurrent(rec);
+                  await reload();
+                  setCurrent(rec);
+                } catch (e: any) {
+                  setErr(String(e?.message ?? e));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              {busy ? t.running : t.runAnalysis}
+            </button>
+            <button
+              className="btn"
+              disabled={needsUrl && !baseUrl}
+              onClick={async () => {
+                await api.saveAnalysisConfig({ ...llm() } as any);
+                props.toast(t.savedDefault);
+              }}
+            >
+              {t.saveDefault}
+            </button>
+            <button
+              className="btn"
+              onClick={async () => {
+                const d = await api.dossier(props.lang);
+                props.toast((await copyText(d.text)) ? `${t.dossierCopied} (≈ ${d.tokens} ${t.tokens})` : d.text.slice(0, 100));
+              }}
+            >
+              {t.copyDossier}
+            </button>
+          </div>
+          <details className="paste">
+            <summary>{t.pasteResult}</summary>
+            <textarea rows={4} value={pasted} onChange={(e) => setPasted(e.target.value)} placeholder='{"summary": "…", "rules": [ … ]}' />
+            <button
+              className="btn"
+              disabled={!pasted.trim()}
+              onClick={async () => {
+                try {
+                  const rec = await api.importAnalysis(pasted, props.lang);
+                  setPasted("");
+                  await reload();
+                  setCurrent(rec);
+                } catch (e: any) {
+                  setErr(String(e?.message ?? e));
+                }
+              }}
+            >
+              {t.importResult}
+            </button>
+          </details>
+        </section>
+
+        {current && (
+          <section className="a-sec result">
+            <h3>
+              {t.resultOf} {new Date(current.createdAt).toLocaleString()} · <span className="muted">{current.provider}/{current.model}</span>
+              {records.length > 1 && (
+                <select className="hist" value={current.id} onChange={(e) => setCurrent(records.find((r) => r.id === e.target.value) ?? null)}>
+                  {records.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {new Date(r.createdAt).toLocaleString()} · {r.model}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </h3>
+            {current.insights.summary && <p>{current.insights.summary}</p>}
+            {current.insights.goalAlignment && (
+              <p>
+                <strong>{t.goalAlignment}:</strong> {current.insights.goalAlignment.score ?? "?"}/100 — {current.insights.goalAlignment.notes}
+              </p>
+            )}
+            {(current.insights.patterns?.length ?? 0) > 0 && (
+              <>
+                <h4>{t.patterns}</h4>
+                <ul className="patterns">
+                  {current.insights.patterns!.map((x, i) => (
+                    <li key={i} className={x.kind === "good" ? "good" : "bad"}>
+                      <strong>{x.title}</strong> {x.impact ? `— ${x.impact}` : ""} <Evidence ids={x.evidence} onSelect={props.onSelectNode} />
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            {(current.insights.issues?.length ?? 0) > 0 && (
+              <>
+                <h4>{t.issues}</h4>
+                <ul className="issues">
+                  {current.insights.issues!.map((x, i) => (
+                    <li key={i} className={sevClass(x.severity)}>
+                      <strong>{x.title}</strong> {x.fix ? `→ ${x.fix}` : ""} <Evidence ids={x.evidence} onSelect={props.onSelectNode} />
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            {(current.insights.rules?.length ?? 0) > 0 && (
+              <>
+                <h4>{t.recommendedRules}</h4>
+                <ul className="rules">
+                  {current.insights.rules!.map((r, i) => {
+                    const taken = rules.some((x) => x.text.toLowerCase() === r.text.toLowerCase());
+                    return (
+                      <li key={i}>
+                        {r.text} {r.why ? <span className="muted">— {r.why}</span> : null} <Evidence ids={r.evidence} onSelect={props.onSelectNode} />{" "}
+                        <button
+                          className="btn"
+                          disabled={taken}
+                          onClick={async () => {
+                            await api.acceptRule(current.id, i);
+                            props.toast(t.ruleAccepted);
+                            reload();
+                          }}
+                        >
+                          {taken ? t.accepted : t.acceptRule}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </>
+            )}
+            {(current.insights.tokenTips?.length ?? 0) > 0 && (
+              <>
+                <h4>{t.tokenTips}</h4>
+                <ul>
+                  {current.insights.tokenTips!.map((x, i) => (
+                    <li key={i}>{x}</li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </section>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function Evidence({ ids, onSelect }: { ids?: string[]; onSelect: (id: string) => void }) {
+  if (!ids?.length) return null;
+  return (
+    <span className="evidence">
+      {ids
+        .filter((id) => /^n\d+$/.test(id))
+        .slice(0, 6)
+        .map((id) => (
+          <button key={id} className="btn link" onClick={() => onSelect(id)}>
+            <NodeId id={id} />
+          </button>
+        ))}
+    </span>
   );
 }

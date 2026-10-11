@@ -48,7 +48,7 @@ test("allowlist .gitignore cannot pull .scenaria into snapshots or destroy histo
   const after = s.store.listNodes();
   assert.ok(after.length >= before, "no node files deleted");
   const counter = s.store.readState().counter;
-  assert.ok(counter >= before, "id counter not reset");
+  assert.ok(counter >= before - 1, "id counter not reset (n0 is outside the counter)");
   assert.equal(p.exists("c.json"), false);
 });
 

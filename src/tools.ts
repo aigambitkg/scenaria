@@ -10,6 +10,8 @@
 import { z } from "zod";
 import { Scenaria } from "./core/engine.js";
 import { optionLabel } from "./core/context.js";
+import { recall, renderRecall } from "./core/recall.js";
+import { projectMetrics, renderMetrics } from "./core/analysis.js";
 import type { ScenariaNode, Source } from "./core/types.js";
 
 export interface ToolContext {
@@ -37,14 +39,15 @@ export interface ToolDef {
   run(s: Scenaria, args: any, ctx: ToolContext): ToolResult;
 }
 
-export const INSTRUCTIONS = `Scenaria records the decision tree of this task so work can be rewound to any decision point (files + context) and alternatives can be explored.
-Use it like a quicksave:
-- At the start of a complex task: scenaria_start_mission (main goal + brief).
-- Whenever you choose between approaches, or a user answers a clarifying question: scenaria_decide (question, all options considered, chosen, rationale, confidence).
-- After finishing a meaningful step: scenaria_checkpoint with short factual output bullets (name files in backticks).
-- If you notice a mistake, hallucination or dead end: scenaria_last_good / scenaria_tree, then scenaria_rewind with a one-line lesson. Continue ONLY from the returned resume context.
-- To try another option of an earlier decision: scenaria_fork.
-Keep bullets factual and short; never invent facts you did not verify.`;
+export const INSTRUCTIONS = `Scenaria keeps ONE decision tree for the whole project (root n0 = project + main goal), so work can be rewound to any decision point (files + context) and alternatives can be explored.
+Use it like a quicksave, on your own:
+- Start: scenaria_status + scenaria_context. If the main goal is missing, ask the user and store it (scenaria_start_mission {projectGoal}).
+- New piece of work: scenaria_start_mission {title, goal} — adds a task to the existing tree (never a second tree).
+- Before acting on a real choice (or when the user answers a clarifying question): scenaria_decide with question, all options considered, chosen, rationale, context (the situation), servesGoal (link to the main goal), expectedOutcome, confidence.
+- After a meaningful step: scenaria_checkpoint with short factual bullets (files in backticks); when the task is finished add taskDone + summary.
+- Mistake or dead end: scenaria_last_good / scenaria_tree, then scenaria_rewind with a one-line lesson; continue ONLY from the returned context. Other option: scenaria_fork.
+- Need older details: scenaria_recall instead of re-reading long histories.
+Keep entries short; never record facts you did not verify.`;
 
 export function brief(n: ScenariaNode): string {
   let s = `${n.id} [${n.type}] ${n.type === "decision" ? n.question ?? n.title : n.title}`;
@@ -72,10 +75,12 @@ export const TOOLS: ToolDef[] = [
     run(s) {
       const st = s.status();
       const text = [
-        `project: ${st.projectName}`,
-        `mission: ${st.mission ? `${st.mission.id} ${st.mission.title}` : "none — call scenaria_start_mission"}`,
-        `HEAD: ${st.head ? `${st.head.id} [${st.head.type}] ${st.head.title}` : "—"}${st.dirty ? " (unsaved file changes)" : ""}`,
-        `nodes ${st.counts.nodes}, decisions ${st.counts.decisions}, checkpoints ${st.counts.checkpoints}, branches ${st.counts.branches}, verified ${st.counts.verified}, failed ${st.counts.failed}`,
+        `project: ${st.projectName}${st.project ? ` (${st.project.id})` : ""}`,
+        `main goal: ${st.project?.goal ?? "NOT SET — ask the user, then scenaria_start_mission {projectGoal}"}`,
+        `task: ${st.task ? `${st.task.id} ${st.task.title}` : "none — scenaria_start_mission {title, goal} when new work starts"}`,
+        `HEAD: ${st.head ? `${st.head.id} [${st.head.type}${st.head.scenarioId ? ` ${st.head.scenarioId}/v${st.head.version}` : ""}] ${st.head.title}` : "—"}${st.dirty ? " (unsaved file changes)" : ""}`,
+        `tasks ${st.counts.tasks}, decisions ${st.counts.decisions}, checkpoints ${st.counts.checkpoints}, branches ${st.counts.branches}, verified ${st.counts.verified}, failed ${st.counts.failed}, rules ${st.rules}`,
+        st.counts.withoutRationale ? `quality: ${st.counts.withoutRationale} decision(s) without rationale` : "",
         st.snapshots ? "" : "warning: git not found, file snapshots disabled",
       ]
         .filter(Boolean)
@@ -85,16 +90,21 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "scenaria_start_mission",
-    title: "Start mission",
-    description: "Start a new mission (root of a decision tree) with its main goal and brief. Takes a baseline snapshot of the files.",
+    title: "Start task",
+    description:
+      "Start a new task (sub-goal) in the project's single decision tree — call it when a new piece of work begins. It is attached to the current HEAD; it never creates a second tree. Use projectGoal to set or change the project's overall main goal.",
     input: {
-      title: str.describe("Short mission title"),
-      goal: str.describe("The main goal in one or two sentences").optional(),
-      brief: str.describe("The task/brief as given by the user").optional(),
+      title: str.describe("Short task title").optional(),
+      goal: str.describe("What this task should achieve, in one or two sentences").optional(),
+      brief: str.describe("The request as given by the user").optional(),
+      projectGoal: str.describe("The overall main goal of the whole project (only when it is missing or changed)").optional(),
     },
     run(s, a, c) {
+      if (!a.title && !a.projectGoal) throw new Error("Give a task title (and goal), or projectGoal.");
       const n = s.startMission({ ...a, ...actor(c) });
-      return { text: `Mission started.\n${brief(n)}`, data: n };
+      const root = s.project();
+      const note = root?.goal ? "" : "\nNOTE: the project's main goal is not set — ask the user and call scenaria_start_mission {projectGoal}.";
+      return { text: `${n.type === "goal" ? "Task started" : "Project updated"}.\n${brief(n)}${note}`, data: n };
     },
   },
   {
@@ -109,13 +119,22 @@ export const TOOLS: ToolDef[] = [
         .min(1)
         .describe("All options considered: objects {label, description} or plain strings"),
       chosen: z.union([str, z.number()]).optional().describe("Chosen option: its label, id (a, b, …) or 1-based index. Omit if still open."),
-      rationale: str.optional().describe("Why this option"),
+      rationale: str.optional().describe("Why this option (required when an option is chosen)"),
+      context: str.optional().describe("The situation that made this decision necessary: constraints, facts, the user's request"),
+      servesGoal: str.optional().describe("How the chosen option serves the project's main goal / the current task"),
+      expectedOutcome: str.optional().describe("What should be observable if the decision was right"),
       assumptions: list.describe("Assumptions this decision relies on"),
       confidence: z.number().min(0).max(1).optional().describe("0..1 — how sure you are"),
     },
     run(s, a, c) {
+      const chosen = a.chosen !== undefined && a.chosen !== "";
+      if (chosen && !a.rationale?.trim() && s.config().requireRationale !== false) {
+        throw new Error("rationale is required when an option is chosen: say in one sentence why it beats the alternatives (and add context + servesGoal).");
+      }
       const n = s.decide({ ...a, ...actor(c) });
-      return { text: `Decision recorded.\n${brief(n)}`, data: n };
+      const missing = [!n.context && !n.trigger ? "context" : null, !n.servesGoal ? "servesGoal" : null, (n.options?.length ?? 0) < 2 ? "alternatives" : null].filter(Boolean);
+      const hint = missing.length ? `\nquality: missing ${missing.join(", ")} — include them next time.` : "";
+      return { text: `Decision recorded.\n${brief(n)}${hint}`, data: n };
     },
   },
   {
@@ -140,20 +159,24 @@ export const TOOLS: ToolDef[] = [
       openQuestions: list.describe("Open questions / todos"),
       irreversible: list.describe("External side effects a rewind cannot undo (emails sent, pushes, API writes)"),
       onlyIfChanged: z.boolean().optional().describe("Skip if no file changed since HEAD"),
+      taskDone: z.boolean().optional().describe("The current task is finished"),
+      summary: str.optional().describe("With taskDone: 1–2 sentences on the task's result (what later sessions will read)"),
     },
     run(s, a, c) {
       const n = s.checkpoint({ ...a, ...actor(c) });
-      return { text: n ? `Checkpoint saved.\n${brief(n)}` : "No file changes since HEAD — nothing saved.", data: n };
+      const done = a.taskDone ? " Task marked done." : "";
+      return { text: n ? `Checkpoint saved.${done}\n${brief(n)}` : `No file changes since HEAD — nothing saved.${done}`, data: n };
     },
   },
   {
     name: "scenaria_tree",
     title: "Decision tree",
-    description: "Text view of the current mission's decision tree with HEAD marker and verification marks.",
-    input: { missionId: str.optional() },
+    description:
+      "Text view of the project's decision tree with HEAD marker and verification marks. Finished tasks are folded to one line; pass a node id to expand from there, or full=true for everything.",
+    input: { from: str.optional().describe("Start at this node (e.g. a folded task id)"), full: z.boolean().optional() },
     annotations: { readOnlyHint: true },
     run(s, a) {
-      return { text: s.treeText(a.missionId), data: s.graph() };
+      return { text: s.treeText(a.from, { full: a.full }), data: { head: s.store.readState().head } };
     },
   },
   {
@@ -250,6 +273,32 @@ export const TOOLS: ToolDef[] = [
       const n = s.verify(a.id, { status: a.status, notes: a.notes, by: c.agent ?? c.user, runCommand: a.runCommand });
       const checks = (n.verification?.checks ?? []).map((x) => `- ${x.status.toUpperCase()} ${x.name}${x.detail ? ` — ${x.detail}` : ""}`);
       return { text: [`${n.id}: ${n.verification?.status}`, ...checks].join("\n"), data: n };
+    },
+  },
+  {
+    name: "scenaria_recall",
+    title: "Recall",
+    description:
+      "Search the whole project memory (decisions, rationales, tasks, lessons, checkpoints, conversations) by keywords. Use it to fetch older details on demand instead of loading long histories.",
+    input: { query: str.describe("Keywords, e.g. file names, option labels, error words"), limit: z.number().int().min(1).max(30).optional() },
+    annotations: { readOnlyHint: true },
+    run(s, a) {
+      const head = s.store.readState().head;
+      const pathIds = head ? new Set(s.path(head).map((n) => n.id)) : undefined;
+      const hits = recall(s.store.listNodes(), s.conversations.allMessages(), a.query, { limit: a.limit ?? 8, pathIds });
+      return { text: renderRecall(hits), data: hits };
+    },
+  },
+  {
+    name: "scenaria_health",
+    title: "Project health",
+    description:
+      "Deterministic quality check of the whole tree: main goal set, decisions with context + rationale + goal link, work built on failed checks, open or low-confidence decisions, per-agent quality. No LLM involved.",
+    input: {},
+    annotations: { readOnlyHint: true },
+    run(s) {
+      const m = projectMetrics(s);
+      return { text: renderMetrics(m), data: { ...m, decisions: undefined } };
     },
   },
   {

@@ -13,6 +13,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Scenaria } from "./core/engine.js";
 import { DEFAULT_PROXY } from "./core/engine.js";
 import type { MessageInput } from "./core/conversations.js";
+import { applyBlocks } from "./core/blocks.js";
 
 type ApiKind = "openai-chat" | "openai-responses" | "anthropic" | "other";
 
@@ -218,12 +219,14 @@ export async function handleProxy(
   const sessionInfo = reqMsgs.length
     ? { externalId: conversationKey(provider, reqMsgs, header(req, "x-scenaria-session")), provider, model, agent, source: "proxy" as const }
     : null;
+  // Each conversation is one task on the project line (created with its first real node).
+  const firstUser = reqMsgs.find((x) => x.role === "user")?.text ?? "Conversation";
+  const task = sessionInfo ? { key: sessionInfo.externalId, title: firstUser.replace(/\s+/g, " ").trim().slice(0, 80) || "Conversation", goal: firstUser.slice(0, 600) } : undefined;
   // Record the request side first — even if the provider call fails, the user's turn is kept.
   if (sessionInfo) {
     try {
-      // First contact: the conversation's opening request becomes the mission (snapshot = state before the answer).
-      const first = reqMsgs.find((x) => x.role === "user")?.text ?? "Conversation";
-      s.claimMission(first.replace(/\s+/g, " ").slice(0, 80), first.slice(0, 600), { agent, model, source: "api" });
+      // First contact creates the project root (snapshot = state before the answer) and remembers the task.
+      s.noteTask(task!.key, task!.title, task!.goal, { agent, model, source: "api" });
       s.logMessages(sessionInfo, reqMsgs.map((x) => ({ ...x, provider, model, agent })), "history");
     } catch {
       /* recording must never break the call */
@@ -320,10 +323,12 @@ export async function handleProxy(
         "history",
       );
     }
+    // Decisions the model wrote as ```scenaria blocks (chat prompt) → decision nodes.
+    if (answer?.text?.includes("```scenaria")) applyBlocks(s, answer.text, { agent, model: answer.model ?? model, source: "api" }, task);
     const cfg = { ...DEFAULT_PROXY, ...(s.config().proxy ?? {}) };
     if (cfg.autoCheckpoint && s.repo) {
       const lastUser = [...reqMsgs].reverse().find((x) => x.role === "user")?.text;
-      s.autoCheckpoint({ agent, model: answer?.model ?? model, source: "api" }, lastUser);
+      s.autoCheckpoint({ agent, model: answer?.model ?? model, source: "api" }, lastUser, task);
     }
   } catch {
     /* recording must never break the call */

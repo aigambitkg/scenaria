@@ -242,7 +242,7 @@ export function parseImport(file: string, format: ImportFormat = "auto"): Import
 
 export function importConversations(s: Scenaria, file: string, format: ImportFormat = "auto") {
   const convs = parseImport(file, format);
-  if (!s.head()) s.startMission({ title: "Imported conversations", source: "cli" });
+  if (!s.head()) s.ensureBaseline({ agent: "import", source: "cli" });
   let total = 0;
   const sessions: string[] = [];
   for (const c of convs) {

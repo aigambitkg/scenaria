@@ -1,15 +1,16 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { basename, join } from "node:path";
 import { userInfo } from "node:os";
-import { composeContext, estimateTokens, optionLabel } from "./context.js";
+import { composeContext, estimateTokens, nearestGoal, optionLabel, taskNodes } from "./context.js";
 import { renderNodeNote, renderProtocol } from "./protocol.js";
 import { ShadowRepo, cleanEnv } from "./snapshot.js";
-import { Store, resolveRoot, writeTextAtomic } from "./store.js";
+import { Store, numId as numIdOf, resolveRoot, writeJsonAtomic, writeTextAtomic } from "./store.js";
 import type {
   DecisionOption,
   GraphSnapshot,
   NodeType,
+  ProjectRule,
   ScenariaConfig,
   ScenariaNode,
   SnapshotFolderConfig,
@@ -49,11 +50,26 @@ function attrib(a: Actor) {
 }
 
 export interface MissionInput extends Actor {
-  title: string;
+  /** Task title. Empty = only update the project (e.g. set projectGoal). */
+  title?: string;
   goal?: string;
   brief?: string;
   tags?: string[];
+  /** The project's overall main goal (set/replace on the project root n0). */
+  projectGoal?: string;
+  /** Session/conversation key this task belongs to (defaults to the pending task's key). */
+  key?: string;
 }
+
+/** A session's task: created lazily (as a goal node) right before its first real node. */
+export interface TaskHint {
+  key: string;
+  title: string;
+  goal?: string;
+}
+
+/** The project root always has this id. */
+export const ROOT_ID = "n0";
 
 export type OptionInput = string | { label: string; description?: string };
 
@@ -63,6 +79,10 @@ export interface DecisionInput extends Actor {
   /** Option id ("a"), label, or 1-based index. Omit for an open decision. */
   chosen?: string | number;
   rationale?: string;
+  context?: string;
+  servesGoal?: string;
+  expectedOutcome?: string;
+  task?: TaskHint;
   assumptions?: string[];
   confidence?: number;
   title?: string;
@@ -83,6 +103,11 @@ export interface CheckpointInput extends Actor {
   type?: Extract<NodeType, "checkpoint" | "autosave">;
   /** Ignored files to include anyway (used to back up files a rewind would overwrite). */
   forceAdd?: string[];
+  /** Attach to (and lazily create) this session's task. */
+  task?: TaskHint;
+  /** Mark the current task as done (optionally with a summary). */
+  taskDone?: boolean;
+  summary?: string;
 }
 
 export interface RewindOptions extends Actor {
@@ -102,6 +127,10 @@ export interface ContextResult {
   nodeId: string;
   markdown: string;
   tokens: number;
+  /** Estimated tokens of the raw conversation history along the same path (what the capsule replaces). */
+  historyTokens: number;
+  /** Items left out to stay within the budget (reachable via recall / get_node). */
+  omitted: number;
 }
 
 const OPTION_IDS = "abcdefghijklmnopqrstuvwxyz";
@@ -173,7 +202,7 @@ export class Scenaria {
         proxy: { ...DEFAULT_PROXY, upstreams: { ...DEFAULT_PROXY.upstreams } },
       };
       store.writeConfig(config);
-      store.writeState({ head: null, activeMission: null, counter: 0, schema: 2, scenarioCounter: 0, messageCounter: 0 });
+      store.writeState({ head: null, activeMission: null, counter: 0, schema: 3, scenarioCounter: 0, messageCounter: 0, projectRoot: null });
       writeFileSync(store.path(".gitignore"), GITIGNORE_LINES.join("\n") + "\n");
       store.appendEvent({ type: "init", data: { message: `initialized in ${r}` } });
     }
@@ -208,8 +237,8 @@ export class Scenaria {
       const missing = GITIGNORE_LINES.filter((l) => !l.startsWith("#") && !have.includes(l));
       if (missing.length) appendFileSync(gi, (have.length && have[have.length - 1] !== "" ? "\n" : "") + missing.join("\n") + "\n");
     } catch {}
-    if ((this.store.readState().schema ?? 1) >= 2) return;
-    this.store.withLock(() => {
+    if ((this.store.readState().schema ?? 1) >= 3) return;
+    if ((this.store.readState().schema ?? 1) < 2) this.store.withLock(() => {
       const state = this.store.readState();
       if ((state.schema ?? 1) >= 2) return;
       const nodes = this.store.listNodes();
@@ -240,6 +269,201 @@ export class Scenaria {
       state.messageCounter ??= 0;
       state.schema = 2;
       this.store.writeState(state);
+    });
+    this.store.withLock(() => this.migrateToProjectTree());
+  }
+
+  /**
+   * Schema 3: one project tree. Older projects had one root per mission; they are joined
+   * into a single line under a new project root n0 — each former mission becomes a task
+   * (goal node) attached to the node that was HEAD when it was started (from the event log).
+   * Scenario labels are recomputed, so a new scenario only marks a real branch.
+   * A backup of the previous node files is kept in .scenaria/backups/.
+   */
+  private migrateToProjectTree() {
+    let state = this.store.readState();
+    // An interrupted migration (process killed, hook timeout) is rolled back from its backup and redone.
+    if (state.migrating) {
+      const backup = join(this.store.dir, state.migrating);
+      if (existsSync(join(backup, "state.json")) && existsSync(join(backup, "nodes"))) {
+        const keep = new Set(readdirSync(join(backup, "nodes")).filter((f) => f.endsWith(".json")));
+        for (const f of readdirSync(this.store.path("nodes"))) if (f.endsWith(".json") && !keep.has(f)) rmSync(this.store.path("nodes", f), { force: true });
+        for (const f of keep) copyFileSync(join(backup, "nodes", f), this.store.path("nodes", f));
+        copyFileSync(join(backup, "state.json"), this.store.path("state.json"));
+        state = this.store.readState();
+      } else {
+        const missing = state.migrating;
+        delete state.migrating;
+        this.store.writeState(state);
+        this.store.appendEvent({ type: "migrate", data: { message: `WARNING: migration backup ${missing} is missing — the tree may be half-migrated; check .scenaria/backups/` } });
+      }
+    }
+    if ((state.schema ?? 1) >= 3) return;
+    const nodes = this.store.listNodes();
+    if (!nodes.length || this.store.hasNode(ROOT_ID)) {
+      state.schema = 3;
+      state.projectRoot = this.store.hasNode(ROOT_ID) ? ROOT_ID : null;
+      this.store.writeState(state);
+      return;
+    }
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const backupRel = join("backups", `schema2-${stamp}`);
+    const backup = this.store.path(backupRel);
+    mkdirSync(join(backup, "nodes"), { recursive: true });
+    for (const f of readdirSync(this.store.path("nodes"))) if (f.endsWith(".json")) copyFileSync(this.store.path("nodes", f), join(backup, "nodes", f));
+    copyFileSync(this.store.path("state.json"), join(backup, "state.json"));
+    // From here on every write is undone if the migration does not finish.
+    this.store.writeState({ ...this.store.readState(), migrating: backupRel });
+
+    const byCreated = (a: ScenariaNode, b: ScenariaNode) => a.createdAt.localeCompare(b.createdAt) || numIdOf(a.id) - numIdOf(b.id);
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    const roots = nodes.filter((n) => !n.parentId || !byId.has(n.parentId)).sort(byCreated);
+    const rootIds = new Set(roots.map((r) => r.id));
+    const origRoot = (id: string): string => {
+      let cur = byId.get(id);
+      const seen = new Set<string>();
+      while (cur?.parentId && byId.has(cur.parentId) && !seen.has(cur.id)) {
+        seen.add(cur.id);
+        cur = byId.get(cur.parentId);
+      }
+      return cur?.id ?? id;
+    };
+
+    // Which node was HEAD when each later mission started? Replay the event log.
+    const parentOf = new Map<string, string>();
+    let head: string | null = null;
+    for (const e of this.store.readEvents()) {
+      if (e.type === "mission" && e.nodeId && rootIds.has(e.nodeId)) {
+        if (head && head !== e.nodeId && byId.has(head) && origRoot(head) !== e.nodeId) parentOf.set(e.nodeId, head);
+        head = e.nodeId;
+      } else if (["decision", "checkpoint", "branch", "autosave"].includes(e.type) && e.nodeId && byId.has(e.nodeId)) head = e.nodeId;
+      else if (e.type === "rewind" && typeof e.data?.to === "string" && byId.has(e.data.to)) head = e.data.to;
+    }
+
+    const single = roots.length === 1;
+    const project: ScenariaNode = {
+      id: ROOT_ID,
+      uid: ulid(Date.parse(roots[0].createdAt) || Date.now()),
+      type: "mission",
+      missionId: ROOT_ID,
+      parentId: null,
+      title: this.config().projectName,
+      goal: single ? roots[0].goal : undefined,
+      createdAt: roots[0].createdAt,
+      agent: "scenaria",
+      source: "api",
+      status: "active",
+      snapshot: roots[0].snapshot ? { ...roots[0].snapshot } : null,
+      meta: { project: true, migratedFrom: roots.map((r) => r.id) },
+    };
+
+    const headNow = state.head && byId.has(state.head) ? state.head : null;
+    const headTree = headNow ? origRoot(headNow) : null;
+    roots.forEach((r, i) => {
+      let parent = i === 0 ? ROOT_ID : parentOf.get(r.id);
+      if (!parent) {
+        // Fallback: the newest node of an earlier tree created before this mission.
+        const earlier = nodes.filter((n) => origRoot(n.id) !== r.id && n.createdAt <= r.createdAt).sort(byCreated);
+        parent = earlier.length ? earlier[earlier.length - 1].id : ROOT_ID;
+      }
+      const p = parent === ROOT_ID ? project : byId.get(parent)!;
+      r.parentId = parent;
+      r.viaOption = p.type === "decision" ? p.chosen : undefined;
+      if (r.type === "mission") {
+        r.type = "goal";
+        r.status = r.id === headTree ? "active" : "done";
+        r.meta = { ...(r.meta ?? {}), formerMission: true, autoBaseline: undefined };
+      } else {
+        // An orphan (its parent file is missing) keeps its type; it is only re-attached.
+        r.meta = { ...(r.meta ?? {}), reattached: true };
+      }
+    });
+
+    // The task HEAD lies in is the active one (walk the new parents; orphans may sit in between).
+    if (headNow) {
+      let cur: ScenariaNode | undefined = byId.get(headNow);
+      const seen = new Set<string>();
+      while (cur && cur.type !== "goal" && cur.parentId && cur.parentId !== ROOT_ID && !seen.has(cur.id)) {
+        seen.add(cur.id);
+        cur = byId.get(cur.parentId);
+      }
+      if (cur?.type === "goal") {
+        for (const r of roots) if (r.type === "goal") r.status = "done";
+        cur.status = "active";
+      }
+    }
+
+    // Recompute ids along the single tree (parents before children).
+    const all = [project, ...nodes];
+    const done = new Map<string, ScenariaNode>();
+    let counter = 0;
+    const queue = [...all].sort(byCreated);
+    queue.sort((a, b) => (a.id === ROOT_ID ? -1 : b.id === ROOT_ID ? 1 : 0));
+    let guard = 0;
+    while (queue.length && guard++ < all.length * all.length + 10) {
+      const n = queue.shift()!;
+      if (n.parentId && !done.has(n.parentId)) {
+        queue.push(n);
+        continue;
+      }
+      n.missionId = ROOT_ID;
+      n.forkedFrom = undefined;
+      const parent = n.parentId ? done.get(n.parentId)! : null;
+      n.uid ??= ulid(Date.parse(n.createdAt) || Date.now());
+      if (!parent) {
+        n.scenarioId = `s${++counter}`;
+        n.version = 0;
+      } else if (
+        [...done.values()].some((d) => d.parentId === parent.id && d.scenarioId === parent.scenarioId) ||
+        (parent.type === "decision" && parent.chosen && n.viaOption && n.viaOption !== parent.chosen)
+      ) {
+        n.scenarioId = `s${++counter}`;
+        n.version = (parent.version ?? 0) + 1;
+        n.forkedFrom = parent.id;
+      } else {
+        n.scenarioId = parent.scenarioId;
+        n.version = (parent.version ?? 0) + 1;
+      }
+      done.set(n.id, n);
+    }
+    for (const n of all) this.store.writeNode(n);
+    // Refs and notes in bulk (one git process, one node listing) — fast even for thousands of nodes.
+    if (this.repo) {
+      try {
+        const refs = this.repo.git(["for-each-ref", "--format=%(refname)", "refs/scenaria/scenarios", "refs/scenaria/heads"]);
+        const lines = refs.split("\n").map((x) => x.trim()).filter(Boolean).map((ref) => `delete ${ref}`);
+        for (const n of all) {
+          if (!n.snapshot || !n.scenarioId) continue;
+          lines.push(`update refs/scenaria/scenarios/${n.scenarioId}/v${n.version ?? 0} ${n.snapshot.commit}`);
+        }
+        const heads = new Map<string, string>();
+        for (const n of [...all].sort(byCreated)) if (n.snapshot && n.scenarioId) heads.set(n.scenarioId, n.snapshot.commit);
+        for (const [sc, commit] of heads) lines.push(`update refs/scenaria/heads/${sc} ${commit}`);
+        if (lines.length) this.repo.git(["update-ref", "--stdin"], { input: lines.join("\n") + "\n" });
+      } catch {
+        /* refs are a convenience */
+      }
+    }
+    this.writeNotesBulk(all);
+
+    const st = this.store.readState();
+    delete st.migrating;
+    st.schema = 3;
+    st.projectRoot = ROOT_ID;
+    st.activeMission = ROOT_ID;
+    st.scenarioCounter = counter;
+    st.head = headNow ?? ROOT_ID;
+    const g = nearestGoal(this.path(st.head));
+    st.currentTask = g ? { key: `migrated:${g.id}`, nodeId: g.id } : null;
+    st.taskBindings = g ? { [`migrated:${g.id}`]: g.id } : {};
+    this.store.writeState(st);
+    try {
+      if (this.repo) new SnapshotFolders(this.root, this.store.dir, this.repo).writeIndex(this.store.listNodes(), this.folderConfig(), this.config().projectName);
+    } catch {}
+    this.store.appendEvent({
+      type: "migrate",
+      nodeId: ROOT_ID,
+      data: { message: `joined ${roots.length} mission tree(s) into one project tree (backup: ${backup.slice(this.root.length + 1)})`, roots: roots.map((r) => r.id) },
     });
   }
 
@@ -307,28 +531,47 @@ export class Scenaria {
     return null;
   }
 
+  /** The single project root (n0), if it exists yet. */
+  project(): ScenariaNode | null {
+    const id = this.store.readState().projectRoot ?? ROOT_ID;
+    return this.store.hasNode(id) ? this.store.readNode(id) : null;
+  }
+
+  /** The task (goal node) the given node — default HEAD — belongs to. */
+  currentTask(id?: string): ScenariaNode | null {
+    const target = id ?? this.store.readState().head;
+    return target ? nearestGoal(this.path(target)) : null;
+  }
+
   status() {
     const state = this.store.readState();
     const nodes = this.store.listNodes();
     const head = state.head ? nodes.find((n) => n.id === state.head) ?? null : null;
-    const mission = state.activeMission ? nodes.find((n) => n.id === state.activeMission) ?? null : null;
-    const inMission = nodes.filter((n) => n.missionId === state.activeMission);
+    const project = nodes.find((n) => n.id === (state.projectRoot ?? ROOT_ID)) ?? null;
+    const task = head ? nearestGoal(this.path(head.id)) : null;
+    const decisions = nodes.filter((n) => n.type === "decision");
     return {
       root: this.root,
       projectName: this.config().projectName,
       snapshots: Boolean(this.repo),
       head,
-      mission,
+      project,
+      /** @deprecated kept for older clients — the project root */
+      mission: project,
+      task,
       dirty: head ? this.isDirty(head) : null,
       counts: {
-        nodes: inMission.length,
-        decisions: inMission.filter((n) => n.type === "decision").length,
-        checkpoints: inMission.filter((n) => n.type === "checkpoint").length,
-        branches: inMission.filter((n) => n.type === "branch").length,
-        verified: inMission.filter((n) => n.verification?.status === "passed").length,
-        failed: inMission.filter((n) => n.verification?.status === "failed").length,
+        nodes: nodes.length,
+        tasks: nodes.filter((n) => n.type === "goal").length,
+        decisions: decisions.length,
+        checkpoints: nodes.filter((n) => n.type === "checkpoint").length,
+        branches: nodes.filter((n) => n.type === "branch").length,
+        verified: nodes.filter((n) => n.verification?.status === "passed").length,
+        failed: nodes.filter((n) => n.verification?.status === "failed").length,
+        withoutRationale: decisions.filter((d) => d.chosen && !d.rationale).length,
+        withoutContext: decisions.filter((d) => !d.context && !d.trigger).length,
       },
-      missions: nodes.filter((n) => n.type === "mission").map((m) => ({ id: m.id, title: m.title })),
+      rules: this.rules().length,
     };
   }
 
@@ -450,39 +693,47 @@ export class Scenaria {
     return r.status === 0 ? { ok: true, message: "refs/scenaria/* mirrored into the project repository" } : { ok: false, message: (r.stderr || "").trim() };
   }
 
-  /** Baseline mission for `scenaria start`: captures the state before any agent work. */
+  /** Baseline for `scenaria start`: the project root n0 captures the state before any agent work. */
   ensureBaseline(actor: Actor = {}): ScenariaNode {
-    const head = this.head();
-    if (head) return head;
-    const node = this.startMission({
-      title: `Session ${new Date().toISOString().slice(0, 16).replace("T", " ")}`,
-      ...actor,
+    return this.store.withLock(() => {
+      this.ensureProject(actor);
+      return this.head()!;
     });
-    node.meta = { ...(node.meta ?? {}), autoBaseline: true };
-    this.store.withLock(() => this.save(node));
-    return node;
   }
 
   /**
-   * Make sure there is a mission for a new piece of work. An untouched auto-baseline
-   * mission is renamed after the first real request instead of creating a second root.
+   * Remember the latest request of a session/conversation. Its task node is only created
+   * when the session produces its first real node (decision, checkpoint, autosave), so
+   * questions without any work leave the map untouched. Also creates the project root
+   * (baseline snapshot) on first use.
    */
-  claimMission(title: string, goal: string, actor: Actor = {}): ScenariaNode {
-    const head = this.head();
-    if (!head) return this.startMission({ title, goal, brief: goal, ...actor });
-    if (head.type === "mission" && head.meta?.autoBaseline && !this.children(head.id).length) {
-      return this.store.withLock(() => {
-        const n = this.store.readNode(head.id);
-        n.title = title;
-        n.goal = goal;
-        n.brief = goal;
-        n.meta = { ...(n.meta ?? {}), autoBaseline: false };
-        this.save(n);
-        this.store.appendEvent({ type: "update", nodeId: n.id, data: { fields: ["title", "goal"] } });
-        return n;
-      });
-    }
-    return head;
+  noteTask(key: string, title: string, goal?: string, actor: Actor = {}) {
+    const t = title.replace(/\s+/g, " ").trim().slice(0, 120);
+    if (!t) return;
+    this.store.withLock(() => {
+      this.ensureProject(actor);
+      if (this.boundTask(key)) return;
+      const st = this.store.readState();
+      st.pendingTask = { key, title: t, goal: goal?.replace(/\s+/g, " ").trim().slice(0, 600) || undefined, at: new Date().toISOString() };
+      this.store.writeState(st);
+    });
+  }
+
+  /** Set or replace the project's main goal (lives on the project root n0). */
+  setProjectGoal(goal: string, actor: Actor = {}): ScenariaNode {
+    return this.store.withLock(() => this.setProjectGoalUnlocked(goal, actor));
+  }
+
+  private setProjectGoalUnlocked(goal: string, actor: Actor = {}): ScenariaNode {
+    const root = this.ensureProject(actor);
+    const g = goal.trim();
+    if (!g || g === root.goal) return root;
+    const prev = root.goal;
+    root.goal = g;
+    if (prev) root.meta = { ...(root.meta ?? {}), goalHistory: [...((root.meta?.goalHistory as any[]) ?? []), { goal: prev, until: new Date().toISOString() }].slice(-10) };
+    this.save(root);
+    this.store.appendEvent({ type: "update", nodeId: root.id, data: { fields: ["goal"], message: prev ? "main goal changed" : "main goal set" } });
+    return root;
   }
 
   // ------------------------------------------------------------------ conversations
@@ -507,9 +758,30 @@ export class Scenaria {
           return `m${st.messageCounter}`;
         },
       });
+      const lastUser = [...added].reverse().find((m) => m.role === "user" && m.text.trim());
+      if (lastUser) {
+        const st = this.store.readState();
+        st.lastUserMessage = { text: lastUser.text.slice(0, 600), ts: lastUser.ts };
+        this.store.writeState(st);
+      }
       if (added.length) this.store.appendEvent({ type: "messages", nodeId: state.head ?? undefined, data: { session: sess.id, count: added.length } });
       return { session: conv.getSession(sess.id), added };
     }
+  }
+
+  /**
+   * Messages that led to a node. For the first node of a lazily created task this includes
+   * the task's opening conversation (said while the task's parent was HEAD).
+   */
+  messagesLeadingTo(id: string) {
+    const node = this.store.readNode(id);
+    const conv = this.conversations;
+    if (!node.parentId) return [];
+    const parent = this.store.hasNode(node.parentId) ? this.store.readNode(node.parentId) : null;
+    const since = typeof parent?.meta?.since === "string" ? (parent.meta.since as string) : null;
+    return conv
+      .allMessages()
+      .filter((m) => m.ts <= node.createdAt && (m.headAt === node.parentId || (since && parent?.parentId && m.headAt === parent.parentId && m.ts >= since)));
   }
 
   /** Version overview: every node with its ids, snapshot and folder. */
@@ -547,6 +819,16 @@ export class Scenaria {
     this.writeNote(n);
   }
 
+  private writeNotesBulk(nodes: ScenariaNode[]) {
+    try {
+      const kids = new Map<string, ScenariaNode[]>();
+      for (const n of nodes) if (n.parentId) kids.set(n.parentId, [...(kids.get(n.parentId) ?? []), n]);
+      for (const n of nodes) writeTextAtomic(this.store.path("kb", `${n.id}.md`), renderNodeNote(n, kids.get(n.id) ?? []));
+    } catch {
+      /* knowledge-base notes are best effort */
+    }
+  }
+
   private writeNote(n: ScenariaNode) {
     try {
       const nodes = this.store.listNodes();
@@ -573,43 +855,147 @@ export class Scenaria {
     return this.repo.snapshot(id, `${id}: ${title}`, parentSnap?.commit, forceAdd);
   }
 
-  private ensureMission(actor: Actor): ScenariaNode {
-    const head = this.head();
-    if (head) return head;
-    return this.startMissionUnlocked({
-      title: `Mission ${new Date().toISOString().slice(0, 16).replace("T", " ")}`,
-      goal: undefined,
-      agent: actor.agent,
-      model: actor.model,
-      user: actor.user,
-      source: actor.source,
+  /** Create the project root n0 if needed (call under lock). The first node of every project. */
+  private ensureProject(actor: Actor = {}): ScenariaNode {
+    const st = this.store.readState();
+    const id = st.projectRoot ?? ROOT_ID;
+    if (this.store.hasNode(id)) return this.store.readNode(id);
+    const node: ScenariaNode = {
+      id: ROOT_ID,
+      type: "mission",
+      missionId: ROOT_ID,
+      parentId: null,
+      title: this.config().projectName,
+      status: "active",
+      createdAt: new Date().toISOString(),
+      ...attrib({ agent: actor.agent, model: actor.model, user: actor.user, source: actor.source }),
+      meta: { project: true },
+    };
+    this.assignIdentity(node, null);
+    node.snapshot = this.takeSnapshot(ROOT_ID, node.title, null);
+    this.save(node);
+    const s2 = this.store.readState();
+    s2.projectRoot = ROOT_ID;
+    s2.activeMission = ROOT_ID;
+    if (!s2.head || !this.store.hasNode(s2.head)) s2.head = ROOT_ID;
+    this.store.writeState(s2);
+    this.afterCreate(node);
+    this.store.appendEvent({ type: "mission", nodeId: ROOT_ID, data: { message: "project root" } });
+    return node;
+  }
+
+  /** Where new work attaches: HEAD (after creating the project root and, if given, the session's task). */
+  private ensureParent(input: Actor & { task?: TaskHint }): ScenariaNode {
+    const project = this.ensureProject(input);
+    if (input.task?.key && input.task.title?.trim() && !this.boundTask(input.task.key)) {
+      this.createGoalUnlocked({ title: input.task.title, goal: input.task.goal, agent: input.agent, model: input.model, user: input.user, source: input.source }, input.task.key, true);
+    }
+    return this.head() ?? project;
+  }
+
+  /**
+   * The task a session/conversation key is bound to — only while that task lies on the
+   * HEAD path. After a rewind to before the task (or onto another branch) the binding no
+   * longer applies and the session's next real step starts a new task there.
+   */
+  private boundTask(key: string): string | null {
+    const st = this.store.readState();
+    const id = st.taskBindings?.[key];
+    if (!id || !st.head || !this.store.hasNode(id)) return null;
+    let cur: string | null = st.head;
+    const seen = new Set<string>();
+    while (cur && !seen.has(cur)) {
+      if (cur === id) return id;
+      seen.add(cur);
+      cur = this.store.hasNode(cur) ? this.store.readNode(cur).parentId : null;
+    }
+    return null;
+  }
+
+  /**
+   * Start a task (sub-goal) on the project line. This never creates a second tree:
+   * the task is attached to HEAD, so the whole project stays one connected history.
+   * A new scenario only appears when work continues from an earlier point (fork/rewind).
+   */
+  startMission(input: MissionInput): ScenariaNode {
+    return this.store.withLock(() => {
+      const root = this.ensureProject(input);
+      if (input.projectGoal?.trim()) this.setProjectGoalUnlocked(input.projectGoal, input);
+      if (!input.title?.trim()) return this.store.readNode(root.id);
+      const head = this.head();
+      // Starting a task twice without any work in between refines it instead of stacking tasks.
+      if (head && head.type === "goal" && !this.children(head.id).length) {
+        head.title = input.title.trim().slice(0, 200);
+        if (input.goal?.trim()) head.goal = input.goal.trim();
+        if (input.brief?.trim()) head.brief = input.brief.trim();
+        this.save(head);
+        this.store.appendEvent({ type: "update", nodeId: head.id, data: { fields: ["title", "goal"] } });
+        return head;
+      }
+      // The new task takes over the session that is working right now (pending request, else the current task's session).
+      const st = this.store.readState();
+      const key = input.key ?? st.pendingTask?.key ?? st.currentTask?.key ?? `task:${Date.now().toString(36)}`;
+      return this.createGoalUnlocked(input, key, false);
     });
   }
 
-  startMission(input: MissionInput): ScenariaNode {
-    return this.store.withLock(() => this.startMissionUnlocked(input));
+  /** @deprecated use startMission (tasks) / noteTask. Kept for API compatibility. */
+  claimMission(title: string, goal: string, actor: Actor = {}): ScenariaNode {
+    this.noteTask(`claim:${title}`, title, goal, actor);
+    return this.head()!;
   }
 
-  private startMissionUnlocked(input: MissionInput): ScenariaNode {
+  /**
+   * Create a goal node under HEAD. `inherit` = lazily created right before real work:
+   * it shares the previous snapshot (state at task start) instead of capturing new edits.
+   */
+  private createGoalUnlocked(input: MissionInput, key: string, inherit: boolean): ScenariaNode {
+    const root = this.ensureProject(input);
+    const parent = this.head() ?? root;
+    // The task being left is finished (unless someone already set its status).
+    const prev = nearestGoal(this.path(parent.id));
+    if (prev && prev.type === "goal" && (!prev.status || prev.status === "active")) {
+      prev.status = "done";
+      this.save(prev);
+    }
     const id = this.nextId();
     const node: ScenariaNode = {
       id,
-      type: "mission",
-      missionId: id,
-      parentId: null,
-      title: input.title.trim(),
+      type: "goal",
+      missionId: root.id,
+      parentId: parent.id,
+      viaOption: this.viaFor(parent),
+      title: (input.title ?? "Task").trim().slice(0, 200) || "Task",
       goal: input.goal?.trim() || undefined,
       brief: input.brief?.trim() || undefined,
+      status: "active",
       createdAt: new Date().toISOString(),
       ...attrib(input),
       tags: clean(input.tags),
+      meta: { taskKey: key },
     };
-    this.assignIdentity(node, null);
-    node.snapshot = this.takeSnapshot(id, node.title, null);
+    this.assignIdentity(node, parent);
+    if (inherit) {
+      const snap = this.nearestSnapshot(parent);
+      node.snapshot = snap ? { ...snap } : this.takeSnapshot(id, node.title, parent);
+      // Created after the fact: the conversation that started this task was said at the parent.
+      const pending = this.store.readState().pendingTask;
+      if (pending?.key === key) node.meta = { ...node.meta, since: pending.at };
+    } else node.snapshot = this.takeSnapshot(id, node.title, parent);
     this.save(node);
-    this.setHead(id, id);
+    this.setHead(id, root.id);
+    const st = this.store.readState();
+    st.currentTask = { key, nodeId: id };
+    const bindings = { ...(st.taskBindings ?? {}) };
+    delete bindings[key];
+    bindings[key] = id;
+    const keys = Object.keys(bindings);
+    for (const k of keys.slice(0, Math.max(0, keys.length - 200))) delete bindings[k];
+    st.taskBindings = bindings;
+    if (st.pendingTask?.key === key) st.pendingTask = null;
+    this.store.writeState(st);
     this.afterCreate(node);
-    this.store.appendEvent({ type: "mission", nodeId: id });
+    this.store.appendEvent({ type: "goal", nodeId: id });
     return node;
   }
 
@@ -631,7 +1017,7 @@ export class Scenaria {
 
   decide(input: DecisionInput): ScenariaNode {
     return this.store.withLock(() => {
-      const parent = this.ensureMission(input);
+      const parent = this.ensureParent(input);
       const id = this.nextId();
       const options: DecisionOption[] = input.options
         .map((o) => (typeof o === "string" ? { label: o } : o))
@@ -651,6 +1037,10 @@ export class Scenaria {
         question: input.question.trim(),
         options,
         rationale: input.rationale?.trim() || undefined,
+        context: input.context?.trim() || undefined,
+        servesGoal: input.servesGoal?.trim() || undefined,
+        expectedOutcome: input.expectedOutcome?.trim() || undefined,
+        trigger: this.recentUserRequest(parent),
         assumptions: clean(input.assumptions),
         confidence: typeof input.confidence === "number" ? Math.max(0, Math.min(1, input.confidence)) : undefined,
         createdAt: new Date().toISOString(),
@@ -691,6 +1081,22 @@ export class Scenaria {
     });
   }
 
+  /** The latest user request (if recent and from the current task) — the automatic context of a decision. */
+  private recentUserRequest(parent?: ScenariaNode): string | undefined {
+    const m = this.store.readState().lastUserMessage;
+    if (!m?.text) return undefined;
+    const at = Date.parse(m.ts);
+    if (Date.now() - at > 6 * 3600_000) return undefined;
+    const task = parent ? nearestGoal(this.path(parent.id)) : null;
+    if (task) {
+      const since = Date.parse(typeof task.meta?.since === "string" ? (task.meta.since as string) : task.createdAt);
+      // A request from before this task started belongs to an earlier task.
+      if (at < since - 15 * 60_000) return undefined;
+    }
+    const one = m.text.replace(/\s+/g, " ").trim();
+    return one.length > 300 ? one.slice(0, 299) + "…" : one;
+  }
+
   private viaFor(parent: ScenariaNode): string | undefined {
     return parent.type === "decision" ? parent.chosen : undefined;
   }
@@ -700,8 +1106,11 @@ export class Scenaria {
   }
 
   private checkpointUnlocked(input: CheckpointInput): ScenariaNode | null {
-    const parent = this.ensureMission(input);
-    if (input.onlyIfChanged && this.repo && !this.isDirty(parent)) return null;
+    if (input.onlyIfChanged && this.repo && !this.isDirty(this.head())) {
+      if (input.taskDone) this.finishTaskUnlocked(input.summary);
+      return null;
+    }
+    const parent = this.ensureParent(input);
     const id = this.nextId();
     const node: ScenariaNode = {
       id,
@@ -732,7 +1141,29 @@ export class Scenaria {
     this.setHead(id, node.missionId);
     this.afterCreate(node);
     this.store.appendEvent({ type: node.type === "autosave" ? "autosave" : "checkpoint", nodeId: id });
+    if (input.taskDone) this.finishTaskUnlocked(input.summary);
     return node;
+  }
+
+  /** Mark the current task as done with a summary (the summary is what later capsules carry). */
+  finishTask(summary?: string): ScenariaNode | null {
+    return this.store.withLock(() => this.finishTaskUnlocked(summary));
+  }
+
+  private finishTaskUnlocked(summary?: string): ScenariaNode | null {
+    const head = this.head();
+    if (!head) return null;
+    const goal = nearestGoal(this.path(head.id));
+    if (!goal || goal.type !== "goal") return null;
+    goal.status = "done";
+    // A summary describes the path it was written on; capsules on other branches of this task ignore it.
+    if (summary?.trim()) {
+      goal.summary = summary.trim();
+      goal.meta = { ...(goal.meta ?? {}), summaryFrom: head.id };
+    }
+    this.save(goal);
+    this.store.appendEvent({ type: "update", nodeId: goal.id, data: { fields: ["status", "summary"] } });
+    return goal;
   }
 
   /**
@@ -868,7 +1299,10 @@ export class Scenaria {
     });
   }
 
-  update(id: string, patch: Partial<Pick<ScenariaNode, "title" | "facts" | "outputs" | "openQuestions" | "irreversible" | "tags" | "goal" | "brief">>): ScenariaNode {
+  update(
+    id: string,
+    patch: Partial<Pick<ScenariaNode, "title" | "facts" | "outputs" | "openQuestions" | "irreversible" | "tags" | "goal" | "brief" | "lessons" | "summary" | "status" | "rationale" | "context" | "servesGoal" | "expectedOutcome">>,
+  ): ScenariaNode {
     return this.store.withLock(() => {
       const node = this.store.readNode(id);
       Object.assign(node, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)));
@@ -882,7 +1316,7 @@ export class Scenaria {
    * Checkpoint the working tree if it differs from HEAD (used by `scenaria watch`).
    * The title lists the changed files, so the map stays readable without an agent summary.
    */
-  autoCheckpoint(actor: Actor = {}, titleHint?: string): ScenariaNode | null {
+  autoCheckpoint(actor: Actor = {}, titleHint?: string, task?: TaskHint): ScenariaNode | null {
     if (!this.repo) return null;
     return this.store.withLock(() => {
       const head = this.head();
@@ -895,7 +1329,7 @@ export class Scenaria {
       const files = names.length ? `${shown}${names.length > 3 ? ` (+${names.length - 3})` : ""}` : "";
       const hint = titleHint?.replace(/\s+/g, " ").trim().slice(0, 80);
       const title = hint ? `${hint}${files ? ` — ${files}` : ""}` : files ? `Auto-save: ${files}` : "Auto-save";
-      return this.checkpointUnlocked({ title, onlyIfChanged: true, source: "watch", ...actor, agent: actor.agent ?? "watch", outputs: names.length ? [`Changed: ${names.slice(0, 8).join(", ")}${names.length > 8 ? " …" : ""}`] : undefined });
+      return this.checkpointUnlocked({ title, onlyIfChanged: true, source: "watch", ...actor, task, agent: actor.agent ?? "watch", outputs: names.length ? [`Changed: ${names.slice(0, 8).join(", ")}${names.length > 8 ? " …" : ""}`] : undefined });
     });
   }
 
@@ -913,21 +1347,71 @@ export class Scenaria {
   }
 
   // ------------------------------------------------------------------ context & diff
-  context(id?: string): ContextResult {
+  /**
+   * Resume capsule for a node (default HEAD), kept within a token budget:
+   * project goal, rules, current task in detail, earlier tasks as one-line rollups.
+   * What does not fit stays reachable through recall / get_node.
+   */
+  context(id?: string, opts: { budget?: number } = {}): ContextResult {
     const target = id ?? this.store.readState().head;
-    if (!target) throw new Error("No HEAD yet — start a mission first.");
+    if (!target) throw new Error("No HEAD yet — start a task first.");
     const path = this.path(target);
     const pathIds = new Set(path.map((p) => p.id));
-    const lastUser = this.conversations
-      .allMessages()
-      .filter((m) => m.role === "user" && m.headAt && pathIds.has(m.headAt))
-      .pop();
-    const markdown = composeContext(path, {
-      fullCheckpoints: this.config().contextFullCheckpoints,
+    const onPath = this.conversations.allMessages().filter((m) => m.headAt && pathIds.has(m.headAt));
+    const lastUser = onPath.filter((m) => m.role === "user").pop();
+    const historyTokens = onPath.reduce((sum, m) => sum + estimateTokens(m.text ?? "") + (m.toolCalls?.length ?? 0) * 20, 0);
+    const cfg = this.config();
+    const r = composeContext(path, {
+      fullCheckpoints: cfg.contextFullCheckpoints,
       lastGood: this.lastGood(target)?.id ?? null,
       lastUserRequest: lastUser?.text ?? null,
+      budget: opts.budget ?? cfg.contextBudget ?? 1500,
+      rules: this.rules(),
     });
-    return { nodeId: target, markdown, tokens: estimateTokens(markdown) };
+    return { nodeId: target, markdown: r.markdown, tokens: estimateTokens(r.markdown), historyTokens, omitted: r.omitted };
+  }
+
+  // ------------------------------------------------------------------ project memory (rules)
+  private memoryFile() {
+    return this.store.path("memory.json");
+  }
+
+  /** Durable project rules: accepted lessons/recommendations every capsule and prompt carries. */
+  rules(): ProjectRule[] {
+    const f = this.memoryFile();
+    if (!existsSync(f)) return [];
+    try {
+      const m = JSON.parse(readFileSync(f, "utf8"));
+      return Array.isArray(m?.rules) ? m.rules : [];
+    } catch {
+      return [];
+    }
+  }
+
+  addRule(text: string, source: ProjectRule["source"] = "manual", evidence?: string[]): ProjectRule {
+    const t = text.replace(/\s+/g, " ").trim().slice(0, 400);
+    if (!t) throw new Error("rule text is empty");
+    return this.store.withLock(() => {
+      const rules = this.rules();
+      const dup = rules.find((r) => r.text.toLowerCase() === t.toLowerCase());
+      if (dup) return dup;
+      const next = rules.reduce((m, r) => Math.max(m, numIdOf(r.id)), 0) + 1;
+      const rule: ProjectRule = { id: `r${next}`, text: t, source, evidence: clean(evidence), createdAt: new Date().toISOString() };
+      writeJsonAtomic(this.memoryFile(), { rules: [...rules, rule] });
+      this.store.appendEvent({ type: "rule", data: { message: `rule ${rule.id} added: ${t}`, id: rule.id } });
+      return rule;
+    });
+  }
+
+  removeRule(id: string): boolean {
+    return this.store.withLock(() => {
+      const rules = this.rules();
+      const keep = rules.filter((r) => r.id !== id);
+      if (keep.length === rules.length) return false;
+      writeJsonAtomic(this.memoryFile(), { rules: keep });
+      this.store.appendEvent({ type: "rule", data: { message: `rule ${id} removed`, id } });
+      return true;
+    });
   }
 
   diff(fromId: string, toId?: string) {
@@ -948,28 +1432,45 @@ export class Scenaria {
     return { from: fromId, to: toLabel, ...this.repo.diff(from.commit, toRev) };
   }
 
-  /** Text tree for terminals and agents. */
-  treeText(missionId?: string): string {
+  /**
+   * Text tree for terminals and agents. Finished tasks are folded into one line each
+   * (token-friendly); pass full = true for every node, or a node id to start there.
+   */
+  treeText(from?: string, opts: { full?: boolean } = {}): string {
     const state = this.store.readState();
     const nodes = this.store.listNodes();
-    const mid = missionId ?? state.activeMission;
-    const root = nodes.find((n) => n.id === mid);
-    if (!root) return "(no mission yet)";
+    const mid = from && nodes.some((n) => n.id === from) ? from : state.projectRoot ?? ROOT_ID;
+    const root = nodes.find((n) => n.id === mid) ?? nodes.find((n) => !n.parentId);
+    if (!root) return "(no project tree yet)";
     const headPath = new Set(state.head ? this.path(state.head).map((n) => n.id) : []);
-    const icon: Record<string, string> = { mission: "◎", decision: "❖", checkpoint: "◆", branch: "⑂", autosave: "⟲" };
+    const current = state.head ? nearestGoal(this.path(state.head)) : null;
+    const icon: Record<string, string> = { mission: "◎", goal: "◉", decision: "❖", checkpoint: "◆", branch: "⑂", autosave: "⟲" };
     const vmark: Record<string, string> = { passed: " ✔", failed: " ✘", warning: " !", unverified: "" };
     const lines: string[] = [];
-    const walk = (n: ScenariaNode, prefix: string, last: boolean, isRoot: boolean) => {
+    // Linear stretches are printed one step per line without extra indentation; only real branches indent.
+    const walk = (n: ScenariaNode, prefix: string, last: boolean, isRoot: boolean, cont = false) => {
       const parent = n.parentId ? nodes.find((x) => x.id === n.parentId) : undefined;
       const via = parent?.type === "decision" && n.viaOption ? `[${optionLabel(parent, n.viaOption)}] ` : "";
       let label = `${icon[n.type] ?? "·"} ${n.id} ${via}${n.type === "decision" ? n.question ?? n.title : n.title}`;
       if (n.type === "decision") label += ` → ${optionLabel(n, n.chosen) ?? "open"}`;
       label += vmark[n.verification?.status ?? "unverified"];
+      if (n.type === "mission" && n.goal) label += ` — goal: ${n.goal.replace(/\s+/g, " ").slice(0, 120)}`;
+      const fold = !opts.full && n.type === "goal" && n.id !== current?.id && n.id !== root.id;
+      let kids = nodes.filter((x) => x.parentId === n.id);
+      if (fold) {
+        // Show the folded task as one line and continue with the next tasks on the line.
+        const inside = taskNodes(n.id, nodes);
+        const dec = inside.filter((x) => x.type === "decision").length;
+        label += ` [${n.status ?? "done"} · ${inside.length} steps, ${dec} decisions — expand: scenaria tree ${n.id}]`;
+        const insideIds = new Set(inside.map((x) => x.id));
+        kids = nodes.filter((x) => x.type === "goal" && x.parentId && (x.parentId === n.id || insideIds.has(x.parentId)));
+      }
       if (n.id === state.head) label += "   ◀ HEAD";
       else if (headPath.has(n.id)) label += "  ·";
-      lines.push(isRoot ? label : `${prefix}${last ? "└─ " : "├─ "}${label}`);
-      const kids = nodes.filter((x) => x.parentId === n.id);
-      kids.forEach((k, i) => walk(k, isRoot ? "" : prefix + (last ? "   " : "│  "), i === kids.length - 1, false));
+      lines.push(isRoot || cont ? `${prefix}${label}` : `${prefix}${last ? "└─ " : "├─ "}${label}`);
+      const inner = isRoot || cont ? prefix : prefix + (last ? "   " : "│  ");
+      if (kids.length === 1) walk(kids[0], inner, true, false, true);
+      else kids.forEach((k, i) => walk(k, inner, i === kids.length - 1, false));
     };
     walk(root, "", true, true);
     return lines.join("\n");
