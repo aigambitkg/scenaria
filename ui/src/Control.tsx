@@ -300,7 +300,7 @@ export function SettingsDialog(props: { t: Dict; keys: SessionKeys; onKey: (prov
   const [roles, setRoles] = useState<Partial<Record<LlmRole, LlmChoice>>>({});
   const [trusted, setTrusted] = useState("");
   const [chat, setChat] = useState({ confirmDestructive: true, maxSteps: 10 });
-  const [fc, setFc] = useState({ auto: false, dailyLimit: 20 });
+  const [fc, setFc] = useState<{ auto: boolean; dailyLimit: number | string }>({ auto: false, dailyLimit: 20 });
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -331,7 +331,7 @@ export function SettingsDialog(props: { t: Dict; keys: SessionKeys; onKey: (prov
       await api.saveSettings({
         llm: { default: clean(def), roles: rolePatch },
         chat,
-        forecast: fc,
+        forecast: { auto: fc.auto, dailyLimit: Math.min(200, Math.max(1, Number(fc.dailyLimit) || 20)) },
         ...(page?.teamMode ? {} : { trustedEndpoints: trusted.split("\n").map((x) => x.trim()).filter(Boolean) }),
       });
       await load();
@@ -401,7 +401,7 @@ export function SettingsDialog(props: { t: Dict; keys: SessionKeys; onKey: (prov
               </label>
               <label className="check">
                 <span>{t.fcDailyLimit}</span>
-                <input className="num" type="number" min={1} max={200} value={fc.dailyLimit} onChange={(e) => setFc({ ...fc, dailyLimit: Number(e.target.value) || 20 })} />
+                <input className="num" type="number" min={1} max={200} value={fc.dailyLimit} onChange={(e) => setFc({ ...fc, dailyLimit: e.target.value })} />
               </label>
             </section>
 

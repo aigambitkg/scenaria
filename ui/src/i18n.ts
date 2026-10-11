@@ -418,6 +418,12 @@ const en = {
   fcSettingsHint: "The quick forecast is always on and free. The multiverse costs three model calls per decision; automatically it only runs for open decisions on the current line, with your model, up to the daily limit.",
   fcAutoLabel: "Forecast open decisions automatically with the multiverse",
   fcDailyLimit: "Max. automatic forecasts per day (each = 3 model calls)",
+  fcContextKept: "context kept",
+  fcAsWritten: "Prompt as written",
+  fcMadeBefore: "made before the choice",
+  fcNoGoal: "The project has no main goal yet — every forecast measures against it, so they are imprecise (goal 0 %).",
+  fcSetGoal: "Set the main goal now",
+  fcLegend: "Bar = predicted share of the context that the line keeps · Goal = closeness to the main goal · ★ = recommendation",
 };
 
 const de: typeof en = {
@@ -838,6 +844,12 @@ const de: typeof en = {
   fcSettingsHint: "Die Schnellprognose ist immer an und kostenlos. Das Multiversum kostet drei Modell-Aufrufe pro Entscheidung; automatisch läuft es nur für offene Entscheidungen auf der aktuellen Linie, mit deinem Modell, bis zum Tageslimit.",
   fcAutoLabel: "Offene Entscheidungen automatisch mit dem Multiversum prognostizieren",
   fcDailyLimit: "Max. automatische Prognosen pro Tag (je 3 Modell-Aufrufe)",
+  fcContextKept: "Kontext gehalten",
+  fcAsWritten: "Prompt wie geschrieben",
+  fcMadeBefore: "vor der Wahl erstellt",
+  fcNoGoal: "Das Projekt hat noch kein Hauptziel – jede Prognose misst daran, deshalb sind sie ungenau (Ziel 0 %).",
+  fcSetGoal: "Hauptziel jetzt festlegen",
+  fcLegend: "Balken = vorhergesagter Anteil des Kontexts, den die Linie hält · Ziel = Nähe zum Hauptziel · ★ = Empfehlung",
 };
 
 export const dict = { de, en };

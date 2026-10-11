@@ -157,9 +157,20 @@ export function App() {
   const switchLang = (l: Lang) => {
     setLang(l);
     saveLang(l);
-    // Background work (automatic forecasts) writes in the person's language (needs the approval session).
-    api.saveSettings({ ui: { lang: l } }).catch(() => {});
+    // Background work (automatic forecasts) writes in the person's language — only with the approval session.
+    if (approved) api.saveSettings({ ui: { lang: l } }).catch(() => {});
   };
+  // Once at start: align the saved language with this browser's (if this window may change settings).
+  const [approved, setApproved] = useState(false);
+  useEffect(() => {
+    api
+      .settings()
+      .then((st) => {
+        setApproved(st.approval);
+        if (st.approval && st.ui.lang !== lang) api.saveSettings({ ui: { lang } }).catch(() => {});
+      })
+      .catch(() => {});
+  }, []);
   const openDecisions = useMemo(() => (graph?.nodes ?? []).filter((n) => n.type === "decision" && !n.chosen && (n.options?.length ?? 0) > 1).length, [graph]);
 
   const confirmPending = async (lesson: string, restoreFiles: boolean) => {
@@ -457,6 +468,10 @@ export function App() {
           onClose={() => setForecastFocus(false)}
           onChanged={load}
           onOpenSettings={() => setSettingsOpen(true)}
+          onEditGoal={() => {
+            setForecastFocus(false);
+            setEditGoal(root?.goal ?? "");
+          }}
           onNode={(id) => {
             if (graph?.nodes.some((x) => x.id === id)) setSelected(id);
             setForecastFocus(false);

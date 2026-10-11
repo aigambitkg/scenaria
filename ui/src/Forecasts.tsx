@@ -19,7 +19,10 @@ export function ScoreBar({ value, label, measured }: { value: number; label?: st
     <div className="fbar" title={label}>
       <div className={`fbar-fill ${tone(value)}`} style={{ width: `${Math.max(2, value)}%` }} />
       {measured !== undefined && <div className="fbar-actual" style={{ left: `${measured}%` }} title={`${measured}%`} />}
-      <span className="fbar-num">{value}%</span>
+      <span className="fbar-num">
+        {label ? `${label} ` : ""}
+        {value}%
+      </span>
     </div>
   );
 }
@@ -57,7 +60,9 @@ function QuickChips({ t, q, goal }: { t: Dict; q: QuickForecast; goal?: number }
 /** Option rows of a forecast (quick or multiverse), with the universes when present. */
 export function OptionForecasts(props: { t: Dict; options: ForecastOption[]; recommended?: string; actual?: Forecast["actual"]; onChoose?: (o: ForecastOption) => void; compact?: boolean }) {
   const { t } = props;
-  const [open, setOpen] = useState<string | null>(null);
+  // Universes start open for up to two options (full view); the toggle really toggles.
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const isOpen = (k: string) => open[k] ?? (!props.compact && props.options.length <= 2);
   const best = Math.max(...props.options.map((o) => o.score));
   const close = props.options.length > 1 && best - Math.min(...props.options.map((o) => o.score)) < 6;
   const allLow = props.options.every((o) => o.quick.signal === "low");
@@ -78,7 +83,7 @@ export function OptionForecasts(props: { t: Dict; options: ForecastOption[]; rec
                 </button>
               )}
             </div>
-            <ScoreBar value={o.score} label={t.fcContextHint} measured={act?.measured} />
+            <ScoreBar value={o.score} label={t.fcContextKept} measured={act?.measured} />
             <div className="fopt-meta">
               <QuickChips t={t} q={o.quick} goal={u?.goal} />
               {act && (
@@ -87,12 +92,12 @@ export function OptionForecasts(props: { t: Dict; options: ForecastOption[]; rec
                 </span>
               )}
               {u && (
-                <button className="btn link" onClick={() => setOpen(open === o.key ? null : o.key)}>
-                  {open === o.key ? t.fcHideUniverse : t.fcShowUniverse}
+                <button className="btn link" onClick={() => setOpen({ ...open, [o.key]: !isOpen(o.key) })}>
+                  {isOpen(o.key) ? t.fcHideUniverse : t.fcShowUniverse}
                 </button>
               )}
             </div>
-            {u && (open === o.key || (!props.compact && props.options.length <= 2)) && (
+            {u && isOpen(o.key) && (
               <div className="universe">
                 <div>
                   <h5>{t.fcPast}</h5>
@@ -148,7 +153,21 @@ function useApproval() {
 }
 
 /** The forecasts page: open decisions, prompt check, history and hit rate. */
-export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: SessionKeys; nodes: ScenariaNode[]; headId: string | null; focus?: string | null; toast: (m: string) => void; onClose: () => void; onNode: (id: string) => void; onChanged: () => void; onOpenSettings: () => void }) {
+/** Without a main goal every forecast is imprecise: say so, with the way out. */
+export function NoGoalNote({ t, onEditGoal }: { t: Dict; onEditGoal?: () => void }) {
+  return (
+    <p className="qnote q-warn">
+      {t.fcNoGoal}{" "}
+      {onEditGoal && (
+        <button className="btn link inline" onClick={onEditGoal}>
+          {t.fcSetGoal}
+        </button>
+      )}
+    </p>
+  );
+}
+
+export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: SessionKeys; nodes: ScenariaNode[]; headId: string | null; focus?: string | null; toast: (m: string) => void; onClose: () => void; onNode: (id: string) => void; onChanged: () => void; onOpenSettings: () => void; onEditGoal: () => void }) {
   const { t } = props;
   const [page, setPage] = useState<ForecastsPage | null>(null);
   const [quick, setQuick] = useState<Record<string, ForecastOption[]>>({});
@@ -238,7 +257,7 @@ export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessi
         <p className="hint">{t.fcIntro}</p>
         <div className="fc-stats">
           <span className="chip" title={t.fcCalibrationHint}>
-            {t.fcCalibration}: {c && c.evaluated ? `${c.hits}/${c.evaluated} ${t.fcWithin} · Ø ±${c.meanError}` : t.fcNoCalibration}
+            {t.fcCalibration}: {!c ? "…" : c.evaluated ? `${c.hits}/${c.evaluated} ${t.fcWithin} · Ø ±${c.meanError}` : t.fcNoCalibration}
           </span>
           {page && (
             <span className={`chip ${page.auto.auto ? "v-passed" : ""}`}>
@@ -251,7 +270,9 @@ export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessi
           {page?.running && <span className="chip v-warning">⟳ {t.fcRunning} {page.running}</span>}
         </div>
         {!approval && <p className="qnote q-warn">🔒 {t.settingsLocked}</p>}
+        {!props.nodes.find((n) => n.type === "mission")?.goal && <NoGoalNote t={t} onEditGoal={props.onEditGoal} />}
         {err && <p className="error">{err}</p>}
+        <p className="muted small">{t.fcLegend}</p>
         <div className="side-tabs fc-tabs" role="tablist">
           {(["open", "prompt", "history"] as const).map((k) => (
             <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>
@@ -394,6 +415,26 @@ function PromptCheck(props: { t: Dict; lang: "de" | "en"; approval: boolean; llm
       setBusy(false);
     }
   };
+  // Without the approval session: the same quick check, computed but not saved (no hit rate).
+  const localQuick = async () => {
+    setErr(null);
+    try {
+      const all = [text, ...variants.filter((v) => v.trim())];
+      const scores = await Promise.all(all.map((x) => api.quickPrompt(x)));
+      setResult({
+        id: "",
+        subject: { kind: "prompt", text, at: null },
+        createdAt: new Date().toISOString(),
+        mode: "quick",
+        trigger: "person",
+        models: {},
+        warnings: [],
+        options: scores.map((r, i) => ({ key: i === 0 ? "p" : `v${i}`, label: i === 0 ? t.fcAsWritten : `${t.fcVariant} ${i}`, text: all[i], quick: r.quick, score: r.quick.score })),
+      });
+    } catch (e) {
+      setErr(errText(e));
+    }
+  };
   return (
     <section className="a-sec">
       <p className="hint">{t.fcPromptHint}</p>
@@ -424,7 +465,7 @@ function PromptCheck(props: { t: Dict; lang: "de" | "en"; approval: boolean; llm
             + {t.fcAddVariant}
           </button>
         )}
-        <button className="btn" disabled={busy || text.trim().length < 3 || !props.approval} onClick={() => run(true)}>
+        <button className="btn" disabled={busy || text.trim().length < 3} onClick={() => (props.approval ? run(true) : localQuick())}>
           {t.fcQuickCheck}
         </button>
         <button className="btn primary" disabled={busy || text.trim().length < 3 || !props.approval} onClick={() => run(false)} title={t.fcMultiverseHint}>
@@ -436,7 +477,7 @@ function PromptCheck(props: { t: Dict; lang: "de" | "en"; approval: boolean; llm
         <>
           <OptionForecasts t={t} options={result.options} recommended={result.recommended?.key} actual={result.actual} />
           {result.recommended && <p className="small">★ {result.recommended.why}</p>}
-          <div className="row">
+          {result.id && <div className="row">
             <span className="muted small">{t.fcMarkUsedHint}</span>
             {result.options.map((o) => (
               <button
@@ -454,7 +495,7 @@ function PromptCheck(props: { t: Dict; lang: "de" | "en"; approval: boolean; llm
                 {t.fcUsed}: {o.key}
               </button>
             ))}
-          </div>
+          </div>}
         </>
       )}
     </section>
@@ -462,7 +503,7 @@ function PromptCheck(props: { t: Dict; lang: "de" | "en"; approval: boolean; llm
 }
 
 /** Compact forecast inside the node panel of a decision. */
-export function DecisionForecast(props: { t: Dict; node: ScenariaNode; graphVersion?: number; onOpen: () => void }) {
+export function DecisionForecast(props: { t: Dict; node: ScenariaNode; graphVersion?: number; onOpen: () => void; hasGoal: boolean; onEditGoal: () => void }) {
   const { t } = props;
   const [opts, setOpts] = useState<ForecastOption[] | null>(null);
   const [mv, setMv] = useState<Forecast | null>(null);
@@ -474,7 +515,12 @@ export function DecisionForecast(props: { t: Dict; node: ScenariaNode; graphVers
       .catch(() => alive && setOpts(null));
     api
       .forecasts()
-      .then((p) => alive && setMv(p.forecasts.find((f) => f.verified && f.mode === "multiverse" && f.subject.kind === "decision" && f.subject.node === props.node.id) ?? null))
+      .then((p) => {
+        if (!alive) return;
+        const mine = p.forecasts.filter((f) => f.verified && f.subject.kind === "decision" && f.subject.node === props.node.id);
+        // The multiverse if there is one; for a decided decision otherwise the snapshot taken BEFORE the choice.
+        setMv(mine.find((f) => f.mode === "multiverse") ?? (props.node.chosen ? mine[mine.length - 1] ?? null : null));
+      })
       .catch(() => {});
     return () => {
       alive = false;
@@ -485,8 +531,10 @@ export function DecisionForecast(props: { t: Dict; node: ScenariaNode; graphVers
   return (
     <section className="p-sec forecast-inline">
       <h3>
-        {props.node.chosen ? t.fcInlineDecided : t.fcInline} <span className="chip">{mv ? t.fcMultiverse : t.fcQuick}</span>
+        {props.node.chosen ? t.fcInlineDecided : t.fcInline} <span className="chip">{mv?.mode === "multiverse" ? t.fcMultiverse : t.fcQuick}</span>
+        {mv && props.node.chosen && <span className="chip">{t.fcMadeBefore}</span>}
       </h3>
+      {!props.hasGoal && <NoGoalNote t={t} onEditGoal={props.onEditGoal} />}
       <OptionForecasts t={t} options={options} recommended={mv?.recommended?.key} actual={mv?.actual} compact />
       <button className="btn link" onClick={props.onOpen}>
         {t.fcOpen}
