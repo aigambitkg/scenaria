@@ -372,7 +372,8 @@ export class Scenaria {
       if (r.type === "mission") {
         r.type = "goal";
         r.status = r.id === headTree ? "active" : "done";
-        r.meta = { ...(r.meta ?? {}), formerMission: true, autoBaseline: undefined };
+        // A v0.3 session baseline is history, not a task with a result of its own.
+        r.meta = { ...(r.meta ?? {}), formerMission: true, baseline: r.meta?.autoBaseline ? true : undefined, autoBaseline: undefined };
       } else {
         // An orphan (its parent file is missing) keeps its type; it is only re-attached.
         r.meta = { ...(r.meta ?? {}), reattached: true };

@@ -194,7 +194,7 @@ export function metrics(nodes: ScenariaNode[], head: string | null, opts: { rewi
         summary: g.summary ?? taskRollup(g, inside),
       };
       if (t.branches >= 3) issues.push({ code: "many_branches", severity: "medium", message: `Task "${short(g.title)}" needed ${t.branches} branches/restarts — requirements or approach may be unclear.`, nodeId: g.id, subject: short(g.title), value: t.branches });
-      if (g.status === "done" && !inside.some((n) => n.type === "checkpoint")) issues.push({ code: "task_no_result", severity: "low", message: `Task "${short(g.title)}" is done but has no checkpoint (result not documented).`, nodeId: g.id, subject: short(g.title) });
+      if (g.status === "done" && !g.meta?.baseline && !inside.some((n) => n.type === "checkpoint")) issues.push({ code: "task_no_result", severity: "low", message: `Task "${short(g.title)}" is done but has no checkpoint (result not documented).`, nodeId: g.id, subject: short(g.title) });
       return t;
     });
 
