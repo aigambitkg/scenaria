@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
-import { api, type Graph, type ScenariaEvent, type ScenariaNode } from "./api";
+import { api, type Fidelity, type Graph, type ScenariaEvent, type ScenariaNode } from "./api";
 import { dict, initialLang, saveLang, type Lang } from "./i18n";
 import { layoutTree, taskOf } from "./layout";
 import { NodeId, ScenarioMap } from "./Map";
@@ -29,6 +29,7 @@ export function App() {
   const [editGoal, setEditGoal] = useState<string | null>(null);
   const [health, setHealth] = useState<number | null>(null);
   const [headCtx, setHeadCtx] = useState<{ tokens: number; historyTokens: number } | null>(null);
+  const [fidelity, setFidelity] = useState<Fidelity | null>(null);
   const [pending, setPending] = useState<Pending>(null);
   const [diff, setDiff] = useState<{ from: string; to: string; stat: string; patch: string } | null>(null);
   const [log, setLog] = useState<ScenariaEvent[] | null>(null);
@@ -101,6 +102,7 @@ export function App() {
 
   useEffect(() => {
     api.analysis().then((m) => setHealth(m.health)).catch(() => setHealth(null));
+    api.fidelity().then(setFidelity).catch(() => setFidelity(null));
     if (headId) api.context(headId).then((c) => setHeadCtx(c)).catch(() => setHeadCtx(null));
   }, [graph?.version, headId]);
 
@@ -228,7 +230,7 @@ export function App() {
           {error && <div className="banner error">{error}</div>}
           {graph && rootId ? (
             <ReactFlowProvider>
-              <ScenarioMap nodes={graph.nodes} rootId={rootId} headId={headId} selectedKey={selected} onSelect={setSelected} folded={folded} onToggleFold={toggleFold} t={t} />
+              <ScenarioMap nodes={graph.nodes} rootId={rootId} headId={headId} selectedKey={selected} onSelect={setSelected} folded={folded} onToggleFold={toggleFold} fidelity={fidelity?.points ?? null} t={t} />
             </ReactFlowProvider>
           ) : graph ? (
             <div className="empty">
@@ -246,6 +248,8 @@ export function App() {
           graphVersion={graph?.version}
           folded={folded}
           onToggleFold={toggleFold}
+          fidelity={fidelity}
+          onSelect={setSelected}
           onEditGoal={() => setEditGoal(root?.goal ?? "")}
           onUpdate={async (id, patch) => {
             await api.updateNode(id, patch);

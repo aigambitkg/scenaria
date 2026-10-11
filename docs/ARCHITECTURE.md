@@ -13,7 +13,7 @@ Every decision point of an agent run leaves a **restorable, verifiable state**. 
    Gemini, Codex…) │                  │                  │                                │            │
                    ▼                  ▼                  ▼                                ▼            ▼
              ┌──────────────────────────────────────────────────────────────────────────────────────┐
-             │  tools.ts — ONE vendor-neutral tool registry (15 tools, zod schemas, validation)      │
+             │  tools.ts — ONE vendor-neutral tool registry (17 tools, zod schemas, validation)      │
              └───────────────────────────────────────────┬──────────────────────────────────────────┘
                                                          ▼
                      ┌─────────────────────┐        ┌──────────────────┐
@@ -142,6 +142,36 @@ On a 30-task project a 600-token capsule still holds the goal, the rules, the cu
   - Team mode forbids custom base URLs, against request forgery.
   - The answer is parsed tolerantly as JSON (summary, goal alignment, patterns, issues, rules, token tips) and stored in `.scenaria/analyses/`.
 - **Rules.** Accepted rules go to `memory.json` and are carried by every capsule, every agent prompt and the per-prompt reminder.
+
+## Context fidelity and integrity
+
+- **Ledger.** `save()` appends `{ts, id, hash, op, c}` to `ledger.jsonl`, where `hash` is sha256 over the node without its volatile fields (verification, snapshotFolder, meta) and `c` is the chain hash over the previous line.
+  - `integrity()` compares each node with its last ledger hash: ok, tampered or unsealed. It also reports the first broken chain line.
+  - Projects from before the ledger are sealed once on upgrade.
+  - A migration appends `migrate` entries.
+- **Fidelity** (`core/fidelity.ts`) is one DFS over the tree; each node only sees its own path.
+  - Score = 0.35·anchor + 0.35·continuity + 0.15·integrity + 0.15·reliability. Without a goal, the anchor weight is redistributed.
+  - **Anchor:** Ochiai overlap of 6-char stems (compounds split at `-_./`) with the main goal and the task goal, normalised at 0.18. `servesGoal` lifts it to at least 0.8.
+  - **Continuity:** overlap with the last 6 ancestors plus the task goal, normalised at 0.15. A `basedOn` reference to an ancestor lifts it to at least 0.95.
+  - **Low-signal nodes** (watcher autosaves, very short text) carry the previous values with 2 % decay instead of counting as a break.
+  - **Flags:**
+    - `break`: continuity < 0.12 and anchor < 0.4, or a drop of ≥ 30 points;
+    - `drift`: decision anchor < 0.25, or task anchor < 0.2;
+    - `goalChanged`: an entry of `goalHistory.until` falls between parent and node;
+    - `branch`: the node has `forkedFrom`;
+    - `tampered` / `builtOnTampered`.
+  - A tampered node is capped at 25.
+
+## Workspace, references and handoffs
+
+- **Board** (`core/workspace.ts`): items on the HEAD path, in sections goals, decisions, facts, questions (current task only), rules, lessons and risks (irreversible effects, failed checks).
+  - Item references: `n12`, `n12.f2`, `.q`, `.o`, `.l`, `.i`, `r3`.
+  - `resolveRefs` returns only the requested content.
+- **Readers** (`readers.json`) hold `ref → hash of text|confidence|status` per reader. A read with a reader returns new and changed items, plus known refs of the requested sections that disappeared (invalidated). Knowledge of other sections is kept. Up to 100 readers and 4,000 refs each.
+- **Expectations:**
+  - Precise forms are checked exactly: `nX done`, `nX verified|failed`, `nX = option`, `nX.fK`, `rK`.
+  - Free text is first matched against decision options on the path; naming a non-taken option counts as contradicted. Otherwise it needs ≥ 60 % stem coverage by a fact or decision; low-confidence support yields "unknown".
+- **Confidence per fact:** `factInfo[i] = {confidence, basedOn}`, aligned with `facts`.
 
 ## Capture paths and prompts
 

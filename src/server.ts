@@ -11,9 +11,10 @@ import { UI_DIR, embeddedUi, hasDiskUi } from "./assets.js";
 import { agentPrompt, type PromptKind } from "./core/prompts.js";
 import { applyBlocks } from "./core/blocks.js";
 import { recall } from "./core/recall.js";
+import { SECTIONS, checkExpectations, resolveRefs, workspace, type Section } from "./core/workspace.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
-export const VERSION = "0.4.0";
+export const VERSION = "0.5.0";
 
 const KEY_ENVS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "AZURE_OPENAI_API_KEY"];
 
@@ -285,6 +286,26 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           const head = s.store.readState().head;
           const hits = recall(s.store.listNodes(), s.conversations.allMessages(), q, { limit: Number(url.searchParams.get("limit") ?? 12), pathIds: head ? new Set(s.path(head).map((n) => n.id)) : undefined });
           return send(res, 200, hits);
+        }
+
+        // ---------- context fidelity, workspace, references, expectations ----------
+        if (req.method === "GET" && p === "/api/fidelity") return send(res, 200, s.fidelity());
+        if (p === "/api/v1/workspace" && (req.method === "GET" || req.method === "POST")) {
+          // Reader mode changes what a reader is told next time, so it needs POST (+ X-Scenaria / token), never a plain GET.
+          const b = req.method === "POST" ? await readBody(req) : {};
+          const raw = req.method === "POST" ? (Array.isArray(b?.sections) ? b.sections.join(",") : String(b?.sections ?? "")) : url.searchParams.get("sections") ?? "";
+          const sections = raw.split(",").map((x: string) => x.trim()).filter((x: string) => (SECTIONS as readonly string[]).includes(x)) as Section[];
+          if (req.method === "GET" && url.searchParams.get("reader")) return send(res, 405, { error: "reader mode needs POST /api/v1/workspace {reader, sections}" });
+          const r = workspace(s, { sections, reader: req.method === "POST" ? b?.reader : undefined, full: Boolean(b?.full) });
+          return send(res, 200, r);
+        }
+        if (req.method === "GET" && p === "/api/v1/resolve") {
+          return send(res, 200, resolveRefs(s, (url.searchParams.get("refs") ?? "").split(",").map((x) => x.trim()).filter(Boolean)));
+        }
+        if (req.method === "POST" && p === "/api/v1/expect") {
+          const b = await readBody(req);
+          if (!Array.isArray(b?.expectations)) return send(res, 400, { error: "body needs expectations: [string]" });
+          return send(res, 200, checkExpectations(s, b.expectations.map(String)));
         }
 
         // ---------- analysis & rules ----------

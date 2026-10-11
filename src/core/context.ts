@@ -92,6 +92,11 @@ interface Item {
   lines: string[];
 }
 
+function confNote(c?: number): string {
+  if (c === undefined) return "";
+  return c < 0.7 ? ` (confidence ${Math.round(c * 100)} % — verify before relying on it)` : ` (${Math.round(c * 100)} %)`;
+}
+
 function decisionLine(n: ScenariaNode, next: ScenariaNode | undefined, detail: boolean): string[] {
   const takenId = next?.viaOption ?? n.chosen;
   const taken = optionLabel(n, takenId);
@@ -105,6 +110,8 @@ function decisionLine(n: ScenariaNode, next: ScenariaNode | undefined, detail: b
     if (n.context) out.push(`  - context: ${short(n.context, 220)}`);
     if (n.servesGoal) out.push(`  - serves goal: ${short(n.servesGoal, 180)}`);
     if (n.expectedOutcome) out.push(`  - expected: ${short(n.expectedOutcome, 180)}`);
+    if (n.basedOn?.length) out.push(`  - based on: ${n.basedOn.slice(0, 8).join(", ")}`);
+    if (n.confidence !== undefined && n.confidence < 0.6) out.push(`  - confidence ${Math.round(n.confidence * 100)} % — verify before building on it`);
     for (const a of n.assumptions ?? []) out.push(`  - assumption: ${short(a, 200)}`);
   }
   return out;
@@ -194,7 +201,7 @@ export function composeContext(path: ScenariaNode[], opts: CapsuleOptions = {}):
   if (target.type !== "mission") {
     const st = [`## Current state (${target.id}: ${short(target.title, 160)})`];
     if (target.type === "decision") st.push(...decisionLine(target, undefined, true));
-    if (target.facts?.length) st.push("Facts:", ...bullets(target.facts.map((f) => short(f, 220))));
+    if (target.facts?.length) st.push("Facts:", ...bullets(target.facts.map((f, k) => `${target.id}.f${k + 1}: ${short(f, 220)}${confNote(target.factInfo?.[k]?.confidence)}`)));
     if (target.outputs?.length) st.push("Outputs:", ...bullets(target.outputs.slice(0, 8).map((o) => short(o, 220))));
     if (target.openQuestions?.length) st.push("Open questions:", ...bullets(target.openQuestions.map((q) => short(q, 220))));
     add("state", 0, st);
@@ -203,8 +210,17 @@ export function composeContext(path: ScenariaNode[], opts: CapsuleOptions = {}):
       add("state", 6, [`Changed files vs. previous snapshot (${target.changedFiles.length}):`, ...bullets(cf), ...(target.changedFiles.length > cf.length ? [`- … ${target.changedFiles.length - cf.length} more`] : [])]);
     }
   }
-  const earlierFacts = Array.from(new Set(path.slice(0, -1).flatMap((n) => n.facts ?? []))).slice(-15);
-  earlierFacts.reverse().forEach((f, k) => add("facts", 6 + k * 0.01, [`- ${short(f, 220)}`]));
+  // Earlier facts with their reference (n12.f2) and confidence; low-confidence facts are marked for checking.
+  const seenFacts = new Set<string>();
+  const earlier: string[] = [];
+  for (const n of path.slice(0, -1)) {
+    (n.facts ?? []).forEach((f, k) => {
+      if (seenFacts.has(f)) return;
+      seenFacts.add(f);
+      earlier.push(`- ${n.id}.f${k + 1}: ${short(f, 220)}${confNote(n.factInfo?.[k]?.confidence)}`);
+    });
+  }
+  earlier.slice(-15).reverse().forEach((line, k) => add("facts", 6 + k * 0.01, [line]));
 
   if (opts.lastUserRequest) add("request", 0, ["## Latest user request on this path", short(opts.lastUserRequest, 600)]);
   const foot: string[] = [];

@@ -8,6 +8,7 @@ import { optionLabel } from "./core/context.js";
 import { agentPrompt, type PromptKind } from "./core/prompts.js";
 import { recall, renderRecall } from "./core/recall.js";
 import { applyBlocks } from "./core/blocks.js";
+import { SECTIONS, checkExpectations, renderExpectations, renderWorkspace, resolveRefs, workspace, type Section } from "./core/workspace.js";
 import { dossier, analysisPrompt, projectMetrics, renderMetrics, runAnalysis } from "./core/analysis.js";
 import type { ScenariaNode } from "./core/types.js";
 
@@ -40,6 +41,14 @@ Record (one project tree: n0 = project + main goal, tasks hang on the line)
 Navigate
   status | tree [id] [--full] | show <id> | context [id] [--budget 1500]
   recall "<keywords>" [--limit 8]       Search decisions, lessons, tasks and conversations
+
+Context integrity & handoffs
+  fidelity [id]                         Context fidelity (0–100 %) along the path to a node, with breaks/drift/manipulation
+  integrity [--reseal]                  Ledger check: nodes changed outside Scenaria (--reseal: accept current state, keep old ledger)
+  workspace [--sections facts,decisions] [--reader <name>] [--full]
+                                        Shared board; with --reader only what that reader does not know yet
+  resolve <ref> [<ref> …]               Resolve references (n12, n12.f2, n9.q1, r3)
+  expect "<assumption>" […]             Check assumptions; prints only deviations
   rewind <id> [--lesson ..] [--no-files]
   fork <decisionId> <option> [--lesson ..]
   diff <fromId> [toId|working]
@@ -147,6 +156,9 @@ const opts = {
   "max-tokens": { type: "string" },
   dossier: { type: "boolean" },
   limit: { type: "string" },
+  sections: { type: "string" },
+  reader: { type: "string" },
+  reseal: { type: "boolean" },
 } as const;
 
 const C = process.stdout.isTTY
@@ -506,6 +518,52 @@ async function main() {
         ins.rules?.length ? `${C.dim}Accept a rule: scenaria rules add "<text>"  (or in the dashboard → Analyse)${C.reset}` : "",
       ].filter(Boolean);
       return out(human.join("\n"), rec);
+    }
+    case "fidelity": {
+      const s = Scenaria.open(v.root);
+      const f = s.fidelity();
+      const target = p[0] ?? s.head()?.id;
+      if (!target) throw new Error("No nodes yet.");
+      const path = s.path(target).map((n) => f.points[n.id]).filter(Boolean);
+      const bar = (x: number) => "█".repeat(Math.round(x / 10)).padEnd(10, "·");
+      const lines = path.map((pt) => `${bar(pt.score)} ${String(pt.score).padStart(3)} %  ${pt.id.padEnd(5)} ${pt.type.padEnd(10)} ${pt.title.slice(0, 60)}${pt.flags.filter((x) => !["task", "lowSignal"].includes(x)).length ? `  ${C.yellow}[${pt.flags.filter((x) => !["task", "lowSignal"].includes(x)).join(", ")}]${C.reset}` : ""}`);
+      const last = path[path.length - 1];
+      lines.push("", `Context fidelity at ${target}: ${last?.score ?? "?"} % · line to the main goal: ${last?.anchor === null || last?.anchor === undefined ? "no goal set" : `${Math.round(last.anchor * 100)} %`}`);
+      if (f.ledgerBrokenAt) lines.push(`${C.red}Ledger broken at line ${f.ledgerBrokenAt}${C.reset}`);
+      return out(lines.join("\n"), { path, ledgerBrokenAt: f.ledgerBrokenAt });
+    }
+    case "integrity": {
+      const s = Scenaria.open(v.root);
+      if (v.reseal) {
+        const rs = s.reseal({ user: v.user, agent: "cli", source: "cli" });
+        return out(`Resealed ${rs.nodes} nodes${rs.archived ? `; previous ledger kept as .scenaria/${rs.archived}` : ""}.`, rs);
+      }
+      const r = s.integrity();
+      const tampered = [...r.state.entries()].filter(([, st]) => st === "tampered").map(([id]) => id);
+      const unsealed = [...r.state.entries()].filter(([, st]) => st === "unsealed").map(([id]) => id);
+      const human = [
+        tampered.length ? `${C.red}✘ changed outside Scenaria: ${tampered.join(", ")}${C.reset}` : `${C.green}✔ all ${r.state.size} nodes match the ledger${C.reset}`,
+        r.ledgerMissing ? `${C.red}✘ the ledger was deleted — review, then: scenaria integrity --reseal${C.reset}` : r.ledgerBrokenAt ? `${C.red}✘ ledger edited at line ${r.ledgerBrokenAt} — review, then: scenaria integrity --reseal${C.reset}` : `ledger chain intact (${r.entries} entries${r.torn ? `, ${r.torn} torn line(s) from interrupted writes` : ""})`,
+        unsealed.length ? `${C.dim}never sealed: ${unsealed.join(", ")}${C.reset}` : "",
+      ].filter(Boolean);
+      return out(human.join("\n"), { tampered, unsealed, ledgerBrokenAt: r.ledgerBrokenAt });
+    }
+    case "workspace": {
+      const s = Scenaria.open(v.root);
+      const sections = (v.sections ?? "").split(",").map((x) => x.trim()).filter((x) => (SECTIONS as readonly string[]).includes(x)) as Section[];
+      const r = workspace(s, { sections, reader: v.reader, full: v.full });
+      return out(renderWorkspace(r), r);
+    }
+    case "resolve": {
+      const s = Scenaria.open(v.root);
+      const r = resolveRefs(s, p);
+      return out(JSON.stringify(r, null, 2), r);
+    }
+    case "expect": {
+      const s = Scenaria.open(v.root);
+      if (!p.length) throw new Error('Usage: scenaria expect "n12 done" "n7 = Postgres" …');
+      const r = checkExpectations(s, p);
+      return out(renderExpectations(r), r);
     }
     case "rules": {
       const s = Scenaria.open(v.root);

@@ -67,7 +67,9 @@ export function agentPrompt(s: Scenaria, opts: { kind?: PromptKind; lang?: Lang;
           `3. Vor jeder echten Entscheidung → ${call("scenaria_decide", '{"question", "options" (alle erwogenen), "chosen", "rationale", "context", "servesGoal", "expectedOutcome", "confidence" 0–1}')}. context = Ausgangslage, servesGoal = wie es dem Hauptziel dient.`,
           `4. Nach jedem sinnvollen Schritt → ${call("scenaria_checkpoint", '{"title", "outputs": [2–6 belegte Stichpunkte, Dateien in `Backticks`], "irreversible": [externe Effekte]}')}. Aufgabe fertig → zusätzlich "taskDone": true, "summary": "1–2 Sätze".`,
           `5. Fehler oder Sackgasse → ${call("scenaria_last_good", "{}")}, dann ${call("scenaria_rewind", '{"id", "lesson"}')} und nur ab der zurückgegebenen Kapsel weiterarbeiten. Andere Option probieren → scenaria_fork.`,
-          `6. Ältere Details → ${call("scenaria_recall", '{"query": "…"}')} statt lange Verläufe neu zu lesen. Einträge knapp halten, keine unbelegten Fakten.`,
+          `6. Ältere Details → ${call("scenaria_recall", '{"query": "…"}')} statt lange Verläufe neu zu lesen. Verweise per Referenz (n12, n12.f2, r3) statt Inhalte zu kopieren; auflösen mit ${call("scenaria_get_node", '{"refs": ["n12.f2"]}')}.`,
+          `7. Übernimmst du Arbeit von einem anderen Agenten/einer anderen Sitzung → ${call("scenaria_workspace", '{"reader": "<dein Name>"}')} (nur was du noch nicht kennst), dann ${call("scenaria_expect", '{"expectations": ["n12 done", "…"]}')} mit deinen Annahmen – prüfe nur die gemeldeten Abweichungen.`,
+          `8. Unsichere Fakten mit Konfidenz festhalten: {"text": "…", "confidence": 0.6}. Einträge knapp, keine unbelegten Fakten.`,
         ]
       : [
           `1. At the start: ${call("scenaria_status", "{}")} and ${call("scenaria_context", "{}")}. There is exactly ONE project tree – never start a new one.`,
@@ -76,7 +78,9 @@ export function agentPrompt(s: Scenaria, opts: { kind?: PromptKind; lang?: Lang;
           `3. Before every real decision → ${call("scenaria_decide", '{"question", "options" (all considered), "chosen", "rationale", "context", "servesGoal", "expectedOutcome", "confidence" 0–1}')}. context = the situation, servesGoal = how it serves the main goal.`,
           `4. After each meaningful step → ${call("scenaria_checkpoint", '{"title", "outputs": [2–6 verified bullets, files in `backticks`], "irreversible": [external effects]}')}. Task finished → also "taskDone": true, "summary": "1–2 sentences".`,
           `5. Mistake or dead end → ${call("scenaria_last_good", "{}")}, then ${call("scenaria_rewind", '{"id", "lesson"}')} and continue only from the returned capsule. Try another option → scenaria_fork.`,
-          `6. Older details → ${call("scenaria_recall", '{"query": "…"}')} instead of re-reading long histories. Keep entries short; never record unverified facts.`,
+          `6. Older details → ${call("scenaria_recall", '{"query": "…"}')} instead of re-reading long histories. Refer by reference (n12, n12.f2, r3) instead of copying content; resolve with ${call("scenaria_get_node", '{"refs": ["n12.f2"]}')}.`,
+          `7. Taking over from another agent or session → ${call("scenaria_workspace", '{"reader": "<your name>"}')} (only what you do not know yet), then ${call("scenaria_expect", '{"expectations": ["n12 done", "…"]}')} with your assumptions — check only the reported deviations.`,
+          `8. Record uncertain facts with a confidence: {"text": "…", "confidence": 0.6}. Keep entries short; never record unverified facts.`,
         ];
     lines.push("", ...(steps.filter(Boolean) as string[]));
     if (kind === "cli") {

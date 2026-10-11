@@ -98,8 +98,13 @@ export interface ScenariaNode {
   /** 0..1 — how sure the agent was. */
   confidence?: number;
 
+  /** References this node builds on (node ids or item refs like "n12.f2", "r3"). */
+  basedOn?: string[];
+
   // fact capsule
   facts?: string[];
+  /** Per-fact metadata, aligned with `facts` by index: how sure, and what it rests on. */
+  factInfo?: ({ confidence?: number; basedOn?: string[] } | null)[];
   outputs?: string[];
   openQuestions?: string[];
   lessons?: string[];

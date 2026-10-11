@@ -30,7 +30,7 @@ export function tokenize(text: string): string[] {
     .filter((t) => (t.length > 1 || /\d/.test(t)) && !STOP.has(t));
 }
 
-function nodeText(n: ScenariaNode): string {
+export function nodeText(n: ScenariaNode): string {
   return [
     n.title,
     n.goal,

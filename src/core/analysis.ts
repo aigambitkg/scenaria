@@ -109,8 +109,17 @@ function emptyStat(): AgentStat {
   return { decisions: 0, avgQuality: 0, avgConfidence: null, failed: 0, revised: 0, withoutRationale: 0 };
 }
 
-export function metrics(nodes: ScenariaNode[], head: string | null, opts: { rewinds?: number } = {}): Metrics {
+export function metrics(
+  nodes: ScenariaNode[],
+  head: string | null,
+  opts: { rewinds?: number; integrity?: Map<string, "ok" | "tampered" | "unsealed">; ledgerBrokenAt?: number | null; ledgerMissing?: boolean } = {},
+): Metrics {
   const issues: Issue[] = [];
+  if (opts.ledgerMissing) issues.push({ code: "ledger_missing", severity: "high", message: "The integrity ledger was deleted — changes since then cannot be verified. Review, then run: scenaria integrity --reseal" });
+  if (opts.ledgerBrokenAt) issues.push({ code: "ledger_broken", severity: "high", message: `The integrity ledger was edited or truncated (line ${opts.ledgerBrokenAt}) — history may have been manipulated.`, value: opts.ledgerBrokenAt });
+  for (const n of nodes) {
+    if (opts.integrity?.get(n.id) === "tampered" && !opts.ledgerMissing) issues.push({ code: "tampered", severity: "high", message: `${n.id} was changed outside Scenaria ("${short(n.title)}") — its content no longer matches the ledger.`, nodeId: n.id, subject: short(n.title) });
+  }
   const onPath = pathSet(nodes, head);
   const kids = new Map<string, ScenariaNode[]>();
   for (const n of nodes) if (n.parentId) kids.set(n.parentId, [...(kids.get(n.parentId) ?? []), n]);
@@ -227,6 +236,7 @@ export function metrics(nodes: ScenariaNode[], head: string | null, opts: { rewi
 
   let health = 100;
   if (!root?.goal) health -= 20;
+  health -= Math.min(40, issues.filter((i) => i.code === "tampered" || i.code === "ledger_broken" || i.code === "ledger_missing").length * 20);
   health -= Math.min(25, Math.round((1 - decisionQualityAvg) * 40));
   health -= Math.min(30, issues.filter((i) => i.code === "built_on_failure").length * 15);
   health -= Math.min(10, counts.openDecisions * 2);
@@ -255,7 +265,8 @@ function short(s: string | undefined, max = 90): string {
 
 export function projectMetrics(s: Scenaria): Metrics {
   const rewinds = s.store.readEvents().filter((e) => e.type === "rewind").length;
-  return metrics(s.store.listNodes(), s.store.readState().head, { rewinds });
+  const integ = s.integrity();
+  return metrics(s.store.listNodes(), s.store.readState().head, { rewinds, integrity: integ.state, ledgerBrokenAt: integ.ledgerBrokenAt, ledgerMissing: integ.ledgerMissing });
 }
 
 // ------------------------------------------------------------------ dossier (for any LLM)

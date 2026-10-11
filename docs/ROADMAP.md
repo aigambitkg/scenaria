@@ -50,7 +50,17 @@
 - [x] Ready-made agent prompts (MCP / shell / chat, DE/EN) in the dashboard and CLI; per-prompt reminder for Claude Code
 - [x] ```scenaria decision blocks from plain chats (proxy, transcript, paste)
 
+## Done in 0.5 (context integrity and handoffs)
+
+- [x] Context fidelity per node (goal line, continuity, integrity, reliability) as a chart along the path, with breaks / goal changes / branches / manipulation; fidelity bars on the map
+- [x] Integrity ledger (hash-chained), `scenaria integrity`, manipulation findings in the health check
+- [x] Global workspace by sections, item references (`n12.f2`), reader deltas (theory of mind) with invalidation after rewinds
+- [x] Expectations / predictive coding (`scenaria_expect`), confidence per fact, `basedOn` references, reference capsule
+
 ## Next: capture everywhere
+
+- [ ] Optional embedding-based fidelity (any OpenAI-compatible `/embeddings`, e.g. Ollama) for cross-language projects
+- [ ] Anchor ledger heads in an external system (git remote / signed export) for tamper-proof audits
 
 - [ ] Browser extension for ChatGPT / Claude.ai / Gemini web (live capture without exports)
 - [ ] Homebrew tap and winget package

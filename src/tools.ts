@@ -12,6 +12,7 @@ import { Scenaria } from "./core/engine.js";
 import { optionLabel } from "./core/context.js";
 import { recall, renderRecall } from "./core/recall.js";
 import { projectMetrics, renderMetrics } from "./core/analysis.js";
+import { SECTIONS, checkExpectations, referenceCapsule, renderExpectations, renderWorkspace, resolveRefs, workspace } from "./core/workspace.js";
 import type { ScenariaNode, Source } from "./core/types.js";
 
 export interface ToolContext {
@@ -46,7 +47,9 @@ Use it like a quicksave, on your own:
 - Before acting on a real choice (or when the user answers a clarifying question): scenaria_decide with question, all options considered, chosen, rationale, context (the situation), servesGoal (link to the main goal), expectedOutcome, confidence.
 - After a meaningful step: scenaria_checkpoint with short factual bullets (files in backticks); when the task is finished add taskDone + summary.
 - Mistake or dead end: scenaria_last_good / scenaria_tree, then scenaria_rewind with a one-line lesson; continue ONLY from the returned context. Other option: scenaria_fork.
-- Need older details: scenaria_recall instead of re-reading long histories.
+- Need older details: scenaria_recall instead of re-reading long histories. Refer to items by reference (n12, n12.f2, r3) instead of copying them; resolve with scenaria_get_node {refs}.
+- Taking over work from another agent or session: scenaria_workspace {reader: "<your name>"} gives only what you do not know yet; scenaria_expect with your assumptions returns only the deviations.
+- Give facts a confidence when you are not sure ({text, confidence}); low-confidence items are flagged for checking.
 Keep entries short; never record facts you did not verify.`;
 
 export function brief(n: ScenariaNode): string {
@@ -121,6 +124,7 @@ export const TOOLS: ToolDef[] = [
       chosen: z.union([str, z.number()]).optional().describe("Chosen option: its label, id (a, b, …) or 1-based index. Omit if still open."),
       rationale: str.optional().describe("Why this option (required when an option is chosen)"),
       context: str.optional().describe("The situation that made this decision necessary: constraints, facts, the user's request"),
+      basedOn: list.describe("References this decision rests on, e.g. [\"n12.f2\", \"n7\", \"r3\"]"),
       servesGoal: str.optional().describe("How the chosen option serves the project's main goal / the current task"),
       expectedOutcome: str.optional().describe("What should be observable if the decision was right"),
       assumptions: list.describe("Assumptions this decision relies on"),
@@ -155,7 +159,11 @@ export const TOOLS: ToolDef[] = [
     input: {
       title: str.describe("What was achieved, in a few words"),
       outputs: list.describe("Output bullets: what was produced/changed"),
-      facts: list.describe("Verified facts established in this step"),
+      facts: z
+        .array(z.union([str, z.object({ text: str, confidence: z.number().min(0).max(1).optional(), basedOn: z.array(str).optional() })]))
+        .optional()
+        .describe("Facts established in this step: strings, or {text, confidence 0..1, basedOn: [refs]} when not fully sure"),
+      basedOn: list.describe("References this step builds on (n12, n12.f2, r3)"),
       openQuestions: list.describe("Open questions / todos"),
       irreversible: list.describe("External side effects a rewind cannot undo (emails sent, pushes, API writes)"),
       onlyIfChanged: z.boolean().optional().describe("Skip if no file changed since HEAD"),
@@ -181,11 +189,21 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "scenaria_get_node",
-    title: "Get node",
-    description: "Full JSON of one node (decision, checkpoint, …).",
-    input: { id: str },
+    title: "Get node / resolve references",
+    description:
+      "Full JSON of one node (id), or resolve references to just their content (refs: [\"n12\", \"n12.f2\", \"n9.q1\", \"r3\"]). Use references instead of copying content around.",
+    input: { id: str.optional(), refs: z.array(str).max(50).optional() },
     annotations: { readOnlyHint: true },
     run(s, a) {
+      if (a.refs?.length) {
+        const r = resolveRefs(s, a.refs);
+        return { text: JSON.stringify(r, null, 2), data: r };
+      }
+      if (!a.id) throw new Error("Give id or refs.");
+      if (a.id.includes(".")) {
+        const r = resolveRefs(s, [a.id]);
+        return { text: JSON.stringify(r[0], null, 2), data: r[0] };
+      }
       const n = s.node(a.id);
       return { text: JSON.stringify(n, null, 2), data: n };
     },
@@ -194,11 +212,15 @@ export const TOOLS: ToolDef[] = [
     name: "scenaria_context",
     title: "Resume context",
     description:
-      "Compact resume capsule for a node (default HEAD): goal, brief, decisions taken on the path, current facts/outputs, lessons. Use it instead of re-reading long histories.",
-    input: { id: str.optional() },
+      "Compact resume capsule for a node (default HEAD): goal, brief, decisions taken on the path, current facts/outputs, lessons. Use it instead of re-reading long histories. mode \"refs\" = an even shorter index of references to resolve on demand.",
+    input: { id: str.optional(), mode: z.enum(["full", "refs"]).optional(), budget: z.number().int().min(300).max(20000).optional() },
     annotations: { readOnlyHint: true },
     run(s, a) {
-      const c = s.context(a.id);
+      if (a.mode === "refs") {
+        const text = referenceCapsule(s, a.id);
+        return { text: `${text}\n\n(≈ ${Math.ceil(text.length / 4)} tokens)`, data: { markdown: text } };
+      }
+      const c = s.context(a.id, { budget: a.budget });
       return { text: `${c.markdown}\n\n(≈ ${c.tokens} tokens)`, data: c };
     },
   },
@@ -287,6 +309,33 @@ export const TOOLS: ToolDef[] = [
       const pathIds = head ? new Set(s.path(head).map((n) => n.id)) : undefined;
       const hits = recall(s.store.listNodes(), s.conversations.allMessages(), a.query, { limit: a.limit ?? 8, pathIds });
       return { text: renderRecall(hits), data: hits };
+    },
+  },
+  {
+    name: "scenaria_workspace",
+    title: "Workspace (shared board)",
+    description:
+      "The project as a structured board instead of a chat history: goals, decisions, facts, questions, rules, lessons, risks — each item with a reference and confidence. Subscribe to the sections you need. With a reader name, Scenaria remembers what you already know and returns only new, changed and invalidated items.",
+    input: {
+      sections: z.array(z.enum(SECTIONS)).optional().describe("Only these sections (default: all)"),
+      reader: str.optional().describe("Your stable reader name (agent/session). Enables delta mode: only what you do not know yet"),
+      full: z.boolean().optional().describe("Return everything even if you read it before"),
+    },
+    run(s, a) {
+      const r = workspace(s, { sections: a.sections, reader: a.reader, full: a.full });
+      return { text: renderWorkspace(r), data: r };
+    },
+  },
+  {
+    name: "scenaria_expect",
+    title: "Check expectations",
+    description:
+      "Predictive coding for handoffs: state what you assume before you start (\"n12 done\", \"n7 = Postgres\", \"n12.f2\", \"r3\", or free text) and get back only the deviations — contradicted or unknown assumptions to check.",
+    input: { expectations: z.array(str).min(1).max(40) },
+    annotations: { readOnlyHint: true },
+    run(s, a) {
+      const r = checkExpectations(s, a.expectations);
+      return { text: renderExpectations(r), data: r };
     },
   },
   {

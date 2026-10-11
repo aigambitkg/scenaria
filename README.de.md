@@ -68,6 +68,34 @@ Fehlende Angaben werden auf der Karte und im Tool-Ergebnis markiert.
   - Ganz ohne API: `scenaria analyze --dossier` kopiert das Dossier für jeden Chat, das Ergebnis fügst du wieder ein.
 - **Der Kreis schließt sich:** Übernommene Empfehlungen werden **Projektregeln**, die ab dann jede Kontext-Kapsel und jeder Agent-Prompt enthält.
 
+## Kontext-Treue: sehen, wo Kontext abbrach, sich änderte oder manipuliert wurde
+
+Klickst du einen Knoten an, zeigt das Dashboard eine Linie vom Projektstart bis zu diesem Knoten, mit Prozentwert je Schritt. Der Wert jedes Knotens setzt sich zusammen aus:
+- **Luftlinie zum Hauptziel:** Wortüberschneidung mit Haupt- und Teilziel, oder ein ausdrückliches `servesGoal`;
+- **Anschluss** an die vorherigen Schritte, oder ausdrückliche `basedOn`-Verweise;
+- **Integrität:** ob der Knoten noch dem entspricht, was Scenaria geschrieben hat;
+- **Belastbarkeit:** Prüfungen und Konfidenz.
+
+Marker zeigen, wo der Kontext **abbrach**, das **Hauptziel geändert** wurde, die Linie **abzweigte** und welche Schritte **außerhalb von Scenaria verändert** wurden. Auf der Karte trägt jeder Knoten zusätzlich einen Treue-Balken; im Terminal zeigt `scenaria fidelity [id]` dieselbe Linie.
+
+Sichtbar wird Manipulation durch ein **Integritäts-Protokoll** (`.scenaria/ledger.jsonl`):
+- Jeder Schreibvorgang legt den Inhalts-Hash des Knotens ab, und die Zeilen bilden eine Hash-Kette.
+- Eine von Hand bearbeitete Knotendatei oder ein bearbeitetes Protokoll fällt auf: in `scenaria integrity`, im Projekt-Check und auf der Karte.
+- Das Protokoll macht Manipulation erkennbar, verhindert sie aber nicht: Wer Knoten *und* das gesamte Protokoll neu schreibt, wird lokal nicht erkannt.
+
+Die Überschneidung ist rein lexikalisch: offline und ohne Token. Entscheidungen in einer anderen Sprache als das Ziel sollten deshalb `servesGoal` angeben.
+
+## Übergaben, ohne alles neu zu schicken
+
+Agenten teilen sich eine strukturierte Tafel, statt Chatverläufe weiterzureichen:
+- **Global Workspace:** `scenaria_workspace` liefert die Tafel: Ziele, Entscheidungen, Fakten, offene Fragen, Regeln, Lektionen und Risiken, jeweils mit Referenz und Konfidenz. Jeder Leser wählt nur die Bereiche, die er braucht.
+- **Kontext per Referenz:** `n12` (Knoten), `n12.f2` (zweiter Fakt daran), `n12.q1` (offene Frage), `r3` (Regel).
+  - Weitergegeben werden Referenzen statt Inhalte; `scenaria_get_node {refs}` löst nur auf, was gebraucht wird.
+  - `scenaria_context {mode: "refs"}` liefert einen kurzen Index.
+- **Wissensmodell (Theory of Mind):** Mit einem `reader`-Namen merkt sich Scenaria, was dieser Leser schon kennt. Danach schickt es nur Neues und Geändertes, dazu Einträge, die **ungültig** geworden sind, etwa nach einem Rücksprung.
+- **Predictive Coding:** Vor der Übernahme nennt ein Agent seine Annahmen in `scenaria_expect` (`"n12 done"`, `"n7 = Postgres"`, `"n12.f2"` oder freier Text) und bekommt nur die Abweichungen zurück.
+- **Unsicherheit mitsenden:** Fakten können `{text, confidence, basedOn}` sein. Unsichere Einträge sind in Kapsel und Tafel mit „prüfen“ markiert.
+
 ## Wenig Token, langes Gedächtnis
 
 - Die **Kontext-Kapsel** hat ein Token-Budget (Standard 1.500 Token):
@@ -127,7 +155,7 @@ Unveränderte Dateien werden nur einmal gespeichert – auf macOS (APFS) als Cop
 
 ## Funktioniert mit jedem LLM und Agenten-Stack
 
-Claude Code (MCP + Hooks), Cursor, VS Code/Copilot, Gemini CLI, Codex, Windsurf (MCP + `AGENTS.md`), jede API mit Function Calling (`scenaria tools --format openai|anthropic|gemini`), LangChain/CrewAI/AutoGen über den Python-Client, n8n/Make über HTTP, Shell-Agenten über `scenaria call`. Alle Wege nutzen dieselben 15 Werkzeuge.
+Claude Code (MCP + Hooks), Cursor, VS Code/Copilot, Gemini CLI, Codex, Windsurf (MCP + `AGENTS.md`), jede API mit Function Calling (`scenaria tools --format openai|anthropic|gemini`), LangChain/CrewAI/AutoGen über den Python-Client, n8n/Make über HTTP, Shell-Agenten über `scenaria call`. Alle Wege nutzen dieselben 17 Werkzeuge.
 
 ## Für Organisationen
 

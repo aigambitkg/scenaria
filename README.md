@@ -88,6 +88,34 @@ Missing fields are flagged on the map and in the agent's tool result.
   - Without any API: `scenaria analyze --dossier` copies the dossier into any chat, and you paste the result back.
 - **The loop closes:** accepted recommendations become **project rules**. Every capsule and every agent prompt carries them from then on.
 
+## Context fidelity: see where context broke, changed or was manipulated
+
+Select any node to see a line from the project root to that node, with a percentage per step. Each node's score combines:
+- its **line to the main goal**: textual overlap with the main and task goal, or an explicit `servesGoal`;
+- its **continuity** with the steps before it, or explicit `basedOn` references;
+- **integrity**: whether the node still matches what Scenaria wrote;
+- **reliability**: checks and confidence.
+
+Markers show where context **broke off**, where the **main goal changed**, where the line **branched**, and which steps were **changed outside Scenaria**. Every node also gets a thin fidelity bar on the map, and `scenaria fidelity [id]` prints the same line in the terminal.
+
+Manipulation becomes visible through an append-only **integrity ledger** (`.scenaria/ledger.jsonl`):
+- Every write stores the node's content hash, and the ledger lines form a hash chain.
+- A node file edited by hand, or an edited ledger, shows up in `scenaria integrity`, in the health check and on the map.
+- Tamper-*evident*, not tamper-proof: someone who rewrites both the nodes and the entire ledger is not detected locally.
+
+Overlap is lexical: it works offline and costs no tokens. Decisions written in another language than the goal should state `servesGoal`.
+
+## Handoffs without re-sending everything
+
+Agents share one structured board instead of passing chat histories around:
+- **Global workspace:** `scenaria_workspace` returns the board, i.e. goals, decisions, facts, open questions, rules, lessons and risks. Each item carries a reference and its confidence. Readers pick the sections they need.
+- **Context by reference:** `n12` (node), `n12.f2` (its 2nd fact), `n12.q1` (open question), `r3` (rule).
+  - Pass references instead of content; `scenaria_get_node {refs}` resolves only what is needed.
+  - `scenaria_context {mode: "refs"}` is a short index.
+- **Theory of mind:** with a `reader` name, Scenaria remembers what that reader already knows. It then sends only new and changed items, plus items that became **invalid**, e.g. after a rewind.
+- **Predictive coding:** before taking over, an agent states its assumptions (`"n12 done"`, `"n7 = Postgres"`, `"n12.f2"`, or free text) in `scenaria_expect`. It gets back only the deviations.
+- **Confidence per statement:** facts can be `{text, confidence, basedOn}`. Low-confidence items are flagged "verify" in capsules and on the board.
+
 ## Few tokens, long memory
 
 - The **resume capsule** has a token budget (default 1,500 tokens):
@@ -165,7 +193,7 @@ Unchanged files are stored only once. On macOS (APFS) they are copy-on-write clo
 | **Aider · Open Interpreter · shell agents** | CLI | `scenaria call scenaria_checkpoint '{"title":"…"}'` |
 | **Agents without any tool support** | File watcher | `scenaria watch` |
 
-All paths use **one tool registry**: the same 15 tools with the same validation behave identically over MCP, HTTP, CLI and function calling.
+All paths use **one tool registry**: the same 17 tools with the same validation behave identically over MCP, HTTP, CLI and function calling.
 
 ## For organizations
 
@@ -193,7 +221,9 @@ All paths use **one tool registry**: the same 15 tools with the same validation 
 | `scenaria_verify` | Checks + verdict (passed / warning / failed) |
 | `scenaria_last_good` | Safest rewind target |
 | `scenaria_recall` | Keyword search over the whole project memory |
-| `scenaria_health` | Deterministic quality check of the tree |
+| `scenaria_health` | Deterministic quality check of the tree (incl. manipulation) |
+| `scenaria_workspace` | Shared board by sections; with a reader name only the gap |
+| `scenaria_expect` | Check assumptions; returns only deviations |
 
 Manual MCP config for any client:
 
@@ -230,6 +260,7 @@ scenaria checkpoint "<title>" --out .. [--done --summary ..]
 scenaria status | tree [id] [--full] | show <id> | context [id] [--budget 1500] | recall "<keywords>"
 scenaria prompt [--kind mcp|cli|chat] [--lang de|en] | ingest-text [file] | rules [add|rm]
 scenaria analyze [--llm <provider> --model <m>] [--dossier]
+scenaria fidelity [id] | integrity | workspace [--reader ..] [--sections ..] | resolve <refs> | expect "<assumption>" …
 scenaria rewind <id> [--lesson ..]       scenaria fork <decisionId> <option>      scenaria diff <from> [to]
 scenaria versions | open <id> [--copy-to dir] | mirror [--enable]
 scenaria conversations | conversation <id> | import <file> | log-message --role .. --text ..
@@ -246,6 +277,8 @@ Global flags: `--root`, `--json`, `--agent`, `--model`, `--user`.
   config.json        settings (snapshot folders, proxy upstreams, mirror, verifyCommand, …)
   state.json         HEAD, project root, current task, counters
   memory.json        project rules (carried by every capsule and prompt)
+  ledger.jsonl       integrity ledger (content hash per write, hash-chained)
+  readers.json       what each reader already knows (workspace deltas)
   analyses/          stored LLM analyses
   backups/           node backups taken before schema migrations
   nodes/n7.json      one file per node, the source of truth

@@ -1,7 +1,16 @@
 import type { AnalysisConfig, ConversationMessage, ConversationSession, ProjectRule, ScenariaConfig, ScenariaEvent, ScenariaNode, ScenariaState } from "../../src/core/types";
 import type { AnalysisRecord, Metrics } from "../../src/core/analysis";
+import type { FidelityPoint } from "../../src/core/fidelity";
 
-export type { ScenariaNode, ScenariaEvent, ConversationMessage, ConversationSession, ProjectRule, AnalysisRecord, Metrics, AnalysisConfig };
+export type { ScenariaNode, ScenariaEvent, ConversationMessage, ConversationSession, ProjectRule, AnalysisRecord, Metrics, AnalysisConfig, FidelityPoint };
+
+export interface Fidelity {
+  points: Record<string, FidelityPoint>;
+  ledgerBrokenAt: number | null;
+  ledgerEntries: number;
+  ledgerMissing?: boolean;
+  ledgerTorn?: number;
+}
 
 export interface Graph {
   config: ScenariaConfig;
@@ -50,6 +59,7 @@ export const api = {
     req<{ text: string; tokens: number }>(`/api/v1/prompt?kind=${kind}&lang=${lang}${context ? "&context=1" : ""}`),
   ingestText: (text: string) => req<{ created: { id: string; type: string; title: string }[]; errors: string[]; skipped: number }>("/api/v1/ingest-text", { text, log: true }),
   analysis: () => req<Metrics>("/api/analysis"),
+  fidelity: () => req<Fidelity>("/api/fidelity"),
   analyses: () => req<AnalysisRecord[]>("/api/analysis/list"),
   dossier: (lang: string) => req<{ text: string; tokens: number; decisions: number; omitted: number }>(`/api/analysis/dossier?lang=${lang}`),
   analysisConfig: () => req<{ config: AnalysisConfig | null; envKeys: string[]; teamMode: boolean }>("/api/analysis/config"),

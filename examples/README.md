@@ -1,6 +1,6 @@
 # Integration examples
 
-Scenaria is vendor-neutral. All paths below use the same 15 tools (`scenaria tools` lists them).
+Scenaria is vendor-neutral. All paths below use the same 17 tools (`scenaria tools` lists them).
 
 | You use … | Connect via | Start here |
 |---|---|---|

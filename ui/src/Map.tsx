@@ -15,7 +15,8 @@ import {
   type Node,
   type NodeProps,
 } from "@xyflow/react";
-import type { ScenariaNode } from "./api";
+import type { FidelityPoint, ScenariaNode } from "./api";
+import { scoreTone } from "./Fidelity";
 import type { Dict } from "./i18n";
 import { COL, NODE_H, NODE_W, ROW, layoutTree, pathIds, type Placed } from "./layout";
 
@@ -45,6 +46,7 @@ type ScData = {
   fileCount?: number;
   onToggleFold?: (id: string) => void;
   containsHead?: boolean;
+  fid?: FidelityPoint;
 };
 
 /** Missing context/rationale is the most common quality gap — show it on the map. */
@@ -92,6 +94,10 @@ const ScNode = memo(({ data, selected }: NodeProps<Node<ScData>>) => {
       {isHead && <span className="head-tab">{t.head}</span>}
       {!isHead && data.containsHead && <span className="head-tab inside">{t.head} ▸</span>}
       {q && <span className={`q-flag ${q.cls}`} title={q.text}>{q.cls === "q-bad" ? "!" : "?"}</span>}
+      {data.fid && data.fid.integrity === "tampered" && <span className="q-flag q-bad tamper" title={t.fidFlags.tampered}>⛔</span>}
+      {data.fid && (
+        <span className={`fid-bar ${scoreTone(data.fid.score)}`} style={{ width: `${data.fid.score}%` }} title={`${t.fidelity}: ${data.fid.score} %`} aria-hidden />
+      )}
       {canFold && (
         <button
           className="fold nodrag nopan"
@@ -184,9 +190,10 @@ export function ScenarioMap(props: {
   onSelect: (key: string | null) => void;
   folded: Set<string>;
   onToggleFold: (id: string) => void;
+  fidelity: Record<string, FidelityPoint> | null;
   t: Dict;
 }) {
-  const { nodes, rootId, headId, selectedKey, onSelect, folded, onToggleFold, t } = props;
+  const { nodes, rootId, headId, selectedKey, onSelect, folded, onToggleFold, fidelity, t } = props;
   const { flowNodes, flowEdges, shape, focus } = useMemo(() => {
     const { placed, maxDepth, rows } = layoutTree(nodes, rootId, folded);
     const onPath = pathIds(nodes, headId);
@@ -202,6 +209,7 @@ export function ScenarioMap(props: {
         t,
         onToggleFold,
         containsHead: Boolean(p.folded && headId && !visible.has(headId) && onPath.has(p.key)),
+        fid: p.kind === "node" ? fidelity?.[p.key] : undefined,
       } satisfies ScData,
       draggable: false,
       connectable: false,
@@ -241,7 +249,7 @@ export function ScenarioMap(props: {
       .filter((p) => p.depth >= minDepth && p.depth <= (head?.depth ?? 0) + 1)
       .map((p) => p.key);
     return { flowNodes, flowEdges, shape: `${rootId}:${placed.length}:${headId}`, focus };
-  }, [nodes, rootId, headId, selectedKey, t, folded, onToggleFold]);
+  }, [nodes, rootId, headId, selectedKey, t, folded, onToggleFold, fidelity]);
 
   return (
     <ReactFlow

@@ -1,4 +1,4 @@
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { basename, join } from "node:path";
 import { userInfo } from "node:os";
@@ -22,6 +22,8 @@ import { Conversations, renderConversation, type MessageInput, type SessionInput
 import { DEFAULT_SNAPSHOT_FOLDERS, SnapshotFolders, versionReadme } from "./folders.js";
 import { ulid, versionLabel } from "./ids.js";
 import { isForbiddenRoot } from "./global.js";
+import { Ledger, checkIntegrity, contentHash } from "./ledger.js";
+import { fidelityAll } from "./fidelity.js";
 
 export interface Actor {
   agent?: string;
@@ -82,6 +84,8 @@ export interface DecisionInput extends Actor {
   context?: string;
   servesGoal?: string;
   expectedOutcome?: string;
+  /** References the decision rests on: node ids or item refs ("n12.f2", "r3"). */
+  basedOn?: string[];
   task?: TaskHint;
   assumptions?: string[];
   confidence?: number;
@@ -90,10 +94,14 @@ export interface DecisionInput extends Actor {
   meta?: Record<string, unknown>;
 }
 
+/** A fact as plain text, or with how sure the agent is and what it rests on. */
+export type FactInput = string | { text: string; confidence?: number; basedOn?: string[] };
+
 export interface CheckpointInput extends Actor {
   title: string;
   outputs?: string[];
-  facts?: string[];
+  facts?: FactInput[];
+  basedOn?: string[];
   openQuestions?: string[];
   irreversible?: string[];
   tags?: string[];
@@ -147,6 +155,11 @@ const GITIGNORE_LINES = [
   "blobs/",
   "conversations/",
   "hook-errors.log",
+  // Integrity evidence and reader memory are per machine (a shared, merged ledger would break its chain).
+  "ledger.jsonl",
+  "ledger.sealed",
+  "ledger.*.jsonl",
+  "readers.json",
 ];
 
 export const DEFAULT_PROXY = {
@@ -162,6 +175,22 @@ export const DEFAULT_PROXY = {
   },
   autoCheckpoint: true,
 };
+
+function splitFacts(list?: FactInput[]): { facts?: string[]; factInfo?: ({ confidence?: number; basedOn?: string[] } | null)[] } {
+  const facts: string[] = [];
+  const info: ({ confidence?: number; basedOn?: string[] } | null)[] = [];
+  for (const f of list ?? []) {
+    const text = (typeof f === "string" ? f : String(f?.text ?? "")).trim();
+    if (!text) continue;
+    facts.push(text);
+    if (typeof f === "object" && f) {
+      const confidence = typeof f.confidence === "number" ? Math.max(0, Math.min(1, f.confidence)) : undefined;
+      const basedOn = clean(f.basedOn);
+      info.push(confidence !== undefined || basedOn ? { confidence, basedOn } : null);
+    } else info.push(null);
+  }
+  return { facts: facts.length ? facts : undefined, factInfo: info.some(Boolean) ? info : undefined };
+}
 
 function clean(list?: string[]): string[] | undefined {
   const l = (list ?? []).map((s) => String(s).trim()).filter(Boolean);
@@ -179,6 +208,47 @@ export class Scenaria {
 
   get root() {
     return this.store.root;
+  }
+
+  /** Append-only integrity ledger (tamper evidence for node files). */
+  get ledger() {
+    return new Ledger(this.store.path("ledger.jsonl"));
+  }
+
+  /** Which nodes still match what Scenaria wrote (ok), were changed outside it (tampered), or predate the ledger (unsealed). */
+  integrity() {
+    // Nodes are re-hashed on every call (a hand edit shows up immediately); the parsed ledger is cached by size/mtime.
+    return checkIntegrity(this.store.listNodes(), this.ledger, { expectSealed: existsSync(this.store.path("ledger.sealed")) });
+  }
+
+  /**
+   * Accept the current state as the new baseline (after a torn ledger, a restore from backup or a
+   * reviewed manual fix). The old ledger is kept as evidence; the event log records who resealed.
+   */
+  reseal(actor: Actor = {}): { archived: string | null; nodes: number } {
+    return this.store.withLock(() => {
+      const lf = this.store.path("ledger.jsonl");
+      let archived: string | null = null;
+      if (existsSync(lf)) {
+        archived = `ledger.${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`;
+        renameSync(lf, this.store.path(archived));
+      }
+      const nodes = this.store.listNodes();
+      this.ledger.append(nodes.map((n) => ({ id: n.id, hash: contentHash(n), op: "reseal" })));
+      writeFileSync(this.store.path("ledger.sealed"), new Date().toISOString() + "\n");
+      this.store.appendEvent({ type: "update", data: { message: `integrity ledger resealed by ${actor.user ?? defaultUser() ?? "?"} (${nodes.length} nodes)${archived ? `, previous ledger kept as ${archived}` : ""}` } });
+      return { archived, nodes: nodes.length };
+    });
+  }
+
+  /** Context fidelity of every node (0–100) plus ledger state — see core/fidelity.ts. */
+  fidelity() {
+    const nodes = this.store.listNodes();
+    const integ = this.integrity();
+    const root = nodes.find((n) => n.id === (this.store.readState().projectRoot ?? ROOT_ID));
+    const goalChanges = ((root?.meta?.goalHistory as { until?: string }[] | undefined) ?? []).map((g) => g.until).filter((x): x is string => typeof x === "string");
+    const points = fidelityAll(nodes, { integrity: integ.state, goalChanges });
+    return { points: Object.fromEntries(points), ledgerBrokenAt: integ.ledgerBrokenAt, ledgerEntries: integ.entries, ledgerMissing: integ.ledgerMissing, ledgerTorn: integ.torn };
   }
 
   // ------------------------------------------------------------------ setup
@@ -237,7 +307,20 @@ export class Scenaria {
       const missing = GITIGNORE_LINES.filter((l) => !l.startsWith("#") && !have.includes(l));
       if (missing.length) appendFileSync(gi, (have.length && have[have.length - 1] !== "" ? "\n" : "") + missing.join("\n") + "\n");
     } catch {}
-    if ((this.store.readState().schema ?? 1) >= 3) return;
+    const st0 = this.store.readState();
+    if ((st0.schema ?? 1) < 3 || st0.migrating) this.upgradeSchema();
+    // Seal existing history once, so later edits outside Scenaria become visible.
+    // A ledger that existed and disappeared is NOT resealed silently (integrity reports it missing).
+    if (!this.ledger.exists && !existsSync(this.store.path("ledger.sealed")) && this.store.listNodes().length) {
+      this.store.withLock(() => {
+        if (this.ledger.exists) return;
+        this.ledger.append(this.store.listNodes().map((n) => ({ id: n.id, hash: contentHash(n), op: "seal" })));
+        writeFileSync(this.store.path("ledger.sealed"), new Date().toISOString() + "\n");
+      });
+    }
+  }
+
+  private upgradeSchema() {
     if ((this.store.readState().schema ?? 1) < 2) this.store.withLock(() => {
       const state = this.store.readState();
       if ((state.schema ?? 1) >= 2) return;
@@ -427,6 +510,7 @@ export class Scenaria {
       }
       done.set(n.id, n);
     }
+    if (this.ledger.exists) this.ledger.append(all.map((n) => ({ id: n.id, hash: contentHash(n), op: "migrate" })));
     for (const n of all) this.store.writeNode(n);
     // Refs and notes in bulk (one git process, one node listing) — fast even for thousands of nodes.
     if (this.repo) {
@@ -816,6 +900,14 @@ export class Scenaria {
   }
 
   private save(n: ScenariaNode) {
+    // Hash first, then the file: a crash in between leaves the previous version, which still verifies.
+    try {
+      const fresh = !this.ledger.exists;
+      this.ledger.append([{ id: n.id, hash: contentHash(n), op: "write" }]);
+      if (fresh && !existsSync(this.store.path("ledger.sealed"))) writeFileSync(this.store.path("ledger.sealed"), new Date().toISOString() + "\n");
+    } catch {
+      /* the ledger is evidence, never a reason to fail a write */
+    }
     this.store.writeNode(n);
     this.writeNote(n);
   }
@@ -1041,6 +1133,7 @@ export class Scenaria {
         context: input.context?.trim() || undefined,
         servesGoal: input.servesGoal?.trim() || undefined,
         expectedOutcome: input.expectedOutcome?.trim() || undefined,
+        basedOn: clean(input.basedOn),
         trigger: this.recentUserRequest(parent),
         assumptions: clean(input.assumptions),
         confidence: typeof input.confidence === "number" ? Math.max(0, Math.min(1, input.confidence)) : undefined,
@@ -1121,7 +1214,8 @@ export class Scenaria {
       viaOption: this.viaFor(parent),
       title: input.title.trim().slice(0, 200) || "Checkpoint",
       outputs: clean(input.outputs),
-      facts: clean(input.facts),
+      ...splitFacts(input.facts),
+      basedOn: clean(input.basedOn),
       openQuestions: clean(input.openQuestions),
       irreversible: clean(input.irreversible),
       createdAt: new Date().toISOString(),
@@ -1307,6 +1401,8 @@ export class Scenaria {
     return this.store.withLock(() => {
       const node = this.store.readNode(id);
       Object.assign(node, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)));
+      // New facts: confidence/basedOn of the old facts no longer apply.
+      if (patch.facts !== undefined) delete node.factInfo;
       this.save(node);
       this.store.appendEvent({ type: "update", nodeId: id, data: { fields: Object.keys(patch) } });
       return node;

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, type ConversationMessage, type ScenariaNode } from "./api";
+import { api, type ConversationMessage, type Fidelity, type ScenariaNode } from "./api";
+import { FidelityChart } from "./Fidelity";
 import type { Dict } from "./i18n";
 import type { Placed } from "./layout";
 import { NodeId, qualityFlag } from "./Map";
@@ -95,6 +96,8 @@ export function NodePanel(props: {
   onToggleFold: (id: string) => void;
   onEditGoal: () => void;
   onUpdate: (id: string, patch: Record<string, string>) => Promise<void>;
+  fidelity: Fidelity | null;
+  onSelect: (id: string) => void;
 }) {
   const { placed, allNodes, t } = props;
   const [ctx, setCtx] = useState<{ tokens: number; markdown: string; historyTokens?: number } | null>(null);
@@ -160,6 +163,17 @@ export function NodePanel(props: {
     typeof n.meta?.transcriptTokens === "number" ? (n.meta.transcriptTokens as number) : ctx?.historyTokens && ctx.historyTokens > ctx.tokens ? ctx.historyTokens : null;
   const q = qualityFlag(n, t);
   const inside = n.type === "goal" ? countInside(n.id, allNodes) : null;
+  const fidPath = (() => {
+    if (!props.fidelity) return [];
+    const byId = new Map(allNodes.map((x) => [x.id, x]));
+    const ids: string[] = [];
+    let cur: ScenariaNode | undefined = n;
+    while (cur && !ids.includes(cur.id)) {
+      ids.unshift(cur.id);
+      cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+    }
+    return ids.map((id) => props.fidelity!.points[id]).filter(Boolean);
+  })();
 
   const verify = async (body: { status?: string; notes?: string; auto?: boolean }) => {
     setBusy(true);
@@ -195,6 +209,8 @@ export function NodePanel(props: {
       </header>
 
       <div className="p-body">
+        {props.fidelity?.ledgerBrokenAt || props.fidelity?.ledgerMissing ? <p className="qnote q-bad">⛔ {props.fidelity.ledgerMissing ? t.ledgerMissing : t.ledgerBroken}</p> : null}
+        {fidPath.length > 1 && <FidelityChart path={fidPath} selectedId={n.id} t={t} onSelect={props.onSelect} />}
         {n.type === "mission" && (
           <section className={`p-sec goal ${n.goal ? "" : "missing"}`}>
             <h3>{t.goal}</h3>

@@ -90,6 +90,7 @@ export function applyBlocks(s: Scenaria, text: string, actor: Actor = {}, task?:
               expectedOutcome: body.expectedOutcome ?? body.expected,
               confidence: typeof body.confidence === "number" ? body.confidence : undefined,
               assumptions: strList(body.assumptions),
+              basedOn: strList(body.basedOn),
               tags: ["from-chat"],
               ...actor,
               task,
@@ -106,7 +107,10 @@ export function applyBlocks(s: Scenaria, text: string, actor: Actor = {}, task?:
           const n = s.checkpoint({
             title: String(body.title ?? "Step done"),
             outputs: strList(body.outputs),
-            facts: strList(body.facts),
+            facts: Array.isArray(body.facts)
+              ? body.facts.map((f: any) => (f && typeof f === "object" ? { text: String(f.text ?? ""), confidence: typeof f.confidence === "number" ? f.confidence : undefined, basedOn: strList(f.basedOn) } : String(f)))
+              : strList(body.facts),
+            basedOn: strList(body.basedOn),
             openQuestions: strList(body.openQuestions),
             irreversible: strList(body.irreversible),
             taskDone: Boolean(body.taskDone),
