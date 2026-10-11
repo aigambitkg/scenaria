@@ -261,7 +261,8 @@ The person's projects are remembered in `~/.config/scenaria/projects.json` (dash
 - The list and the switch are the person's (approval session) and only in local mode; agents only see
   the current project's name, never folders. Agents keep working in their own project: MCP/CLI agents
   run in their own process, and the server's agent endpoints (`/api/v1/*` tool calls, pasted answers,
-  conversation logging and the LLM proxy `/proxy/*`) stay bound to the project the server was started
+  conversation logging, every other `/api/` call that is not from the dashboard, and the LLM proxy
+  `/proxy/*`) stay bound to the project the server was started
   in (where auto-save runs too). Only requests the dashboard marks (`x-scenaria-view: dashboard`) follow
   a switch; the switcher says so when the two differ.
 - The UI keeps the session API keys (memory only) across switches; everything else is reloaded.

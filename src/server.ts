@@ -849,7 +849,9 @@ export async function startServer(
   const home = app;
   const forAgents = (req: IncomingMessage) => {
     const p = (req.url ?? "/").split("?")[0];
-    return p.startsWith("/proxy/") || (p.startsWith("/api/v1/") && req.headers["x-scenaria-view"] !== "dashboard");
+    // Everything under /api/ that the dashboard did not mark (agents, scripts) stays on the start project;
+    // the live-update stream (EventSource cannot send headers) only carries version numbers.
+    return p.startsWith("/proxy/") || (p.startsWith("/api/") && p !== "/api/events" && req.headers["x-scenaria-view"] !== "dashboard");
   };
   const server = createServer((req, res) => (forAgents(req) ? home : app).handler(req, res));
   const host = opts.host ?? "127.0.0.1";

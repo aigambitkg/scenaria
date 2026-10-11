@@ -50,7 +50,7 @@ test("the person switches the dashboard between projects; agents and other tabs 
   registerProject(b.s.root, "Beta");
   const srv = await startServer(a.s, { port: 4710, quiet: true, showApprovalLink: true });
   const base = srv.url;
-  const post = (p, body, cookie) => fetch(`${base}${p}`, { method: "POST", headers: { "content-type": "application/json", "x-scenaria": "1", ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) });
+  const post = (p, body, cookie) => fetch(`${base}${p}`, { method: "POST", headers: { "content-type": "application/json", "x-scenaria": "1", ...(cookie ? { cookie, "x-scenaria-view": "dashboard" } : {}) }, body: JSON.stringify(body) });
   try {
     // without the approval session: no list, no switch
     const anon = await (await fetch(`${base}/api/projects`)).json();
@@ -82,11 +82,13 @@ test("the person switches the dashboard between projects; agents and other tabs 
     assert.ok(sse.seen.includes("project"), `open dashboards are told: ${sse.seen}`);
     sse.stop();
 
-    // everything now answers for Beta — with the same approval session
-    const g = await (await fetch(`${base}/api/graph`)).json();
+    // everything the dashboard asks now answers for Beta — with the same approval session
+    const g = await (await fetch(`${base}/api/graph`, { headers: { "x-scenaria-view": "dashboard" } })).json();
+    // an unmarked reader (an agent of Alpha) still reads Alpha
+    assert.equal((await (await fetch(`${base}/api/graph`)).json()).config.projectName, "Alpha");
     assert.equal(g.config.projectName, "Beta");
     assert.equal(srv.project().root, b.s.root);
-    assert.equal((await (await fetch(`${base}/api/projects`, { headers: { cookie } })).json()).person, true);
+    assert.equal((await (await fetch(`${base}/api/projects`, { headers: { cookie, "x-scenaria-view": "dashboard" } })).json()).person, true);
     // the single-use link stays used across the switch
     const again = await fetch(srv.approvalUrl, { redirect: "manual" });
     assert.match(again.headers.get("location") ?? "", /approval=invalid/);
@@ -101,7 +103,7 @@ test("the person switches the dashboard between projects; agents and other tabs 
     // the dashboard itself follows the switch
     const dash = await (await fetch(`${base}/api/v1/versions`, { headers: { "x-scenaria-view": "dashboard" } })).json();
     assert.ok(JSON.stringify(dash).length > 2);
-    const pj = await (await fetch(`${base}/api/projects`, { headers: { cookie } })).json();
+    const pj = await (await fetch(`${base}/api/projects`, { headers: { cookie, "x-scenaria-view": "dashboard" } })).json();
     assert.deepEqual([pj.agents.name, pj.agents.same], ["Alpha", false]);
     // and back
     assert.equal((await post("/api/projects/switch", { root: a.s.root }, cookie)).status, 200);
