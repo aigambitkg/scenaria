@@ -33,7 +33,7 @@ export function effectiveLlm(s: Scenaria, role: LlmRole, override?: Partial<LlmR
   const pick: LlmChoice | undefined = g.roles?.[role] ?? g.default ?? (s.config().analysis ? { ...s.config().analysis! } : undefined);
   if (override?.provider && override?.model) return { provider: override.provider, model: override.model, baseUrl: override.baseUrl, apiKey: override.apiKey };
   if (!pick) return null;
-  return { provider: pick.provider, model: pick.model, baseUrl: pick.baseUrl, apiKeyEnv: (pick as any).apiKeyEnv, apiKey: override?.apiKey };
+  return { provider: pick.provider, model: pick.model, baseUrl: pick.baseUrl, apiKey: override?.apiKey };
 }
 
 function clean(c: any): LlmChoice | undefined {

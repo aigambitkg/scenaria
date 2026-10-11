@@ -563,3 +563,6 @@ table.gate tr.current td:first-child { box-shadow: inset 4px 0 0 var(--marker-so
 @media (max-width: 900px) {
   .side .chat { min-height: 75vh; }
 }
+.chat-canon { margin: 2px 0 4px; }
+.chat-canon .btn { margin-top: 4px; }
+.pending-args { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }

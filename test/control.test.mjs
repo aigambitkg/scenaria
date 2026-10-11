@@ -146,7 +146,7 @@ test("chat (Anthropic): tool_use / tool_result round trip", async () => {
     assert.equal(second[1].content[1].type, "tool_use");
     assert.equal(second[2].role, "user");
     assert.equal(second[2].content[0].type, "tool_result");
-    assert.equal(second[2].content[0].tool_use_id, "toolu_1");
+    assert.equal(second[2].content[0].tool_use_id, second[1].content[1].id, "result matches the call (Scenaria's own id)");
     assert.equal(r.messages[r.messages.length - 1].content, "All good.");
   } finally {
     llm.close();
@@ -237,4 +237,86 @@ test("settings and chat are the person's: the API token / agents cannot change t
     server.close();
     writeSettings({ llm: {} });
   }
+});
+
+test("review fixes: no env key to local servers via project config; archivist/analysis are person-only", async () => {
+  process.env.ANTHROPIC_API_KEY = "sk-ant-secret";
+  try {
+    assert.equal(resolveLlm({ provider: "ollama", model: "x", apiKeyEnv: "ANTHROPIC_API_KEY" }, { ollama: "http://127.0.0.1:11434/v1" }).key, undefined);
+    assert.equal(resolveLlm({ provider: "lmstudio", model: "x" }, { lmstudio: "http://127.0.0.1:1234/v1" }).key, undefined);
+  } finally {
+    delete process.env.ANTHROPIC_API_KEY;
+  }
+  const { s } = project();
+  const app = createApp(s, { approvalCode: "c", approvalSecret: "sess" });
+  const server = createServer(app.handler);
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    for (const path of ["/api/canon/archivist", "/api/analysis/run", "/api/analysis/config", "/api/canon/gate"]) {
+      const r = await fetch(base + path, { method: "POST", headers: { "content-type": "application/json", "x-scenaria": "1" }, body: "{}" });
+      assert.equal(r.status, 403, path);
+    }
+  } finally {
+    app.close();
+    server.close();
+  }
+});
+
+test("review fixes: an approval covers only the call the person saw; abandoned calls are closed", async () => {
+  const { p, s } = project();
+  p.write("a.txt", "1");
+  const n1 = s.checkpoint({ title: "v1" });
+  p.write("a.txt", "2");
+  const n2 = s.checkpoint({ title: "v2" });
+  p.write("a.txt", "3");
+  s.checkpoint({ title: "v3" });
+  // the provider always answers with the same tool-call id
+  const same = (args) => ({ model: "m", choices: [{ message: { role: "assistant", content: "", tool_calls: [{ id: "call_0", type: "function", function: { name: "scenaria_rewind", arguments: JSON.stringify(args) } }] } }] });
+  const llm = await fakeLlm([same({ id: n2.id }), same({ id: n1.id, lesson: "NOT approved" }), oaText("x")]);
+  const L = { provider: "fake", model: "m", baseUrl: llm.base };
+  try {
+    const r1 = await chat(s, { sessionId: "rv", messages: [{ role: "user", content: "go back" }], llm: L });
+    assert.notEqual(r1.pending[0].id, "call_0", "ids are assigned by Scenaria");
+    const r2 = await chat(s, { sessionId: "rv", messages: r1.messages, decisions: { [r1.pending[0].id]: "approve" }, llm: L });
+    assert.equal(p.read("a.txt"), "2", "the approved rewind ran");
+    assert.equal(r2.pending.length, 1, "the second rewind waits for the person");
+    assert.equal(r2.pending[0].args.id, n1.id);
+    // the person writes something new instead of answering → the open call is closed, not executed
+    const r3 = await chat(s, { sessionId: "rv", messages: [...r2.messages, { role: "user", content: "no, stay" }], llm: L });
+    assert.equal(p.read("a.txt"), "2");
+    assert.ok(r3.messages.some((m) => m.role === "tool" && /Not executed/.test(m.content)));
+  } finally {
+    llm.close();
+  }
+});
+
+test("review fixes: the relay never counts an unassessed option as surviving; the gate links only dependency folders", async () => {
+  const { p, s } = project();
+  s.addCanonAsUser({ kind: "past", text: "Data stays in the EU" }, { user: "kev", via: "cli" });
+  const llm = await fakeLlm((req) => {
+    const sys = req.body.messages[0].content;
+    if (/ARCHIVIST/.test(sys)) return oaText('{"constraints": []}');
+    if (/CRAFTSMAN/.test(sys)) return oaText('{"options": [{"label": "Safe", "plan": "p"}, {"label": "Risky", "plan": "q"}, {"label": "Risky", "plan": "dup"}]}');
+    return oaText('{"assessments": [{"option": "Safe", "survives": false, "failsOn": ["k1"]}], "recommendation": {"option": "Risky", "why": "trust me"}}');
+  });
+  try {
+    const r = await runRelay(s, { question: "Which way to go?", llm: { provider: "fake", model: "m", baseUrl: llm.base } });
+    assert.deepEqual(r.surviving, []);
+    assert.equal(r.craftsman.options.length, 2, "duplicate labels dropped");
+    assert.ok(r.warnings.some((w) => /did not assess: Risky/.test(w)));
+    assert.ok(r.warnings.some((w) => /recommends "Risky"/.test(w)));
+  } finally {
+    llm.close();
+  }
+  // .git / .scenaria in the exclude list are never linked into the gate's copy
+  const cfgFile = join(p.dir, ".scenaria/config.json");
+  const cfg = JSON.parse(readFileSync(cfgFile, "utf8"));
+  cfg.exclude = [...cfg.exclude, ".git/", ".scenaria/"];
+  writeFileSync(cfgFile, JSON.stringify(cfg));
+  p.write("x.txt", "1");
+  s.checkpoint({ title: "line" });
+  s.addCanonAsUser({ kind: "future", text: "No project internals in the copy", check: "test ! -e .scenaria && test ! -e .git" }, { user: "kev", via: "cli" });
+  const res = await runGate(s, { by: "kev" });
+  assert.ok(res.results.length > 0 && res.results.every((x) => x.status === "passed"), JSON.stringify(res.results));
 });

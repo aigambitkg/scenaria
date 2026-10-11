@@ -401,7 +401,16 @@ export interface LlmRequest extends AnalysisConfig {
   apiKey?: string;
 }
 
-const OFFICIAL: Record<string, string> = { ...DEFAULT_PROXY.upstreams, anthropic: "https://api.anthropic.com" };
+// Official endpoints of providers that use keys (local servers like Ollama/LM Studio never get one).
+const OFFICIAL: Record<string, string> = {
+  openai: DEFAULT_PROXY.upstreams.openai,
+  anthropic: "https://api.anthropic.com",
+  gemini: DEFAULT_PROXY.upstreams.gemini,
+  mistral: DEFAULT_PROXY.upstreams.mistral,
+  openrouter: DEFAULT_PROXY.upstreams.openrouter,
+  groq: DEFAULT_PROXY.upstreams.groq,
+};
+const trusted = (base: string) => (readGlobalConfig().trustedEndpoints ?? []).some((u) => norm(u) === norm(base));
 const norm = (u: string) => u.trim().replace(/\/+$/, "").toLowerCase();
 
 /**
@@ -411,7 +420,7 @@ const norm = (u: string) => u.trim().replace(/\/+$/, "").toLowerCase();
  */
 export function envKeyAllowed(provider: string, base: string): boolean {
   if (OFFICIAL[provider] && norm(OFFICIAL[provider]) === norm(base)) return true;
-  return (readGlobalConfig().trustedEndpoints ?? []).some((u) => norm(u) === norm(base));
+  return trusted(base);
 }
 
 export function resolveLlm(cfg: LlmRequest, upstreams: Record<string, string>) {
@@ -421,8 +430,9 @@ export function resolveLlm(cfg: LlmRequest, upstreams: Record<string, string>) {
   const base = (cfg.baseUrl?.trim() || upstreams[provider] || (provider === "anthropic" ? "https://api.anthropic.com" : "")).replace(/\/+$/, "");
   if (!base) throw new Error(`Unknown provider "${provider}" — set a base URL (OpenAI-compatible, e.g. http://127.0.0.1:11434/v1).`);
   // Only variables that are API keys (no AWS_SECRET…, GITHUB_TOKEN … via a config file).
-  const custom = cfg.apiKeyEnv?.trim();
-  const envName = (custom && /^[A-Z0-9_]*API_KEY$/.test(custom) ? custom : "") || KEY_ENV[provider] || (provider === "gemini" ? "GOOGLE_API_KEY" : "");
+  // Only the provider's own key variable — never one named in a (project) config file, which an
+  // agent could use to pick another provider's key. Other keys: enter them for the session.
+  const envName = KEY_ENV[provider] || (provider === "gemini" ? "GOOGLE_API_KEY" : "");
   const envKey = envKeyAllowed(provider, base) ? (envName ? process.env[envName] : undefined) || (provider === "gemini" ? process.env.GOOGLE_API_KEY : undefined) : undefined;
   const key = cfg.apiKey?.trim() || envKey;
   const local = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?\//.test(base + "/");

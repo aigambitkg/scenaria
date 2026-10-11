@@ -157,7 +157,9 @@ export async function runRelay(s: Scenaria, req: RelayRequest): Promise<RelayRep
     options: (Array.isArray(c.options) ? c.options : [])
       .slice(0, 4)
       .map((o: any) => ({ label: one(o?.label, 120), plan: one(o?.plan, 900), respects: strs(o?.respects).filter((k) => known.has(k)), breaks: strs(o?.breaks).filter((k) => known.has(k)), why: o?.why ? one(o.why, 400) : undefined }))
-      .filter((o: RelayOption) => o.label),
+      .filter((o: RelayOption) => o.label)
+      // one option per label: assessments are matched by label
+      .filter((o: RelayOption, i: number, all: RelayOption[]) => all.findIndex((x) => x.label.toLowerCase() === o.label.toLowerCase()) === i),
   };
   if (!craftsman.options.length) throw new Error("The craftsman proposed no options.");
 
@@ -171,10 +173,12 @@ export async function runRelay(s: Scenaria, req: RelayRequest): Promise<RelayRep
   const oracle: RelayReport["oracle"] = {
     assessments: (Array.isArray(o.assessments) ? o.assessments : [])
       .map((x: any) => ({ option: one(x?.option, 120), survives: x?.survives === true, failsOn: strs(x?.failsOn).filter((k) => known.has(k)), risks: strs(x?.risks, 6).map((r) => one(r, 300)), confidence: typeof x?.confidence === "number" ? Math.max(0, Math.min(1, x.confidence)) : undefined }))
-      .filter((x: RelayAssessment) => labels.has(x.option)),
+      .filter((x: RelayAssessment) => labels.has(x.option))
+      .filter((x: RelayAssessment, i: number, all: RelayAssessment[]) => all.findIndex((y) => y.option === x.option) === i),
     recommendation: o.recommendation && labels.has(one(o.recommendation.option, 120)) ? { option: one(o.recommendation.option, 120), why: one(o.recommendation.why, 600) } : undefined,
   };
-  if (oracle.assessments.length < craftsman.options.length) warnings.push("the oracle did not assess every option");
+  const unassessed = craftsman.options.filter((x) => !oracle.assessments.some((y) => y.option === x.label)).map((x) => x.label);
+  if (unassessed.length) warnings.push(`the oracle did not assess: ${unassessed.join(", ")} — treated as not proven`);
 
   // 4. Orchestrator (deterministic): cut branches that break hard canon or fail a hard future event.
   const hard = new Set(cs.events.filter((e) => e.status === "active" && e.hard).map((e) => e.id));
@@ -182,7 +186,8 @@ export async function runRelay(s: Scenaria, req: RelayRequest): Promise<RelayRep
     .filter((x) => !x.breaks.some((k) => hard.has(k)))
     .filter((x) => {
       const as = oracle.assessments.find((y) => y.option === x.label);
-      return as ? as.survives && !as.failsOn.some((k) => hard.has(k)) : true;
+      // Not assessed = not proven: an option the oracle skipped never counts as surviving.
+      return Boolean(as && as.survives && !as.failsOn.some((k) => hard.has(k)));
     })
     .map((x) => x.label);
   if (oracle.recommendation && !surviving.includes(oracle.recommendation.option)) warnings.push(`the oracle recommends "${oracle.recommendation.option}", which does not survive the hard canon`);

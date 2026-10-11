@@ -172,7 +172,8 @@ async function callModel(cfg: LlmRequest, ups: Record<string, string>, system: s
         message: {
           role: "assistant",
           content: blocks.filter((b) => b?.type === "text").map((b) => b.text).join("\n").trim(),
-          toolCalls: blocks.filter((b) => b?.type === "tool_use").map((b) => ({ id: String(b.id ?? newId()), name: String(b.name), args: parseArgs(b.input) })),
+          // Our own ids (never the provider's): a model cannot reuse an id the person already approved.
+          toolCalls: blocks.filter((b) => b?.type === "tool_use").map((b) => ({ id: newId(), name: String(b.name), args: parseArgs(b.input) })),
         },
       };
     }
@@ -182,7 +183,7 @@ async function callModel(cfg: LlmRequest, ups: Record<string, string>, system: s
       message: {
         role: "assistant",
         content: String(m.content ?? "").trim(),
-        toolCalls: (Array.isArray(m.tool_calls) ? m.tool_calls : []).map((c: any) => ({ id: String(c?.id || newId()), name: String(c?.function?.name ?? ""), args: parseArgs(c?.function?.arguments) })),
+        toolCalls: (Array.isArray(m.tool_calls) ? m.tool_calls : []).map((c: any) => ({ id: newId(), name: String(c?.function?.name ?? ""), args: parseArgs(c?.function?.arguments) })),
       },
     };
   } catch (err: any) {
@@ -206,6 +207,27 @@ function sanitize(input: unknown): ChatMessage[] {
     const toolCalls = role === "assistant" && Array.isArray(m?.toolCalls) ? m.toolCalls.slice(0, 12).map((c: any) => ({ id: String(c?.id ?? newId()), name: String(c?.name ?? ""), args: parseArgs(c?.args) })) : undefined;
     return [{ role, content, ...(toolCalls?.length ? { toolCalls } : {}) }];
   });
+}
+
+/**
+ * Every tool call needs a result before the conversation goes on (providers reject the history
+ * otherwise). Calls the person never answered — they wrote a new message instead — are closed as
+ * not executed. Only the calls of the very last assistant turn can still be open.
+ */
+function closeAbandoned(msgs: ChatMessage[]): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+    out.push(m);
+    if (m.role !== "assistant" || !m.toolCalls?.length) continue;
+    let j = i + 1;
+    const answered = new Set<string>();
+    while (j < msgs.length && msgs[j].role === "tool") answered.add(msgs[j++].toolCallId ?? "");
+    if (j >= msgs.length) continue; // last turn: handled by the loop
+    for (; i + 1 < j; i++) out.push(msgs[i + 1]);
+    for (const c of m.toolCalls) if (!answered.has(c.id)) out.push({ role: "tool", toolCallId: c.id, toolName: c.name, content: "Not executed: the person did not confirm it and wrote a new message instead.", ok: false });
+  }
+  return out;
 }
 
 /** Tool calls of the last assistant message that have no result yet. */
@@ -257,9 +279,12 @@ export async function chat(s: Scenaria, req: ChatRequest): Promise<ChatResponse>
   if (!cfg) throw new Error("No model configured — choose one in Settings.");
   const settings = readSettings(s).chat;
   const ups = upstreams(s);
-  const msgs = sanitize(req.messages);
+  const msgs = closeAbandoned(sanitize(req.messages));
   if (!msgs.length) throw new Error("empty chat");
-  const decisions = req.decisions ?? {};
+  // The person's answers apply only to the calls that were waiting when they answered — never to
+  // calls the model makes later in this request.
+  const waitingAtStart = new Set(openCalls(msgs).map((c) => c.id));
+  let decisions: Record<string, "approve" | "deny"> = Object.fromEntries(Object.entries(req.decisions ?? {}).filter(([id, v]) => waitingAtStart.has(id) && (v === "approve" || v === "deny")));
   let model = cfg.model;
   let steps = 0;
   const ctx = () => ({ model, user: req.user, lang, llm: req.llm });
@@ -292,6 +317,7 @@ export async function chat(s: Scenaria, req: ChatRequest): Promise<ChatResponse>
   };
 
   let pending = await runOpen();
+  decisions = {};
   while (!pending.length && steps < settings.maxSteps) {
     steps++;
     const r = await callModel(cfg, ups, systemPrompt(s, lang), msgs);

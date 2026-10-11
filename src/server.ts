@@ -378,9 +378,10 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         }
         // Binding canon actions, the person's settings, the built-in chat and the relay: only with the
         // approval session (not with the API/agent token) — they act for the person or use the person's keys.
-        const personOnly = (p.startsWith("/api/canon") && p !== "/api/canon/archivist") || p.startsWith("/api/settings") || p.startsWith("/api/agents") || p === "/api/chat" || p === "/api/relay";
+        // (The archivist and the analysis also spend the person's quota with the person's keys.)
+        const personOnly = p.startsWith("/api/canon") || p.startsWith("/api/settings") || p.startsWith("/api/agents") || p === "/api/chat" || p === "/api/relay" || p === "/api/analysis/run" || p === "/api/analysis/config";
         if (personOnly && req.method === "POST" && !isApprover(req)) {
-          return send(res, 403, { error: "Approvals need the approval link from the terminal running Scenaria (scenaria start/ui). Agents can only propose.", code: "approval_required" });
+          return send(res, 403, { error: "This is the person's action (approvals, settings, chat, relay, analysis with your keys): open the approval link from the terminal running Scenaria (scenaria start/ui). Agents can only propose.", code: "approval_required" });
         }
         // The approver is the person at this machine (local) — client-supplied names are only a claim in team mode.
         const approver = token ? `${ctx.user ?? "approver"} (team approver link)` : `${defaultUserName()} (local approval link)`;
@@ -495,7 +496,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           const c = s.config();
           if (!b?.provider || !b?.model) return send(res, 400, { error: "provider and model required" });
           if (token && b.baseUrl) return send(res, 400, { error: "custom base URLs are disabled in team mode (use proxy.upstreams in config.json)" });
-          c.analysis = { provider: String(b.provider).slice(0, 40), model: String(b.model).slice(0, 120), baseUrl: b.baseUrl ? String(b.baseUrl).slice(0, 300) : undefined, apiKeyEnv: b.apiKeyEnv ? String(b.apiKeyEnv).slice(0, 80) : undefined };
+          c.analysis = { provider: String(b.provider).slice(0, 40), model: String(b.model).slice(0, 120), baseUrl: b.baseUrl ? String(b.baseUrl).slice(0, 300) : undefined };
           s.store.writeConfig(c);
           return send(res, 200, { ok: true, config: c.analysis });
         }
@@ -503,7 +504,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           const b = await readBody(req);
           if (token && b?.baseUrl) return send(res, 400, { error: "custom base URLs are disabled in team mode" });
           try {
-            const rec = await runAnalysis(s, { provider: b?.provider, model: b?.model, baseUrl: b?.baseUrl, apiKey: b?.apiKey, apiKeyEnv: b?.apiKeyEnv, lang: b?.lang === "en" ? "en" : "de", maxTokens: b?.maxTokens });
+            const rec = await runAnalysis(s, { provider: b?.provider, model: b?.model, baseUrl: b?.baseUrl, apiKey: b?.apiKey, lang: b?.lang === "en" ? "en" : "de", maxTokens: b?.maxTokens });
             return send(res, 200, rec);
           } catch (err: any) {
             return send(res, 502, { error: err?.message ?? String(err) });

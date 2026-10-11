@@ -112,10 +112,14 @@ export function gateEvidence(s: Scenaria, linePath: string[]): Map<string, GateR
   return out;
 }
 
-/** Link dependency folders that snapshots leave out (node_modules, virtualenvs) into the export. */
-function linkDependencies(root: string, dir: string, exclude: string[]) {
-  const candidates = new Set(["node_modules", ".venv", "venv", "vendor", ...exclude.filter((x) => /^[\w.-]+\/$/.test(x)).map((x) => x.slice(0, -1))]);
-  for (const name of candidates) {
+/**
+ * Link the dependency folders snapshots leave out into the export — a FIXED list only (never .git,
+ * .scenaria or anything a project file names). The links are shared with the project: a check that
+ * writes into node_modules writes into the real one (documented; checks should not install).
+ */
+const DEPENDENCY_DIRS = ["node_modules", ".venv", "venv", "vendor"];
+function linkDependencies(root: string, dir: string) {
+  for (const name of DEPENDENCY_DIRS) {
     const src = join(root, name);
     const dst = join(dir, name);
     if (existsSync(src) && !existsSync(dst)) {
@@ -137,7 +141,6 @@ export async function runGate(s: Scenaria, opts: { lines?: string[]; ids?: strin
   const events = activeCanon(s.store).filter((e) => e.check && (!opts.ids?.length || opts.ids.includes(e.id)));
   const all = gateLines(s);
   const lines = opts.lines?.length ? opts.lines.map((id) => all.find((l) => l.head === id) ?? { scenario: s.node(id).scenarioId ?? "?", head: id, title: s.node(id).title, current: false }) : all;
-  const cfg = s.config();
   const fresh: GateResult[] = [];
   for (const line of lines.slice(0, 40)) {
     const node = s.node(line.head);
@@ -145,7 +148,7 @@ export async function runGate(s: Scenaria, opts: { lines?: string[]; ids?: strin
     const dir = mkdtempSync(join(tmpdir(), "scenaria-gate-"));
     try {
       s.repo.exportTo(node.snapshot.commit, dir);
-      linkDependencies(s.root, dir, cfg.exclude ?? []);
+      linkDependencies(s.root, dir);
       for (const ev of events) {
         const r = await runCheckCommand(ev.check!, dir, opts.timeoutMs);
         fresh.push({ node: node.id, scenario: node.scenarioId, event: ev.id, check: ev.check!, text: ev.text, status: r.status, detail: r.detail, at: new Date().toISOString(), by: opts.by, seq: 0 });

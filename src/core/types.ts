@@ -176,7 +176,7 @@ export interface AnalysisConfig {
   model: string;
   /** Override the base URL (default: proxy.upstreams[provider]). */
   baseUrl?: string;
-  /** Name of the env var holding the API key (default per provider, e.g. OPENAI_API_KEY). */
+  /** Ignored since 0.7 (only the provider's own env var is used). */
   apiKeyEnv?: string;
 }
 

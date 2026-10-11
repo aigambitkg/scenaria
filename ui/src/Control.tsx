@@ -364,9 +364,24 @@ function saveChat(v: { sessionId: string; messages: ChatMessage[] }) {
 }
 const newSession = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
-function argsPreview(c: ChatToolCall) {
-  const s = JSON.stringify(c.args ?? {});
-  return s.length > 160 ? `${s.slice(0, 160)}…` : s;
+/** What a pending call will do: the target fields in full, the rest shortened. */
+function PendingArgs({ c }: { c: ChatToolCall }) {
+  const a = (c.args ?? {}) as Record<string, unknown>;
+  const key = ["id", "decisionId", "option", "restoreFiles"];
+  const rest = Object.fromEntries(Object.entries(a).filter(([k]) => !key.includes(k)));
+  const restText = JSON.stringify(rest);
+  return (
+    <span className="pending-args">
+      {key
+        .filter((k) => a[k] !== undefined)
+        .map((k) => (
+          <span key={k} className="chip">
+            {k}: {String(a[k])}
+          </span>
+        ))}
+      {restText !== "{}" && <span className="muted small">{restText.length > 160 ? `${restText.slice(0, 160)}…` : restText}</span>}
+    </span>
+  );
 }
 
 export function ChatPanel(props: { t: Dict; lang: "de" | "en"; keys: SessionKeys; toast: (m: string) => void; onNode: (id: string) => void; onChanged: () => void; onOpenSettings: () => void; onOpenRelay: () => void }) {
@@ -435,15 +450,30 @@ export function ChatPanel(props: { t: Dict; lang: "de" | "en"; keys: SessionKeys
     const canonProposal = m.toolName === "scenaria_canon" && data && data.status === "proposed" && data.id;
     const relay = m.toolName === "scenaria_relay" && data && Array.isArray(data?.craftsman?.options) ? (data as RelayReport) : null;
     return (
-      <details key={i} className={`tool ${m.ok === false ? "bad" : ""}`}>
-        <summary>
-          <span className="tool-name">{m.toolName?.replace(/^scenaria_/, "") ?? "tool"}</span> <span className="muted">· {m.ok === false ? t.chatToolErr : t.chatToolOk}</span>
-          {canonProposal && (
+      <Fragment key={i}>
+        <details className={`tool ${m.ok === false ? "bad" : ""}`}>
+          <summary>
+            <span className="tool-name">{m.toolName?.replace(/^scenaria_/, "") ?? "tool"}</span> <span className="muted">· {m.ok === false ? t.chatToolErr : t.chatToolOk}</span>
+          </summary>
+          {relay ? <RelayView t={t} r={relay} onNode={props.onNode} /> : <pre>{m.content}</pre>}
+        </details>
+        {canonProposal && (
+          <div className="canon-item chat-canon">
+            <div className="canon-main">
+              <span className="canon-id">{data.id}</span>
+              <span className={`chip ${data.kind === "past" ? "k-past" : "k-future"}`}>{t.canonKinds[data.kind as "past" | "future"] ?? data.kind}</span>
+              <span className="chip">{data.hard ? t.canonHard : t.canonSoft}</span>
+            </div>
+            <p>{String(data.text ?? "")}</p>
+            {data.suggestedCheck && (
+              <p className="small muted">
+                {t.canonSuggestedCheck}: <code className="cmd">{String(data.suggestedCheck)}</code>
+              </p>
+            )}
             <button
               className="btn ok"
               disabled={!approval}
-              onClick={async (e) => {
-                e.preventDefault();
+              onClick={async () => {
                 try {
                   await api.decideCanon(data.id, "approve");
                   props.toast(`${data.id} ✓`);
@@ -453,12 +483,11 @@ export function ChatPanel(props: { t: Dict; lang: "de" | "en"; keys: SessionKeys
                 }
               }}
             >
-              {t.chatApproveCanon} {data.id}
+              {t.chatApproveCanon}
             </button>
-          )}
-        </summary>
-        {relay ? <RelayView t={t} r={relay} onNode={props.onNode} /> : <pre>{m.content}</pre>}
-      </details>
+          </div>
+        )}
+      </Fragment>
     );
   };
 
@@ -517,7 +546,7 @@ export function ChatPanel(props: { t: Dict; lang: "de" | "en"; keys: SessionKeys
             <ul>
               {pending.map((c) => (
                 <li key={c.id}>
-                  <code>{c.name.replace(/^scenaria_/, "")}</code> <span className="muted small">{argsPreview(c)}</span>
+                  <code>{c.name.replace(/^scenaria_/, "")}</code> <PendingArgs c={c} />
                 </li>
               ))}
             </ul>

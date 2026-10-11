@@ -81,7 +81,7 @@ Prompts, analysis & rules
   prompt [--kind mcp|cli|chat] [--lang de|en] [--with-context]
                                         Ready-to-paste prompt so any agent/chat uses Scenaria on its own
   ingest-text [file|-]                  Read \`\`\`scenaria blocks from a chat answer (stdin or file)
-  analyze [--llm <provider> --model <m> [--base-url ..] [--api-key-env ..]] [--lang de|en] [--dossier]
+  analyze [--llm <provider> --model <m> [--base-url ..]] [--lang de|en] [--dossier]
   relay "<question>" [--options "A|B"] [--decide]   Archivist → craftsman → oracle for one high-impact decision
                                         Health check; with --llm: pattern analysis by ANY LLM (Ollama, OpenAI, Anthropic, …)
   rules [add "<rule>" | rm <id>]        Project rules every capsule and prompt carries
@@ -521,6 +521,8 @@ async function main() {
       const s = Scenaria.open(v.root);
       const question = p.join(" ").trim();
       if (!question) throw new Error('Usage: scenaria relay "<question>" [--options "A|B|C"] [--decide] [--llm <provider> --model <m>]');
+      // Uses the person's model settings and keys: a person at a terminal, like other person-only actions.
+      if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("scenaria relay needs an interactive terminal (it uses your model settings and keys). Agents: use the dashboard chat, or record options with scenaria_decide.");
       const { runRelay } = await import("./core/relay.js");
       process.stderr.write(`${C.dim}Archivist → craftsman → oracle …${C.reset}\n`);
       const r = await runRelay(s, { question, options: v.options ? String(v.options).split("|").map((x) => x.trim()).filter(Boolean) : undefined, createDecision: Boolean(v.decide), lang: v.lang === "en" ? "en" : "de", llm: v.llm ? { provider: v.llm, model: v.model, baseUrl: v["base-url"] } : undefined, actor: { user: v.user, agent: "relay" } });
@@ -554,7 +556,7 @@ async function main() {
         return out(`${renderMetrics(m, 30)}\n\n${C.dim}Pattern analysis with any LLM: scenaria analyze --llm ollama --model llama3.3   (or openai/anthropic/… with the API key in its env var)\nOr copy the dossier into any chat: scenaria analyze --dossier${C.reset}`, m);
       }
       process.stderr.write(`${C.dim}Analysing with ${v.llm ?? effectiveLlm(s, "analysis")?.provider} …${C.reset}\n`);
-      const rec = await runAnalysis(s, { provider: v.llm, model: v.model, baseUrl: v["base-url"], apiKeyEnv: v["api-key-env"], lang, maxTokens: v["max-tokens"] ? Number(v["max-tokens"]) : undefined });
+      const rec = await runAnalysis(s, { provider: v.llm, model: v.model, baseUrl: v["base-url"], lang, maxTokens: v["max-tokens"] ? Number(v["max-tokens"]) : undefined });
       const ins = rec.insights;
       const human = [
         `${C.bold}Analysis ${rec.id}${C.reset} · ${rec.provider}/${rec.model} · health ${rec.health}/100`,
