@@ -107,6 +107,20 @@ const PERSON_TOOLS = [
     parameters: { type: "object", properties: {}, additionalProperties: false },
   },
   {
+    name: "scenaria_expert_analysis",
+    description:
+      "Ask the person to run the ANALYST: a professional, fact-based expert report (architecture, goal alignment, agent workflow & context engineering, governance) with prioritised recommendations to optimise with — for the whole project, one line of work, or all their Scenaria projects. Uses the configured analyst model (they confirm with a click); noModel gives the rule-based report.",
+    parameters: {
+      type: "object",
+      properties: {
+        scope: { type: "string", enum: ["project", "line", "all"], description: "project (default), line (one scenario), all (every registered project)" },
+        head: { type: "string", description: "For scope line: head node id of the line" },
+        noModel: { type: "boolean", description: "Rule-based only (no model, no tokens)" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: "scenaria_set_model",
     description: "Ask the person to switch the default model used by chat, analysis, archivist and relay (they confirm with a click). API keys are never set here.",
     parameters: {
@@ -158,7 +172,7 @@ ${INSTRUCTIONS}
 In this chat:
 - Act with tools instead of describing what you would do. Read before you change (scenaria_status, scenaria_context, scenaria_tree, scenaria_workspace).
 - When the person asks about the project, its state, decisions or history: call scenaria_status / scenaria_context / scenaria_tree first and answer from the result, not from these instructions.
-- The person can control everything through you. Their own actions — approving/rejecting/retiring canon (scenaria_canon_decide), running checks (scenaria_canon_check), the gate (scenaria_gate), the model analysis (scenaria_analyze), switching the model (scenaria_set_model), connecting agents (scenaria_connect_agents) — you request with these tools; the dashboard shows the person a card and runs it only after their click. New canon: propose it with scenaria_canon action "propose" and then request its approval with scenaria_canon_decide.
+- The person can control everything through you. Their own actions — approving/rejecting/retiring canon (scenaria_canon_decide), running checks (scenaria_canon_check), the gate (scenaria_gate), the model analysis (scenaria_analyze), the expert report to optimise with (scenaria_expert_analysis), switching the model (scenaria_set_model), connecting agents (scenaria_connect_agents) — you request with these tools; the dashboard shows the person a card and runs it only after their click. New canon: propose it with scenaria_canon action "propose" and then request its approval with scenaria_canon_decide.
 - The main goal: set it with scenaria_start_mission {projectGoal} when the person states it.
 - Rewind and fork change files; the dashboard asks the person before they run. If they decline, accept it.
 - Before an open decision is chosen, or before a big prompt/plan goes to an agent: forecast it with scenaria_multiverse (or quickly with scenaria_forecast) and show the person which option keeps the context and the main goal. For a new high-impact question without options, use scenaria_relay. The person chooses.
@@ -451,6 +465,21 @@ async function personAction(s: Scenaria, call: ChatToolCall, ctx: { model: strin
       const i = rec.insights;
       return { content: [`Analysis ${rec.id} (health ${rec.health}/100)`, i.summary ?? "", ...(i.issues ?? []).slice(0, 6).map((x) => `! ${x.title}`), ...(i.rules ?? []).slice(0, 4).map((r) => `rule: ${r.text}`)].filter(Boolean).join("\n"), data: rec };
     }
+    case "scenaria_expert_analysis": {
+      const { expertAnalysis } = await import("./core/expert.js");
+      const scope = a.scope === "all" || a.scope === "line" ? a.scope : "project";
+      const r = await expertAnalysis(s, { scope, head: a.head ? String(a.head) : undefined, lang: ctx.lang, noModel: Boolean(a.noModel), llm: { apiKey: ctx.llm?.apiKey, keyFor: ctx.llm?.keyFor } });
+      return {
+        content: [
+          `Expert analysis ${r.id} (${r.scope.kind}, ${r.model ?? "rule-based"}) — maturity ${r.maturity.score}/100 (${r.maturity.level})`,
+          r.summary,
+          ...r.findings.slice(0, 6).map((f) => `! [${f.severity}/${f.lens}] ${f.title}${f.verified ? "" : " (unverified)"}${f.evidence.length ? ` — ${f.evidence.join(", ")}` : ""}`),
+          ...r.recommendations.slice(0, 5).map((x) => `→ ${x.priority} ${x.title}: ${x.action}`),
+          "Full report: dashboard → Analyse → Experten-Analyse.",
+        ].join("\n"),
+        data: { id: r.id, maturity: r.maturity, findings: r.findings.length, recommendations: r.recommendations.length },
+      };
+    }
     case "scenaria_set_model": {
       const { writeSettings, readSettings } = await import("./core/settings.js");
       const cur = readSettings(s).llm;
@@ -501,6 +530,10 @@ function describe(s: Scenaria, call: ChatToolCall, lang: "de" | "en"): string {
       }
       case "scenaria_analyze":
         return de ? "Muster-Analyse des ganzen Projekts mit dem eingestellten Modell (verbraucht Token)" : "Pattern analysis of the whole project with the configured model (uses tokens)";
+      case "scenaria_expert_analysis": {
+        const sc = a.scope === "all" ? (de ? "alle registrierten Projekte" : "all registered projects") : a.scope === "line" ? `${de ? "Arbeitslinie bis" : "line up to"} ${String(a.head ?? "HEAD")}` : de ? "ganzes Projekt" : "whole project";
+        return a.noModel ? (de ? `Experten-Analyse (regelbasiert, ohne Modell): ${sc}` : `Expert analysis (rule-based, no model): ${sc}`) : de ? `Experten-Analyse mit dem Analyst-Modell (verbraucht Token): ${sc}` : `Expert analysis with the analyst model (uses tokens): ${sc}`;
+      }
       case "scenaria_set_model":
         return de ? `Standardmodell wechseln zu ${String(a.provider)}/${String(a.model)}` : `Switch the default model to ${String(a.provider)}/${String(a.model)}`;
       case "scenaria_connect_agents":

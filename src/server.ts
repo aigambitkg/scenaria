@@ -29,6 +29,8 @@ import { autoBudget, evaluateForecasts, forecast, markUsed, openWithoutForecast,
 import { chat } from "./chat.js";
 import { TARGETS, agentStatus, connectionSnippets, setupAgents, type Target } from "./setup.js";
 import { callLlm } from "./core/analysis.js";
+import { adoptRecommendation, expertAnalysis, factSheet, getReport, listReports } from "./core/expert.js";
+import { listProjects, registerProject } from "./core/projects.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
 export const VERSION = "0.7.2";
@@ -410,7 +412,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         // Binding canon actions, the person's settings, the built-in chat and the relay: only with the
         // approval session (not with the API/agent token) — they act for the person or use the person's keys.
         // (The archivist and the analysis also spend the person's quota with the person's keys.)
-        const personOnly = p.startsWith("/api/canon") || p.startsWith("/api/settings") || p.startsWith("/api/agents") || p === "/api/chat" || p === "/api/relay" || p.startsWith("/api/forecast") || p === "/api/analysis/run" || p === "/api/analysis/config";
+        const personOnly = p.startsWith("/api/canon") || p.startsWith("/api/settings") || p.startsWith("/api/agents") || p === "/api/chat" || p === "/api/relay" || p.startsWith("/api/forecast") || p === "/api/analysis/run" || p === "/api/analysis/config" || p.startsWith("/api/expert");
         if (personOnly && req.method === "POST" && !isApprover(req)) {
           return send(res, 403, { error: "This is the person's action (approvals, settings, chat, relay, analysis with your keys): open the approval link from the terminal running Scenaria (scenaria start/ui). Agents can only propose.", code: "approval_required" });
         }
@@ -578,6 +580,37 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           const b = await readBody(req);
           return send(res, 200, acceptRule(s, String(b?.id ?? ""), Number(b?.index)));
         }
+        // ---------- expert analyst (report to optimise with) ----------
+        if (req.method === "GET" && p === "/api/expert") {
+          return send(res, 200, { reports: listReports(s).map((r) => ({ id: r.id, createdAt: r.createdAt, scope: r.scope, model: r.model, maturity: r.maturity, findings: r.findings.length, recommendations: r.recommendations.length, projects: r.facts.map((f) => f.project) })), facts: factSheet(s), projects: listProjectsSafe(s) });
+        }
+        if (req.method === "GET" && p === "/api/expert/report") {
+          try {
+            return send(res, 200, getReport(s, String(url.searchParams.get("id") ?? "")));
+          } catch (err: any) {
+            return send(res, 404, { error: err?.message ?? String(err) });
+          }
+        }
+        if (req.method === "POST" && p === "/api/expert") {
+          const b = await readBody(req);
+          if (token && b?.llm?.baseUrl) return send(res, 400, { error: "custom base URLs are disabled in team mode" });
+          const scope = b?.scope === "all" || b?.scope === "line" ? b.scope : "project";
+          try {
+            const llm = b?.llm && typeof b.llm === "object" ? { provider: b.llm.provider, model: b.llm.model, baseUrl: b.llm.baseUrl, apiKey: b.llm.apiKey, keyFor: b.llm.keyFor } : undefined;
+            const r = await expertAnalysis(s, { scope, head: typeof b?.head === "string" ? b.head : undefined, lang: b?.lang === "en" ? "en" : "de", noModel: Boolean(b?.noModel), llm });
+            return send(res, 200, r);
+          } catch (err: any) {
+            return send(res, 502, { error: err?.message ?? String(err) });
+          }
+        }
+        if (req.method === "POST" && p === "/api/expert/adopt") {
+          const b = await readBody(req);
+          try {
+            return send(res, 200, adoptRecommendation(s, String(b?.id ?? ""), Number(b?.index)));
+          } catch (err: any) {
+            return send(res, 400, { error: err?.message ?? String(err) });
+          }
+        }
         if (req.method === "GET" && p === "/api/rules") return send(res, 200, s.rules());
         if (req.method === "POST" && p === "/api/rules") {
           const b = await readBody(req);
@@ -691,6 +724,15 @@ function openBrowser(url: string) {
   }
 }
 
+function listProjectsSafe(s: Scenaria) {
+  try {
+    const all = listProjects();
+    return all.some((p) => p.root === s.root) ? all : [{ root: s.root, name: s.config().projectName, lastSeen: new Date().toISOString() }, ...all];
+  } catch {
+    return [];
+  }
+}
+
 export async function startServer(
   s: Scenaria,
   opts: { port?: number; open?: boolean; host?: string; token?: string; showToken?: boolean; quiet?: boolean; approverToken?: string; showApprovalLink?: boolean } = {},
@@ -703,6 +745,7 @@ export async function startServer(
   // Print the link only to a person's terminal: when an agent starts the server, its output is the agent's.
   const showLink = opts.showApprovalLink ?? Boolean(process.stdout.isTTY);
   const approverToken = opts.approverToken ?? process.env.SCENARIA_APPROVER_TOKEN;
+  registerProject(s.root, s.config().projectName);
   const app = createApp(s, { token: opts.token, approvalCode, approverToken });
   const server = createServer(app.handler);
   const host = opts.host ?? "127.0.0.1";

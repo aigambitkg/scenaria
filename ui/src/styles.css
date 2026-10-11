@@ -622,3 +622,20 @@ table.gate tr.current td:first-child { box-shadow: inset 4px 0 0 var(--marker-so
 .forecast-inline .fopt { padding: 6px 8px; }
 @media (max-width: 900px) { .universe { grid-template-columns: 1fr; } }
 .compact-universe .universe { grid-template-columns: 1fr; gap: 6px; }
+
+/* ---------- expert analyst ---------- */
+.x-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
+.x-kpi { display: flex; flex-direction: column; border: 1px solid var(--rule); border-radius: 3px; padding: 6px 8px; }
+.x-kpi-num { font-size: 1.25em; font-weight: 600; }
+.x-scope { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-bottom: 6px; }
+.x-head { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+.x-export { display: flex; gap: 6px; flex-wrap: wrap; }
+.x-report h4 { margin: 14px 0 4px; }
+.x-report h5 { margin: 8px 0 2px; }
+.x-recs li { margin-bottom: 10px; }
+.x-ev { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 4px; }
+.chip.prio-P1 { border-color: var(--fail); color: var(--fail); }
+.chip.prio-P2 { border-color: var(--warn); color: var(--warn); }
+.x-panel select { max-width: 100%; }
+.x-scope label.check { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; width: auto; margin: 0; }
+.x-scope label.check input { margin: 0; width: auto; }

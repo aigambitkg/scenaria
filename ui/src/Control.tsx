@@ -21,7 +21,7 @@ const MODEL_HINT: Record<string, string> = {
   custom: "model name",
 };
 const LOCAL = new Set(["ollama", "lmstudio"]);
-const ROLES: LlmRole[] = ["chat", "analysis", "archivist", "craftsman", "oracle"];
+const ROLES: LlmRole[] = ["chat", "analysis", "analyst", "archivist", "craftsman", "oracle"];
 
 /** API keys entered in the browser: memory only, gone with the tab. */
 export type SessionKeys = Record<string, string>;

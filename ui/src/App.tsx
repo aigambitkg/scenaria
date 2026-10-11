@@ -500,6 +500,7 @@ export function App() {
         <AnalysisDialog
           t={t}
           lang={lang}
+          keys={keys}
           toast={toast}
           onClose={() => setAnalysisOpen(false)}
           onSelectNode={(id) => {

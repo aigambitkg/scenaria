@@ -1,3 +1,5 @@
+import { ExpertPanel } from "./Expert";
+import type { SessionKeys } from "./Control";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api, type AnalysisRecord, type CanonEvent, type CanonSuggestion, type ConversationMessage, type ConversationSession, type Metrics, type ProjectRule, type ScenariaEvent, type StringPayload } from "./api";
 import { MessageList } from "./NodePanel";
@@ -354,8 +356,9 @@ function sevClass(s?: string) {
 }
 
 /** Health check (no LLM) + pattern analysis with any LLM + project rules. */
-export function AnalysisDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: string) => void; onClose: () => void; onSelectNode: (id: string) => void; onEditGoal: () => void }) {
+export function AnalysisDialog(props: { t: Dict; lang: "de" | "en"; keys: SessionKeys; initialTab?: "overview" | "expert"; toast: (m: string) => void; onClose: () => void; onSelectNode: (id: string) => void; onEditGoal: () => void }) {
   const { t } = props;
+  const [tab, setTab] = useState<"overview" | "expert">(props.initialTab ?? "overview");
   const [m, setM] = useState<Metrics | null>(null);
   const [rules, setRules] = useState<ProjectRule[]>([]);
   const [newRule, setNewRule] = useState("");
@@ -402,6 +405,15 @@ export function AnalysisDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: s
   return (
     <Modal wide title={t.analysisTitle} onClose={props.onClose}>
       <div className="modal-body analysis">
+        <div className="side-tabs fc-tabs" role="tablist">
+          {(["overview", "expert"] as const).map((k) => (
+            <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>
+              {k === "overview" ? t.xTabOverview : `★ ${t.xTabExpert}`}
+            </button>
+          ))}
+        </div>
+        {tab === "expert" && <ExpertPanel t={t} lang={props.lang} keys={props.keys} toast={props.toast} onSelectNode={props.onSelectNode} onRulesChanged={() => reload().catch(() => {})} />}
+        {tab === "overview" && (<>
         {err && <p className="error">{err}</p>}
         {m && (
           <section className="a-sec health">
@@ -712,6 +724,7 @@ export function AnalysisDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: s
             )}
           </section>
         )}
+        </>)}
       </div>
     </Modal>
   );

@@ -11,6 +11,14 @@ import type { RelayReport } from "../../src/core/relay";
 import type { gateMatrix } from "../../src/core/gate";
 import type { Forecast, ForecastOption, QuickForecast } from "../../src/core/forecast";
 export type { Forecast, ForecastOption, QuickForecast };
+import type { ExpertReport, FactSheet, Finding, Recommendation } from "../../src/core/expert";
+import type { KnownProject } from "../../src/core/projects";
+export type { ExpertReport, FactSheet, Finding, Recommendation, KnownProject };
+export interface ExpertPage {
+  reports: { id: string; createdAt: string; scope: ExpertReport["scope"]; model: string | null; maturity: ExpertReport["maturity"]; findings: number; recommendations: number; projects: string[] }[];
+  facts: FactSheet;
+  projects: KnownProject[];
+}
 export interface ForecastsPage {
   forecasts: Forecast[];
   calibration: { evaluated: number; meanError: number | null; hits: number };
@@ -131,5 +139,9 @@ export const api = {
   relays: () => req<RelayReport[]>("/api/relay"),
   gate: () => req<GateMatrix>("/api/canon/gate"),
   runGate: (lines?: string[]) => req<GateMatrix>("/api/canon/gate", { lines }),
+  expert: () => req<ExpertPage>("/api/expert"),
+  expertReport: (id: string) => req<ExpertReport>(`/api/expert/report?id=${encodeURIComponent(id)}`),
+  runExpert: (b: { scope: "project" | "line" | "all"; head?: string; noModel?: boolean; lang: string; llm?: Partial<LlmCall> }) => req<ExpertReport>("/api/expert", b),
+  adoptRecommendation: (id: string, index: number) => req<ProjectRule>("/api/expert/adopt", { id, index }),
   choose: (id: string, option: string, rationale: string) => req<ScenariaNode>("/api/choose", { id, option, rationale }),
 };

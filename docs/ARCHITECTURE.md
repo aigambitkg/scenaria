@@ -220,6 +220,32 @@ On a 30-task project a 600-token capsule still holds the goal, the rules, the cu
 - **Evaluation:** for options really taken after the forecast (chosen or explored), the measured fidelity of the branch (avg of up to 6 nodes) is compared with the predicted score → per-forecast error and overall calibration (mean error, hits within ±15). Prompt forecasts: the line after the forecast is measured; once the person marks which variant they used, it is compared with that variant's forecast.
 - **Quick layer details:** options with too little text (“yes”/“no”) are marked `signal: low`; nearly equal scores are reported as “not distinguishable without a model — multiverse recommended”. Fixed points touched by wording are listed (`canonHints`); hard and dated ones lower the score a little and must be judged by the oracle.
 
+## The analyst — expert report to optimise with (v0.8)
+
+`src/core/expert.ts`. A specialised agent that reviews one line of work, the whole project or **all**
+Scenaria projects of the person (registry in the global config, `src/core/projects.ts`; projects are
+remembered when the dashboard, the MCP server or `scenaria init` opens them).
+
+1. **Facts, deterministic.** `factSheet()` computes KPIs (steps, decisions, rationale rate, decision
+   quality, context fidelity and breaks, drifts, verification, canon active/broken/proposed, valid/invalid
+   lines from the gate, forecast hit rate, rules, lessons), every line with its verdict and fidelity,
+   agents/models and issues — plus the list of ids that may serve as evidence.
+2. **Rule-based findings** need no model, so a baseline report is always possible (also the agents'
+   read-only `scenaria_expert` tool when no report exists — nothing is stored then).
+3. **Expert layer** (role `analyst`, any model): reads only the fact sheet (+ the dossier for one
+   project) and answers through four lenses — architecture & technical decisions, goal & product
+   alignment, agent workflow & context engineering, governance & risk in the spirit of ISO/IEC 42001 —
+   with maturity, findings, root causes, prioritised recommendations (P1–P3, effort, KPI to move).
+4. **Validation**: evidence ids that do not exist are removed; a quoted KPI value that differs from the
+   facts is corrected (and noted); unknown KPIs are dropped; findings without valid evidence are marked
+   "unverified" and sorted last.
+
+Reports live in `.scenaria/reports/x<n>.json` (ids reserved exclusively) with a Markdown export.
+Running (`POST /api/expert`) and adopting a recommendation as a project rule (`POST /api/expert/adopt`)
+are the person's (approval session / interactive terminal / chat card); reading is open.
+CLI: `scenaria analyst [--scope project|line|all] [--head n12] [--no-model]`, `scenaria analyst x3
+[--adopt 0] [--out-file report.md]`.
+
 ## Workspace, references and handoffs
 
 - **Board** (`core/workspace.ts`): items on the HEAD path, in sections goals, decisions, facts, questions (current task only), rules, lessons and risks (irreversible effects, failed checks).

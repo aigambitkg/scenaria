@@ -83,6 +83,8 @@ Prompts, analysis & rules
   ingest-text [file|-]                  Read \`\`\`scenaria blocks from a chat answer (stdin or file)
   analyze [--llm <provider> --model <m> [--base-url ..]] [--lang de|en] [--dossier]
   relay "<question>" [--options "A|B"] [--decide]   Archivist → craftsman → oracle for one high-impact decision
+  analyst [<report id>] [--scope project|line|all] [--head <node>] [--no-model] [--adopt <index>] [--out-file report.md]
+                                        Expert analysis to optimise with (list · run · show a report · adopt a recommendation as rule)
   forecast [<decision> | --prompt "<text>" [--options "variant A|variant B"]] [--quick]
                                         Multiverse forecast: does each option / prompt keep the context? (no args: list + hit rate)
                                         Health check; with --llm: pattern analysis by ANY LLM (Ollama, OpenAI, Anthropic, …)
@@ -170,6 +172,10 @@ const opts = {
   options: { type: "string" },
   prompt: { type: "string" },
   quick: { type: "boolean" },
+  scope: { type: "string" },
+  head: { type: "string" },
+  "no-model": { type: "boolean" },
+  adopt: { type: "string" },
   decide: { type: "boolean" },
   "base-url": { type: "string" },
   "api-key-env": { type: "string" },
@@ -283,6 +289,7 @@ async function main() {
   switch (cmd) {
     case "init": {
       const s = Scenaria.init(v.root, { projectName: v.name, force: v.force });
+      (await import("./core/projects.js")).registerProject(s.root, s.config().projectName);
       let msg = `${C.green}✔${C.reset} Scenaria initialized in ${s.store.dir}${s.repo ? "" : `\n${C.yellow}! git not found — file snapshots disabled${C.reset}`}`;
       const spec = [v.for, v.claude ? "claude" : ""].filter(Boolean).join(",");
       if (spec) {
@@ -568,6 +575,35 @@ async function main() {
         r.decisionId ? `Open decision ${r.decisionId} — choose: scenaria choose ${r.decisionId} <option>  (or in the dashboard)` : `${C.dim}Record as an open decision: add --decide${C.reset}`,
       ].filter(Boolean);
       return out(human.join("\n"), r);
+    }
+    case "analyst": {
+      const s = Scenaria.open(v.root);
+      const { expertAnalysis, listReports, getReport, adoptRecommendation } = await import("./core/expert.js");
+      const personTerminal = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+      if (p[0]) {
+        const r = getReport(s, p[0]);
+        if (v.adopt !== undefined) {
+          if (!personTerminal) throw new Error("Adopting a recommendation as a rule is the person's decision: run it in an interactive terminal or in the dashboard.");
+          const rule = adoptRecommendation(s, r.id, Number(v.adopt));
+          return out(`${C.green}✔${C.reset} rule ${rule.id}: ${rule.text}`, rule);
+        }
+        if (v["out-file"]) {
+          const { writeFileSync } = await import("node:fs");
+          writeFileSync(v["out-file"], r.markdown);
+          return out(`${C.green}✔${C.reset} ${v["out-file"]}`, { file: v["out-file"] });
+        }
+        return out(r.markdown, r);
+      }
+      if (!v.scope && !v.head && !v["no-model"] && !v.llm) {
+        const rs = listReports(s);
+        return out(rs.length ? rs.map((r) => `${r.id}  ${r.createdAt.slice(0, 16).replace("T", " ")}  ${r.scope.kind.padEnd(7)} ${(r.model ?? "rule-based").padEnd(24)} maturity ${r.maturity.score}/100 · ${r.findings.length} findings · ${r.recommendations.length} recommendations`).join("\n") + `\n${C.dim}Show: scenaria analyst <id> · new: scenaria analyst --scope project|line|all [--no-model]${C.reset}` : `No expert reports yet. Run: scenaria analyst --scope project  (or --no-model for the rule-based report)`, rs);
+      }
+      // With a model it spends the person's quota with their keys: a person at a terminal.
+      if (!v["no-model"] && !personTerminal) throw new Error("The expert analysis with a model needs an interactive terminal (it uses your model settings and keys). Use --no-model for the rule-based report.");
+      if (!v["no-model"]) process.stderr.write(`${C.dim}Analyst: facts → expert lenses → validation …${C.reset}\n`);
+      const scope = v.scope === "all" || v.scope === "line" ? v.scope : v.head ? "line" : "project";
+      const r = await expertAnalysis(s, { scope, head: v.head, lang: v.lang === "en" ? "en" : "de", noModel: Boolean(v["no-model"]), llm: v.llm ? { provider: v.llm, model: v.model, baseUrl: v["base-url"] } : undefined });
+      return out(`${r.markdown}\n\n${C.dim}Adopt a recommendation as a rule: scenaria analyst ${r.id} --adopt <index from 0>${C.reset}`, r);
     }
     case "analyze": {
       const s = Scenaria.open(v.root);

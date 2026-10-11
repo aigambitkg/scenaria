@@ -14,6 +14,7 @@ import { recall, renderRecall } from "./core/recall.js";
 import { projectMetrics, renderMetrics } from "./core/analysis.js";
 import { SECTIONS, checkExpectations, referenceCapsule, renderExpectations, renderWorkspace, resolveRefs, stringPayload, workspace } from "./core/workspace.js";
 import { renderCanon } from "./core/canon.js";
+import { baselineReport, listReports } from "./core/expert.js";
 import { listForecasts, quickDecision, quickSummary, snapshotQuick } from "./core/forecast.js";
 import type { ScenariaNode, Source } from "./core/types.js";
 
@@ -406,6 +407,24 @@ export const TOOLS: ToolDef[] = [
       lines.push(`Summary: ${quickSummary(quick)}`);
       const rec = mv?.recommended ? `\nRecommended (${mv.id}): ${mv.recommended.key} — ${mv.recommended.why}` : mv ? "" : "\n(no multiverse forecast yet — the person can start one in the dashboard)";
       return { text: `Forecast for ${a.id}:\n${lines.join("\n")}${rec}`, data: { quick, multiverse: mv ?? null } };
+    },
+  },
+  {
+    name: "scenaria_expert",
+    title: "Expert report (read)",
+    description:
+      "The analyst's latest expert report on this project (fact-based findings through four lenses and prioritised recommendations to optimise with). Without a stored report, a rule-based baseline is computed (no model, nothing stored). Follow the P1 recommendations the person adopted as rules.",
+    input: {},
+    annotations: { readOnlyHint: true },
+    run(s) {
+      const r = listReports(s)[0] ?? baselineReport(s, { persist: false, lang: "en" });
+      const text = [
+        `${r.id === "x0" ? "Baseline (rule-based, not stored)" : `Report ${r.id} (${r.createdAt.slice(0, 10)}, ${r.model ?? "rule-based"})`} — maturity ${r.maturity.score}/100 (${r.maturity.level})`,
+        r.summary,
+        ...r.findings.slice(0, 8).map((f) => `! [${f.severity}/${f.lens}] ${f.title}${f.verified ? "" : " (unverified)"}${f.evidence.length ? ` — ${f.evidence.join(", ")}` : ""}`),
+        ...r.recommendations.slice(0, 6).map((x, i) => `→ ${x.priority} ${x.title}: ${x.action}${r.adopted?.includes(i) ? " (adopted as rule)" : ""}`),
+      ].join("\n");
+      return { text, data: { id: r.id, summary: r.summary, maturity: r.maturity, findings: r.findings, recommendations: r.recommendations } };
     },
   },
   {

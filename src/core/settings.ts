@@ -10,8 +10,8 @@ import { DEFAULT_PROXY, type Scenaria } from "./engine.js";
 import { readGlobalConfig, writeGlobalConfig, type LlmChoice, type LlmSettings } from "./global.js";
 import { envKeyAllowed, type LlmRequest } from "./analysis.js";
 
-export type LlmRole = "chat" | "analysis" | "archivist" | "craftsman" | "oracle";
-export const LLM_ROLES: LlmRole[] = ["chat", "analysis", "archivist", "craftsman", "oracle"];
+export type LlmRole = "chat" | "analysis" | "archivist" | "craftsman" | "oracle" | "analyst";
+export const LLM_ROLES: LlmRole[] = ["chat", "analysis", "archivist", "craftsman", "oracle", "analyst"];
 
 export const KEY_ENVS: Record<string, string[]> = {
   openai: ["OPENAI_API_KEY"],

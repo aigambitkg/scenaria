@@ -14,7 +14,7 @@ export interface LlmSettings {
   /** Default model for chat, analysis, archivist and relay. */
   default?: LlmChoice;
   /** Optional model per function. */
-  roles?: Partial<Record<"chat" | "analysis" | "archivist" | "craftsman" | "oracle", LlmChoice>>;
+  roles?: Partial<Record<"chat" | "analysis" | "archivist" | "craftsman" | "oracle" | "analyst", LlmChoice>>;
 }
 
 export interface GlobalConfig {
@@ -33,6 +33,8 @@ export interface GlobalConfig {
   /** Forecast open decisions on the current line automatically with the multiverse (dashboard running). Opt-in. */
   forecast?: { auto?: boolean; dailyLimit?: number };
   ui?: { lang?: "de" | "en" };
+  /** Scenaria projects on this machine (for switching and cross-project analysis). */
+  projects?: { root: string; name: string; lastSeen: string }[];
 }
 
 /**
