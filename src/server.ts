@@ -23,14 +23,14 @@ import { recall } from "./core/recall.js";
 import { SECTIONS, checkExpectations, resolveRefs, stringPayload, workspace, type Section } from "./core/workspace.js";
 import { archivistProposals } from "./core/canon-llm.js";
 import { gateMatrix, runGate } from "./core/gate.js";
-import { listModels, readSettings, upstreams, writeSettings } from "./core/settings.js";
+import { effectiveLlm, listModels, readSettings, upstreams, writeSettings } from "./core/settings.js";
 import { listRelays, runRelay } from "./core/relay.js";
 import { chat } from "./chat.js";
 import { TARGETS, agentStatus, connectionSnippets, setupAgents, type Target } from "./setup.js";
 import { callLlm } from "./core/analysis.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
-export const VERSION = "0.7.0";
+export const VERSION = "0.7.1";
 
 const KEY_ENVS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "AZURE_OPENAI_API_KEY"];
 
@@ -261,14 +261,9 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         res.writeHead(302, { location: "/", "set-cookie": `scenaria_approval=${encodeURIComponent(approvalSecret)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000` });
         return res.end();
       }
-      return send(
-        res,
-        403,
-        opts.token
-          ? "This approval link is not valid."
-          : "This approval link is not valid or was already used (it works once and changes every time Scenaria starts). If you did not open it yourself, someone else did: restart Scenaria and check the canon history.",
-        "text/plain; charset=utf-8",
-      );
+      // Never a dead page: open the dashboard without approval rights and say why (the dashboard shows it).
+      res.writeHead(302, { location: "/?approval=invalid" });
+      return res.end();
     }
     const ctx: ToolContext = {
       agent: header(req, "x-scenaria-agent") ?? "http-client",
@@ -489,16 +484,20 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           return send(res, 200, { ...d, prompt: analysisPrompt(lang), text: `${analysisPrompt(lang)}\n\n--- DOSSIER ---\n${d.text}` });
         }
         if (req.method === "GET" && p === "/api/analysis/config") {
-          return send(res, 200, { config: s.config().analysis ?? null, envKeys: KEY_ENVS.filter((k) => Boolean(process.env[k])), teamMode: Boolean(token) });
+          // The model the analysis really uses (Settings → role/default, else the project's old setting).
+          const eff = effectiveLlm(s, "analysis");
+          return send(res, 200, { config: eff ? { provider: eff.provider, model: eff.model, baseUrl: eff.baseUrl } : null, envKeys: KEY_ENVS.filter((k) => Boolean(process.env[k])), teamMode: Boolean(token) });
         }
         if (req.method === "POST" && p === "/api/analysis/config") {
           const b = await readBody(req);
           const c = s.config();
           if (!b?.provider || !b?.model) return send(res, 400, { error: "provider and model required" });
           if (token && b.baseUrl) return send(res, 400, { error: "custom base URLs are disabled in team mode (use proxy.upstreams in config.json)" });
-          c.analysis = { provider: String(b.provider).slice(0, 40), model: String(b.model).slice(0, 120), baseUrl: b.baseUrl ? String(b.baseUrl).slice(0, 300) : undefined };
-          s.store.writeConfig(c);
-          return send(res, 200, { ok: true, config: c.analysis });
+          // Saved as the analysis model in the person's settings (same place as the Settings page).
+          const cur = readSettings(s).llm;
+          writeSettings({ llm: { default: cur.default, roles: { ...(cur.roles ?? {}), analysis: { provider: String(b.provider).slice(0, 40), model: String(b.model).slice(0, 160), ...(b.baseUrl ? { baseUrl: String(b.baseUrl).slice(0, 300) } : {}) } } } });
+          void c;
+          return send(res, 200, { ok: true, config: readSettings(s).effective.analysis });
         }
         if (req.method === "POST" && p === "/api/analysis/run") {
           const b = await readBody(req);

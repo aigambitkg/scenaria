@@ -275,6 +275,7 @@ const en = {
     canon_gate_tampered: () => `Gate results were changed outside Scenaria — ignored; run the gate again (Canon → lines of work).`,
     canon_unreadable: () => ".scenaria/canon.json cannot be read (merge conflict?) — fix it before changing canon events.",
   } as Record<string, (subject: string, value?: number) => string>,
+  approvalLinkUsed: "This approval link was already used or is from an earlier start, so this window can view but not approve, chat or change settings. Use the window that opened when Scenaria started, or restart Scenaria (scenaria start) for a new link.",
   // v0.7: settings, chat, relay, gate
   settings: "Settings",
   settingsTitle: "Settings — models, keys and agents",
@@ -628,6 +629,7 @@ const de: typeof en = {
     canon_gate_tampered: () => `Gate-Ergebnisse wurden außerhalb von Scenaria geändert – ignoriert; Gate erneut ausführen (Kanon → Arbeitslinien).`,
     canon_unreadable: () => ".scenaria/canon.json ist nicht lesbar (Merge-Konflikt?) – vor Änderungen an Kanon-Events beheben.",
   } as Record<string, (subject: string, value?: number) => string>,
+  approvalLinkUsed: "Dieser Freigabe-Link wurde schon benutzt oder stammt von einem früheren Start – dieses Fenster kann ansehen, aber nicht freigeben, chatten oder Einstellungen ändern. Nutze das Fenster, das sich beim Start von Scenaria geöffnet hat, oder starte Scenaria neu (scenaria start) für einen neuen Link.",
   // v0.7: Einstellungen, Chat, Relay, Gate
   settings: "Einstellungen",
   settingsTitle: "Einstellungen – Modelle, Schlüssel und Agenten",

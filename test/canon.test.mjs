@@ -105,7 +105,9 @@ test("the archivist suggests fixed points from the history (deterministic and wi
   const llm = createServer(async (req, res) => {
     for await (const _ of req);
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ model: "llama3.3", choices: [{ message: { content: '```json\n{"canon": [{"kind": "past", "text": "Use Postgres for all persistent data", "evidence": ["' + d.id + '"]}, {"kind": "future", "text": "Launch by 2027-03-01", "due": "2027-03-01", "evidence": ["n99"]}]}\n```' } }] }));
+    // Ollama is called through its native /api/chat (large context window)
+    assert.equal(req.url, "/api/chat");
+    res.end(JSON.stringify({ model: "llama3.3", message: { content: '```json\n{"canon": [{"kind": "past", "text": "Use Postgres for all persistent data", "evidence": ["' + d.id + '"]}, {"kind": "future", "text": "Launch by 2027-03-01", "due": "2027-03-01", "evidence": ["n99"]}]}\n```' } }));
   });
   await new Promise((r) => llm.listen(0, "127.0.0.1", r));
   try {
@@ -145,7 +147,10 @@ test("CLI: binding actions need a person at an interactive terminal; dashboard A
     assert.equal((await post("/api/canon/check", {}, { "x-scenaria": "1" })).status, 403);
     assert.equal((await post("/api/canon", { kind: "past", text: "agent sneaks this in" }, { "x-scenaria": "1" })).status, 403);
     // The approval link sets the session cookie (HttpOnly, SameSite=Strict); a wrong code is refused.
-    assert.equal((await fetch(`${base}/?approve=wrong`, { redirect: "manual" })).status, 403);
+    const wrong = await fetch(`${base}/?approve=wrong`, { redirect: "manual" });
+    assert.equal(wrong.status, 302);
+    assert.equal(wrong.headers.get("location"), "/?approval=invalid");
+    assert.equal(wrong.headers.get("set-cookie"), null);
     const link = await fetch(`${base}/?approve=open-sesame`, { redirect: "manual" });
     assert.equal(link.status, 302);
     assert.match(link.headers.get("set-cookie"), /scenaria_approval=sess; HttpOnly; SameSite=Strict/);
@@ -333,8 +338,9 @@ test("the local approval link works once", async () => {
     assert.equal(first.status, 302);
     assert.match(first.headers.get("set-cookie"), /Max-Age=2592000/);
     const again = await fetch(`${base}/?approve=once`, { redirect: "manual" });
-    assert.equal(again.status, 403);
-    assert.match(await again.text(), /already used/);
+    assert.equal(again.status, 302, "a used link opens the dashboard without approval rights (no dead page)");
+    assert.equal(again.headers.get("location"), "/?approval=invalid");
+    assert.equal(again.headers.get("set-cookie"), null);
     // the person who redeemed it can revisit the link
     assert.equal((await fetch(`${base}/?approve=once`, { redirect: "manual", headers: { cookie: "scenaria_approval=sess" } })).status, 302);
   } finally {

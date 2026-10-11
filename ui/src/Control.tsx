@@ -46,6 +46,103 @@ export function Linkified({ text, onNode }: { text: string; onNode: (id: string)
   );
 }
 
+/** Elapsed time while the model works (local models can take a while). */
+function Thinking({ label }: { label: string }) {
+  const [sec, setSec] = useState(0);
+  useEffect(() => {
+    const t0 = Date.now();
+    const id = setInterval(() => setSec(Math.round((Date.now() - t0) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <p className="muted thinking">
+      {label} {sec > 0 ? `${sec} s` : ""}
+    </p>
+  );
+}
+
+/** Inline markdown: **bold**, *italic*, `code`, node references. Rendered as React elements (no HTML). */
+function Inline({ text, onNode }: { text: string; onNode: (id: string) => void }) {
+  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\*[^*\s][^*]*\*)/g);
+  return (
+    <>
+      {parts.map((p, i) =>
+        /^\*\*[^*]+\*\*$/.test(p) ? (
+          <strong key={i}>
+            <Linkified text={p.slice(2, -2)} onNode={onNode} />
+          </strong>
+        ) : /^`[^`]+`$/.test(p) ? (
+          <code key={i}>{p.slice(1, -1)}</code>
+        ) : /^\*[^*\s][^*]*\*$/.test(p) ? (
+          <em key={i}>
+            <Linkified text={p.slice(1, -1)} onNode={onNode} />
+          </em>
+        ) : (
+          <Linkified key={i} text={p} onNode={onNode} />
+        ),
+      )}
+    </>
+  );
+}
+
+/** Small, safe markdown for chat answers: headings, lists, code blocks, paragraphs. */
+export function Markdown({ text, onNode }: { text: string; onNode: (id: string) => void }) {
+  const blocks: ReactNode[] = [];
+  const lines = text.replace(/\r/g, "").split("\n");
+  let i = 0;
+  let key = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^```/.test(line)) {
+      const code: string[] = [];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i])) code.push(lines[i++]);
+      i++;
+      blocks.push(<pre key={key++} className="md-code">{code.join("\n")}</pre>);
+      continue;
+    }
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) {
+      blocks.push(
+        <p key={key++} className={`md-h md-h${Math.min(h[1].length, 3)}`}>
+          <Inline text={h[2]} onNode={onNode} />
+        </p>,
+      );
+      i++;
+      continue;
+    }
+    if (/^\s*([-*•]|\d+[.)])\s+/.test(line)) {
+      const ordered = /^\s*\d+[.)]/.test(line);
+      const items: string[] = [];
+      while (i < lines.length && /^\s*([-*•]|\d+[.)])\s+/.test(lines[i])) items.push(lines[i++].replace(/^\s*([-*•]|\d+[.)])\s+/, ""));
+      const children = items.map((it, k) => (
+        <li key={k}>
+          <Inline text={it} onNode={onNode} />
+        </li>
+      ));
+      blocks.push(ordered ? <ol key={key++}>{children}</ol> : <ul key={key++}>{children}</ul>);
+      continue;
+    }
+    if (/^\s*(---|\*\*\*)\s*$/.test(line)) {
+      blocks.push(<hr key={key++} />);
+      i++;
+      continue;
+    }
+    if (!line.trim()) {
+      i++;
+      continue;
+    }
+    const para: string[] = [];
+    while (i < lines.length && lines[i].trim() && !/^(```|#{1,6}\s|\s*([-*•]|\d+[.)])\s+)/.test(lines[i])) para.push(lines[i++]);
+    blocks.push(
+      <p key={key++}>
+        <Inline text={para.join("\n")} onNode={onNode} />
+      </p>,
+    );
+  }
+  return <div className="md">{blocks}</div>;
+}
+
 // ------------------------------------------------------------------ model picker
 
 function ModelPicker(props: {
@@ -536,7 +633,7 @@ export function ChatPanel(props: { t: Dict; lang: "de" | "en"; keys: SessionKeys
             </div>
           ) : m.content ? (
             <div key={i} className="bubble assistant">
-              <Linkified text={m.content} onNode={props.onNode} />
+              <Markdown text={m.content} onNode={props.onNode} />
             </div>
           ) : null,
         )}
@@ -546,7 +643,10 @@ export function ChatPanel(props: { t: Dict; lang: "de" | "en"; keys: SessionKeys
             <ul>
               {pending.map((c) => (
                 <li key={c.id}>
-                  <code>{c.name.replace(/^scenaria_/, "")}</code> <PendingArgs c={c} />
+                  {c.summary ? <span className="pending-summary">{c.summary}</span> : null}
+                  <div>
+                    <code>{c.name.replace(/^scenaria_/, "")}</code> <PendingArgs c={c} />
+                  </div>
                 </li>
               ))}
             </ul>
@@ -560,7 +660,7 @@ export function ChatPanel(props: { t: Dict; lang: "de" | "en"; keys: SessionKeys
             </div>
           </div>
         )}
-        {busy && <p className="muted thinking">{t.chatThinking}</p>}
+        {busy && <Thinking label={t.chatThinking} />}
         {notice && <p className="qnote q-info">{notice}</p>}
         {err && <p className="error">{err}</p>}
         <div ref={end} />

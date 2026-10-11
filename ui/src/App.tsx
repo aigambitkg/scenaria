@@ -7,6 +7,7 @@ import { NodeId, ScenarioMap } from "./Map";
 import { NodePanel } from "./NodePanel";
 import { AnalysisDialog, CanonDialog, ConversationsDialog, DiffDialog, PromptDialog, ProtocolDialog, RewindDialog } from "./Dialogs";
 import { ChatPanel, RelayDialog, SettingsDialog, type SessionKeys } from "./Control";
+import { ErrorBoundary } from "./ErrorBoundary";
 
 type Pending =
   | { mode: "rewind"; node: ScenariaNode }
@@ -83,6 +84,12 @@ export function App() {
   useEffect(() => {
     document.documentElement.lang = lang;
   }, [lang]);
+
+  // A used or wrong approval link lands here (no dead page): say what happened, clean the URL.
+  const [linkNote, setLinkNote] = useState(() => new URLSearchParams(location.search).get("approval") === "invalid");
+  useEffect(() => {
+    if (linkNote) history.replaceState(null, "", location.pathname);
+  }, [linkNote]);
 
   const headId = graph?.state.head ?? null;
   const root = useMemo(() => {
@@ -250,6 +257,14 @@ export function App() {
       <main className="main">
         <section className="canvas" aria-label="Scenario map">
           {error && <div className="banner error">{error}</div>}
+          {linkNote && (
+            <div className="banner warn" role="status">
+              {t.approvalLinkUsed}{" "}
+              <button className="btn link" onClick={() => setLinkNote(false)}>
+                OK
+              </button>
+            </div>
+          )}
           {graph && rootId ? (
             <ReactFlowProvider>
               <ScenarioMap nodes={graph.nodes} rootId={rootId} headId={headId} selectedKey={selected} onSelect={setSelected} folded={folded} onToggleFold={toggleFold} fidelity={fidelity?.points ?? null} t={t} />
@@ -270,6 +285,7 @@ export function App() {
               {t.chat}
             </button>
           </div>
+          <ErrorBoundary scope="side" key={side}>
           {side === "chat" ? (
             <ChatPanel
               t={t}
@@ -321,6 +337,7 @@ export function App() {
           }}
         />
           )}
+          </ErrorBoundary>
         </div>
       </main>
 
@@ -357,6 +374,20 @@ export function App() {
         </span>
       </footer>
 
+      <ErrorBoundary
+        scope="dialogs"
+        onReset={() => {
+          setSettingsOpen(false);
+          setRelayOpen(false);
+          setCanonOpen(false);
+          setAnalysisOpen(false);
+          setPromptOpen(false);
+          setConvos(false);
+          setLog(null);
+          setDiff(null);
+          setPending(null);
+        }}
+      >
       {pending && (
         <RewindDialog
           t={t}
@@ -435,6 +466,7 @@ export function App() {
           }}
         />
       )}
+      </ErrorBoundary>
       <div className="toasts" aria-live="polite">
         {toasts.map((x) => (
           <div key={x.id} className="toast">

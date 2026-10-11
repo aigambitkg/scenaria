@@ -1,13 +1,15 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" translate="no" class="notranslate">
   <head>
     <meta charset="UTF-8" />
+    <!-- Browser page translation rewrites text nodes behind React's back and crashes the app (blank page). -->
+    <meta name="google" content="notranslate" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Scenaria</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='12' width='9' height='8' fill='none' stroke='%231C2B3A' stroke-width='2'/%3E%3Crect x='21' y='4' width='9' height='8' fill='%23FFD83D' stroke='%231C2B3A' stroke-width='2'/%3E%3Crect x='21' y='20' width='9' height='8' fill='none' stroke='%231C2B3A' stroke-width='2'/%3E%3Cpath d='M11 16 21 8M11 16l10 8' stroke='%231C2B3A' stroke-width='2'/%3E%3C/svg%3E" />
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root" translate="no" class="notranslate"></div>
     <script type="module" src="./src/main.tsx"></script>
   </body>
 </html>

@@ -6,9 +6,12 @@ import "@fontsource/stix-two-text/500-italic.css";
 import "@xyflow/react/dist/style.css";
 import "./styles.css";
 import { App } from "./App";
+import { ErrorBoundary } from "./ErrorBoundary";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <ErrorBoundary scope="app">
+      <App />
+    </ErrorBoundary>
   </StrictMode>,
 );

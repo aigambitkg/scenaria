@@ -320,3 +320,52 @@ test("review fixes: the relay never counts an unassessed option as surviving; th
   const res = await runGate(s, { by: "kev" });
   assert.ok(res.results.length > 0 && res.results.every((x) => x.status === "passed"), JSON.stringify(res.results));
 });
+
+test("Ollama: native /api/chat with a large context window and tool calls; text tool calls and <think> are handled", async () => {
+  const { s } = project();
+  let n = 0;
+  const llm = await fakeLlm(() => {
+    n++;
+    if (n === 1) return { model: "qwen3.5:9b", message: { role: "assistant", content: "", tool_calls: [{ function: { name: "scenaria_status", arguments: {} } }] } };
+    if (n === 2) return { model: "qwen3.5:9b", message: { role: "assistant", content: '<think>let me record it</think><tool_call>{"name": "scenaria_checkpoint", "arguments": {"title": "From text tool call"}}</tool_call>' } };
+    return { model: "qwen3.5:9b", message: { role: "assistant", content: "<think>done</think>Erledigt." } };
+  }, { anthropic: true });
+  try {
+    const r = await chat(s, { sessionId: "ol", messages: [{ role: "user", content: "Stand?" }], llm: { provider: "ollama", model: "qwen3.5:9b", baseUrl: `${llm.base}/v1` } });
+    assert.equal(llm.seen[0].url, "/api/chat");
+    assert.ok(llm.seen[0].body.options.num_ctx >= 16384);
+    assert.equal(llm.seen[0].body.stream, false);
+    assert.ok(llm.seen[0].body.tools.some((t) => t.function.name === "scenaria_status"));
+    // the second request carries the tool result in Ollama's format
+    const second = llm.seen[1].body.messages;
+    assert.equal(second[second.length - 1].role, "tool");
+    assert.equal(second[second.length - 1].tool_name, "scenaria_status");
+    assert.equal(typeof second[second.length - 2].tool_calls[0].function.arguments, "object");
+    assert.ok(s.store.listNodes().some((x) => x.title === "From text tool call"), "text tool call executed");
+    assert.equal(r.messages[r.messages.length - 1].content, "Erledigt.");
+  } finally {
+    llm.close();
+  }
+});
+
+test("chat: the person's own actions wait for a click, with a summary written by Scenaria", async () => {
+  const { s } = project();
+  const ev = s.proposeCanon({ kind: "past", text: "Only TypeScript", check: "rm -rf /tmp/x" });
+  const llm = await fakeLlm([oaTools([{ name: "scenaria_canon_decide", args: { id: ev.id, action: "approve" } }]), oaText("approved")]);
+  try {
+    writeSettings({ chat: { confirmDestructive: false, maxSteps: 10 } });
+    const L = { provider: "fake", model: "m", baseUrl: llm.base };
+    const r1 = await chat(s, { sessionId: "po", messages: [{ role: "user", content: "approve it" }], llm: L, lang: "de" });
+    assert.equal(r1.pending.length, 1, "person actions wait even with confirmDestructive off");
+    assert.match(r1.pending[0].summary, /k1 freigeben: „Only TypeScript“.*NICHT übernommen/);
+    assert.equal(s.canon()[0].status, "proposed");
+    const r2 = await chat(s, { sessionId: "po", messages: r1.messages, decisions: { [r1.pending[0].id]: "approve" }, llm: L, lang: "de", user: "kev" });
+    assert.equal(s.canon()[0].status, "active");
+    assert.equal(s.canon()[0].check, undefined, "no command adopted via chat");
+    assert.equal(s.canon()[0].decidedVia, "chat");
+    assert.equal(r2.messages[r2.messages.length - 1].content, "approved");
+  } finally {
+    llm.close();
+    writeSettings({ chat: { confirmDestructive: true, maxSteps: 10 } });
+  }
+});

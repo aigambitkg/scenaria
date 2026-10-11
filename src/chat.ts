@@ -12,7 +12,7 @@
  */
 import { randomBytes } from "node:crypto";
 import type { Scenaria } from "./core/engine.js";
-import { resolveLlm, type LlmRequest } from "./core/analysis.js";
+import { OLLAMA_CTX, llmTimeout, resolveLlm, type LlmRequest } from "./core/analysis.js";
 import { effectiveLlm, readSettings, upstreams } from "./core/settings.js";
 import { runRelay } from "./core/relay.js";
 import { INSTRUCTIONS, TOOLS, callTool, toolSchemas } from "./tools.js";
@@ -21,6 +21,8 @@ export interface ChatToolCall {
   id: string;
   name: string;
   args: Record<string, unknown>;
+  /** For calls that wait for the person: what exactly will happen (computed by Scenaria, not the model). */
+  summary?: string;
 }
 
 export interface ChatMessage {
@@ -69,6 +71,65 @@ const RELAY_TOOL = {
   },
 };
 
+/**
+ * The person's own actions, offered in the chat so everything can be controlled from here. The model
+ * can only ASK for them: each one waits for the person's click ("Allow") on a card that Scenaria
+ * writes from the real data — never auto-run, whatever the settings say.
+ */
+const PERSON_TOOLS = [
+  {
+    name: "scenaria_canon_decide",
+    description: "Ask the person to approve, reject, retire or confirm a canon event (fixed point). The person confirms with a click; you cannot decide yourself. Check commands are never adopted here (only in the Canon dialog).",
+    parameters: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Canon id, e.g. k3" },
+        action: { type: "string", enum: ["approve", "reject", "retire", "confirm"] },
+        reason: { type: "string", description: "Why (shown to the person)" },
+      },
+      required: ["id", "action"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "scenaria_canon_check",
+    description: "Ask the person to run the approved check commands of the canon events on the current working tree (they confirm with a click).",
+    parameters: { type: "object", properties: { ids: { type: "array", items: { type: "string" }, description: "Canon ids (default: all with a check)" } }, additionalProperties: false },
+  },
+  {
+    name: "scenaria_gate",
+    description: "Ask the person to run the canon gate: the approved checks on the snapshot of every line of work (shows which lines survive). They confirm with a click.",
+    parameters: { type: "object", properties: { lines: { type: "array", items: { type: "string" }, description: "Head node ids of the lines (default: all)" } }, additionalProperties: false },
+  },
+  {
+    name: "scenaria_analyze",
+    description: "Ask the person to run the pattern analysis of the whole project with the configured model (costs tokens; they confirm with a click). For the quick health check without a model use scenaria_health.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "scenaria_set_model",
+    description: "Ask the person to switch the default model used by chat, analysis, archivist and relay (they confirm with a click). API keys are never set here.",
+    parameters: {
+      type: "object",
+      properties: { provider: { type: "string", description: "ollama, lmstudio, openai, anthropic, gemini, mistral, openrouter, groq" }, model: { type: "string" } },
+      required: ["provider", "model"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "scenaria_connect_agents",
+    description: "Ask the person to wire agents into this project via MCP (writes their config files; they confirm with a click).",
+    parameters: {
+      type: "object",
+      properties: { targets: { type: "array", items: { type: "string", enum: ["claude", "cursor", "vscode", "gemini", "codex", "generic"] } } },
+      required: ["targets"],
+      additionalProperties: false,
+    },
+  },
+];
+const PERSON_ONLY = new Set(PERSON_TOOLS.map((t) => t.name));
+const CHAT_TOOLS = [RELAY_TOOL, ...PERSON_TOOLS];
+
 const MAX_TOOL_TEXT = 8000;
 const isDestructive = (name: string) => Boolean(TOOLS.find((t) => t.name === name)?.annotations?.destructiveHint);
 const newId = () => `call_${randomBytes(6).toString("hex")}`;
@@ -82,7 +143,9 @@ ${INSTRUCTIONS}
 
 In this chat:
 - Act with tools instead of describing what you would do. Read before you change (scenaria_status, scenaria_context, scenaria_tree, scenaria_workspace).
-- Canon events: you can only PROPOSE (scenaria_canon action "propose"). Approving, retiring and running check commands are the person's — tell them to use the "Approve" button that appears in the chat or the Canon dialog.
+- When the person asks about the project, its state, decisions or history: call scenaria_status / scenaria_context / scenaria_tree first and answer from the result, not from these instructions.
+- The person can control everything through you. Their own actions — approving/rejecting/retiring canon (scenaria_canon_decide), running checks (scenaria_canon_check), the gate (scenaria_gate), the model analysis (scenaria_analyze), switching the model (scenaria_set_model), connecting agents (scenaria_connect_agents) — you request with these tools; the dashboard shows the person a card and runs it only after their click. New canon: propose it with scenaria_canon action "propose" and then request its approval with scenaria_canon_decide.
+- The main goal: set it with scenaria_start_mission {projectGoal} when the person states it.
 - Rewind and fork change files; the dashboard asks the person before they run. If they decline, accept it.
 - For a high-impact choice, use scenaria_relay (archivist → craftsman → oracle) before deciding; let the person choose.
 - Keep answers short; reference nodes as n12 and canon as k3 (the dashboard links them).
@@ -127,6 +190,41 @@ function anthropicMessages(msgs: ChatMessage[]) {
   return out;
 }
 
+const KNOWN = () => new Set([...TOOLS.map((t) => t.name), ...CHAT_TOOLS.map((t) => t.name)]);
+
+/** `<tool_call>{"name": …, "arguments": {…}}</tool_call>` or a JSON block naming a known tool. */
+export function textToolCalls(content: string): { calls: ChatToolCall[]; rest: string } {
+  const known = KNOWN();
+  const calls: ChatToolCall[] = [];
+  let rest = content;
+  const take = (raw: string, whole: string) => {
+    try {
+      const v = JSON.parse(raw.trim());
+      for (const c of Array.isArray(v) ? v : [v]) {
+        const name = String(c?.name ?? c?.function?.name ?? c?.tool ?? "");
+        if (!known.has(name)) continue;
+        calls.push({ id: newId(), name, args: parseArgs(c?.arguments ?? c?.function?.arguments ?? c?.parameters ?? c?.input ?? {}) });
+        rest = rest.replace(whole, "");
+      }
+    } catch {
+      /* not a tool call */
+    }
+  };
+  for (const m of content.matchAll(/<tool_call>([\s\S]*?)<\/tool_call>/g)) take(m[1], m[0]);
+  // A fenced JSON block counts only when it IS the answer (not an example inside an explanation).
+  if (!calls.length) {
+    const blocks = [...content.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)];
+    const outside = blocks.reduce((t, m) => t.replace(m[0], ""), content).trim();
+    if (blocks.length && outside.length < 200) for (const m of blocks) take(m[1], m[0]);
+  }
+  return { calls: calls.slice(0, 8), rest: rest.trim() };
+}
+
+/** Reasoning models (qwen3, deepseek-r1 …) may put their thinking into the answer text. */
+function stripThinking(text: string) {
+  return text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+}
+
 function parseArgs(raw: unknown): Record<string, unknown> {
   if (raw && typeof raw === "object") return raw as Record<string, unknown>;
   try {
@@ -137,22 +235,42 @@ function parseArgs(raw: unknown): Record<string, unknown> {
   }
 }
 
+/** Ollama's native chat format (tool arguments as objects, tool results named). */
+function ollamaMessages(system: string, msgs: ChatMessage[]) {
+  const out: any[] = [{ role: "system", content: system }];
+  for (const m of msgs) {
+    if (m.role === "user") out.push({ role: "user", content: m.content });
+    else if (m.role === "assistant") out.push({ role: "assistant", content: m.content ?? "", ...(m.toolCalls?.length ? { tool_calls: m.toolCalls.map((c) => ({ function: { name: c.name, arguments: c.args ?? {} } })) } : {}) });
+    else out.push({ role: "tool", content: m.content.slice(0, MAX_TOOL_TEXT), ...(m.toolName ? { tool_name: m.toolName } : {}) });
+  }
+  return out;
+}
+
 async function callModel(cfg: LlmRequest, ups: Record<string, string>, system: string, msgs: ChatMessage[]): Promise<{ message: ChatMessage; model: string }> {
   const r = resolveLlm(cfg, ups);
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 240_000);
+  const limit = llmTimeout(r);
+  const timer = setTimeout(() => ctrl.abort(), limit);
   try {
     let res: Response;
     if (r.kind === "anthropic") {
-      const tools = [...toolSchemas("anthropic"), { name: RELAY_TOOL.name, description: RELAY_TOOL.description, input_schema: RELAY_TOOL.parameters }];
+      const tools = [...toolSchemas("anthropic"), ...CHAT_TOOLS.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }))];
       res = await fetch(`${r.base}${/\/v1$/.test(r.base) ? "" : "/v1"}/messages`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-api-key": r.key ?? "", "anthropic-version": "2023-06-01" },
         body: JSON.stringify({ model: r.model, max_tokens: 4096, system, messages: anthropicMessages(msgs), tools }),
         signal: ctrl.signal,
       });
+    } else if (r.kind === "ollama") {
+      const tools = [...toolSchemas("openai"), ...CHAT_TOOLS.map((t) => ({ type: "function", function: t }))];
+      res = await fetch(`${r.nativeBase}/api/chat`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: r.model, messages: ollamaMessages(system, msgs), tools, stream: false, options: { num_ctx: OLLAMA_CTX(), temperature: 0.2 } }),
+        signal: ctrl.signal,
+      });
     } else {
-      const tools = [...toolSchemas("openai"), { type: "function", function: RELAY_TOOL }];
+      const tools = [...toolSchemas("openai"), ...CHAT_TOOLS.map((t) => ({ type: "function", function: t }))];
       const headers: Record<string, string> = { "content-type": "application/json" };
       if (r.key) headers.authorization = `Bearer ${r.key}`;
       res = await fetch(`${r.base}/chat/completions`, {
@@ -171,23 +289,26 @@ async function callModel(cfg: LlmRequest, ups: Record<string, string>, system: s
         model: json.model ?? r.model,
         message: {
           role: "assistant",
-          content: blocks.filter((b) => b?.type === "text").map((b) => b.text).join("\n").trim(),
+          content: stripThinking(blocks.filter((b) => b?.type === "text").map((b) => b.text).join("\n").trim()),
           // Our own ids (never the provider's): a model cannot reuse an id the person already approved.
           toolCalls: blocks.filter((b) => b?.type === "tool_use").map((b) => ({ id: newId(), name: String(b.name), args: parseArgs(b.input) })),
         },
       };
     }
-    const m = json.choices?.[0]?.message ?? {};
-    return {
-      model: json.model ?? r.model,
-      message: {
-        role: "assistant",
-        content: String(m.content ?? "").trim(),
-        toolCalls: (Array.isArray(m.tool_calls) ? m.tool_calls : []).map((c: any) => ({ id: newId(), name: String(c?.function?.name ?? ""), args: parseArgs(c?.function?.arguments) })),
-      },
-    };
+    const m = (r.kind === "ollama" ? json.message : json.choices?.[0]?.message) ?? {};
+    let content = String(m.content ?? "").trim();
+    let toolCalls: ChatToolCall[] = (Array.isArray(m.tool_calls) ? m.tool_calls : []).map((c: any) => ({ id: newId(), name: String(c?.function?.name ?? ""), args: parseArgs(c?.function?.arguments) }));
+    // Small local models sometimes write the tool call as text instead of using the API field.
+    if (!toolCalls.length) {
+      const t = textToolCalls(content);
+      if (t.calls.length) {
+        toolCalls = t.calls;
+        content = t.rest;
+      }
+    }
+    return { model: json.model ?? r.model, message: { role: "assistant", content: stripThinking(content), toolCalls } };
   } catch (err: any) {
-    if (ctrl.signal.aborted) throw new Error(`${r.provider} did not answer within 240 s`);
+    if (ctrl.signal.aborted) throw new Error(`${r.provider} did not answer within ${Math.round(limit / 1000)} s`);
     if (err?.cause?.code === "ECONNREFUSED") throw new Error(`${r.provider} not reachable at ${r.base} (is it running?)`);
     throw err;
   } finally {
@@ -265,11 +386,105 @@ async function execute(s: Scenaria, call: ChatToolCall, ctx: { model: string; us
       ].filter(Boolean);
       return { ...base, content: text.join("\n"), data: r, ok: true };
     }
+    if (PERSON_ONLY.has(call.name)) {
+      const r = await personAction(s, call, ctx);
+      return { ...base, ...r, ok: true };
+    }
     const res = callTool(s, call.name, call.args, { source: "ui", agent: "scenaria-chat", model: ctx.model, user: ctx.user });
     return { ...base, content: res.text, data: res.data, ok: true };
   } catch (err: any) {
     return { ...base, content: `Error: ${String(err?.message ?? err)}`, ok: false };
   }
+}
+
+const strList = (x: unknown) => (Array.isArray(x) ? x.map(String).filter(Boolean).slice(0, 40) : undefined);
+
+/** Runs ONLY after the person clicked "Allow" on the card for exactly this call. */
+async function personAction(s: Scenaria, call: ChatToolCall, ctx: { model: string; user?: string; lang: "de" | "en"; llm?: Partial<LlmRequest> }): Promise<{ content: string; data?: unknown }> {
+  const by = `${ctx.user ?? "person"} (chat, confirmed)`;
+  const a = call.args;
+  switch (call.name) {
+    case "scenaria_canon_decide": {
+      const action = String(a.action);
+      if (!["approve", "reject", "retire", "confirm"].includes(action)) throw new Error("action must be approve, reject, retire or confirm");
+      const ev = s.decideCanon(String(a.id ?? ""), action as any, { user: by, via: "chat", reason: a.reason ? String(a.reason) : undefined, adoptCheck: false });
+      return { content: `${ev.id} is now ${ev.status}${action === "confirm" ? " (confirmed as met)" : ""}: ${ev.text}`, data: ev };
+    }
+    case "scenaria_canon_check": {
+      const r = await s.checkCanon(strList(a.ids), by);
+      return { content: r.length ? r.map((x) => `${x.id}: ${x.status} — ${x.detail}`).join("\n") : "No approved canon event has a check command.", data: r };
+    }
+    case "scenaria_gate": {
+      const { runGate, gateMatrix } = await import("./core/gate.js");
+      await runGate(s, { lines: strList(a.lines), by });
+      const m = gateMatrix(s);
+      return { content: m.rows.map((r) => `${r.head} (${r.scenario}${r.current ? ", current" : ""}): ${r.verdict}${r.reasons.length ? ` — ${r.reasons.join("; ")}` : ""}`).join("\n") || "No lines of work.", data: m };
+    }
+    case "scenaria_analyze": {
+      const { runAnalysis } = await import("./core/analysis.js");
+      const rec = await runAnalysis(s, { lang: ctx.lang, apiKey: ctx.llm?.apiKey });
+      const i = rec.insights;
+      return { content: [`Analysis ${rec.id} (health ${rec.health}/100)`, i.summary ?? "", ...(i.issues ?? []).slice(0, 6).map((x) => `! ${x.title}`), ...(i.rules ?? []).slice(0, 4).map((r) => `rule: ${r.text}`)].filter(Boolean).join("\n"), data: rec };
+    }
+    case "scenaria_set_model": {
+      const { writeSettings, readSettings } = await import("./core/settings.js");
+      const cur = readSettings(s).llm;
+      writeSettings({ llm: { default: { provider: String(a.provider ?? ""), model: String(a.model ?? "") }, roles: cur.roles as any } });
+      s.store.appendEvent({ type: "update", data: { message: `default model set to ${a.provider}/${a.model} by ${by}` } });
+      return { content: `Default model is now ${a.provider}/${a.model} (from the next message on).` };
+    }
+    case "scenaria_connect_agents": {
+      const { setupAgents, agentStatus, TARGETS } = await import("./setup.js");
+      const targets = (strList(a.targets) ?? []).filter((t) => (TARGETS as readonly string[]).includes(t)) as any[];
+      if (!targets.length) throw new Error("no known agent target");
+      const r = setupAgents(s.root, targets, { rulesFiles: true });
+      s.store.appendEvent({ type: "update", data: { message: `agents connected by ${by}: ${targets.join(", ")}` } });
+      return { content: [...r.changes, ...r.notes].join("\n") || "Nothing to change.", data: { ...r, agents: agentStatus(s.root) } };
+    }
+  }
+  throw new Error(`unknown action ${call.name}`);
+}
+
+/** What a waiting call will do — written by Scenaria from the real data, shown on the person's card. */
+function describe(s: Scenaria, call: ChatToolCall, lang: "de" | "en"): string {
+  const de = lang === "de";
+  const a = call.args;
+  try {
+    switch (call.name) {
+      case "scenaria_rewind": {
+        const n = s.node(String(a.id));
+        return de ? `Zurückspulen zu ${n.id} „${n.title}“${a.restoreFiles === false ? " (nur Entscheidungsstand, Dateien bleiben)" : " – Dateien werden auf diesen Stand gesetzt (vorher automatisch gesichert)"}` : `Rewind to ${n.id} "${n.title}"${a.restoreFiles === false ? " (decision state only)" : " — files are restored to it (autosaved first)"}`;
+      }
+      case "scenaria_fork": {
+        const n = s.node(String(a.decisionId));
+        return de ? `Alternative „${String(a.option)}“ der Entscheidung ${n.id} „${n.question ?? n.title}“ erkunden – Dateien werden auf deren Stand gesetzt` : `Explore option "${String(a.option)}" of decision ${n.id} "${n.question ?? n.title}" — files are restored to it`;
+      }
+      case "scenaria_canon_decide": {
+        const ev = s.canon().find((e) => e.id === String(a.id));
+        if (!ev) return de ? `Unbekannter Kanon-Eintrag ${String(a.id)}` : `Unknown canon event ${String(a.id)}`;
+        const verb = de ? { approve: "freigeben", reject: "ablehnen", retire: "ausmustern", confirm: "als erfüllt bestätigen" } : { approve: "approve", reject: "reject", retire: "retire", confirm: "confirm as met" };
+        const cmd = ev.check ?? ev.suggestedCheck;
+        return `${ev.id} ${(verb as any)[String(a.action)] ?? String(a.action)}: „${ev.text}“ (${ev.kind}, ${ev.hard ? (de ? "hart" : "hard") : de ? "weich" : "soft"})${cmd && a.action === "approve" ? (de ? ` – Prüfbefehl wird NICHT übernommen (nur im Kanon-Dialog): ${cmd}` : ` — check command NOT adopted (Canon dialog only): ${cmd}`) : ""}`;
+      }
+      case "scenaria_canon_check": {
+        const evs = s.canon().filter((e) => e.status === "active" && e.check && (!strList(a.ids)?.length || strList(a.ids)!.includes(e.id)));
+        return (de ? "Prüfbefehle im Projektordner ausführen: " : "Run check commands in the project folder: ") + (evs.map((e) => `${e.id}: ${e.check}`).join(" · ") || (de ? "(keine)" : "(none)"));
+      }
+      case "scenaria_gate": {
+        const evs = s.canon().filter((e) => e.status === "active" && e.check);
+        return (de ? "Gate: Prüfbefehle auf dem Snapshot jeder Arbeitslinie ausführen (temporäre Kopien): " : "Gate: run the check commands on every line's snapshot (temporary copies): ") + (evs.map((e) => `${e.id}: ${e.check}`).join(" · ") || (de ? "(keine Prüfbefehle)" : "(no check commands)"));
+      }
+      case "scenaria_analyze":
+        return de ? "Muster-Analyse des ganzen Projekts mit dem eingestellten Modell (verbraucht Token)" : "Pattern analysis of the whole project with the configured model (uses tokens)";
+      case "scenaria_set_model":
+        return de ? `Standardmodell wechseln zu ${String(a.provider)}/${String(a.model)}` : `Switch the default model to ${String(a.provider)}/${String(a.model)}`;
+      case "scenaria_connect_agents":
+        return (de ? "Agenten per MCP verbinden (schreibt deren Konfigurationsdateien): " : "Connect agents via MCP (writes their config files): ") + (strList(a.targets) ?? []).join(", ");
+    }
+  } catch (err: any) {
+    return String(err?.message ?? err);
+  }
+  return call.name;
 }
 
 export async function chat(s: Scenaria, req: ChatRequest): Promise<ChatResponse> {
@@ -307,8 +522,9 @@ export async function chat(s: Scenaria, req: ChatRequest): Promise<ChatResponse>
   /** Run open tool calls; returns the calls that still wait for the person. */
   const runOpen = async (): Promise<ChatToolCall[]> => {
     const open = openCalls(msgs);
-    const waiting = open.filter((c) => settings.confirmDestructive && isDestructive(c.name) && !decisions[c.id]);
-    if (waiting.length) return waiting;
+    // The person's own actions always wait for their click; rewind/fork per setting.
+    const waiting = open.filter((c) => (PERSON_ONLY.has(c.name) || (settings.confirmDestructive && isDestructive(c.name))) && !decisions[c.id]);
+    if (waiting.length) return waiting.map((c) => ({ ...c, summary: describe(s, c, lang) }));
     for (const c of open) {
       if (decisions[c.id] === "deny") msgs.push({ role: "tool", toolCallId: c.id, toolName: c.name, content: "The person declined this action. Do not retry it; ask what they want instead.", ok: false });
       else msgs.push(await execute(s, c, ctx()));

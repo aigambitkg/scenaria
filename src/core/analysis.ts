@@ -440,11 +440,25 @@ export function resolveLlm(cfg: LlmRequest, upstreams: Record<string, string>) {
     if (envName && process.env[envName] && !envKeyAllowed(provider, base)) throw new Error(`${envName} is only sent to the official ${provider} endpoint or to endpoints you trust in Settings — not to ${base}. Enter a key for this run, or trust the endpoint.`);
     throw new Error(`No API key for ${provider}: set ${envName || "an API key env var"} where Scenaria runs, or enter a key for this run (it is not stored).`);
   }
-  return { provider, model: cfg.model.trim(), base, key, kind: provider === "anthropic" || /anthropic\.com/.test(base) ? ("anthropic" as const) : ("openai" as const) };
+  const kind = provider === "anthropic" || /anthropic\.com/.test(base) ? ("anthropic" as const) : provider === "ollama" ? ("ollama" as const) : ("openai" as const);
+  return { provider, model: cfg.model.trim(), base, key, kind, local, nativeBase: base.replace(/\/v1\/?$/, "") };
 }
 
-export async function callLlm(cfg: LlmRequest, upstreams: Record<string, string>, system: string, user: string, timeoutMs = 240_000): Promise<{ text: string; model: string; usage?: unknown }> {
+/**
+ * Ollama: use its native /api/chat with a large context window. Its OpenAI-compatible endpoint runs
+ * with the model's small default context (often 4096 tokens) and silently cuts longer requests —
+ * the instructions, tools or dossier would simply be missing.
+ */
+export const OLLAMA_CTX = () => Math.max(4096, Number(process.env.SCENARIA_OLLAMA_CTX) || 16384);
+
+/** Local models can be slow on a laptop: give them more time than cloud APIs. */
+export function llmTimeout(r: { local: boolean; kind: string }) {
+  return r.local || r.kind === "ollama" ? 600_000 : 240_000;
+}
+
+export async function callLlm(cfg: LlmRequest, upstreams: Record<string, string>, system: string, user: string, timeoutMs?: number): Promise<{ text: string; model: string; usage?: unknown }> {
   const r = resolveLlm(cfg, upstreams);
+  timeoutMs ??= llmTimeout(r);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -454,6 +468,13 @@ export async function callLlm(cfg: LlmRequest, upstreams: Record<string, string>
         method: "POST",
         headers: { "content-type": "application/json", "x-api-key": r.key ?? "", "anthropic-version": "2023-06-01" },
         body: JSON.stringify({ model: r.model, max_tokens: 4096, system, messages: [{ role: "user", content: user }] }),
+        signal: ctrl.signal,
+      });
+    } else if (r.kind === "ollama") {
+      res = await fetch(`${r.nativeBase}/api/chat`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: r.model, messages: [{ role: "system", content: system }, { role: "user", content: user }], stream: false, options: { num_ctx: OLLAMA_CTX(), temperature: 0.2 } }),
         signal: ctrl.signal,
       });
     } else {
@@ -469,10 +490,13 @@ export async function callLlm(cfg: LlmRequest, upstreams: Record<string, string>
     const raw = await res.text();
     if (!res.ok) throw new Error(`${r.provider} answered HTTP ${res.status}: ${raw.slice(0, 300)}`);
     const json = JSON.parse(raw);
-    const text =
+    const text = (
       r.kind === "anthropic"
         ? (json.content ?? []).filter((b: any) => b?.type === "text").map((b: any) => b.text).join("\n")
-        : String(json.choices?.[0]?.message?.content ?? "");
+        : r.kind === "ollama"
+          ? String(json.message?.content ?? "")
+          : String(json.choices?.[0]?.message?.content ?? "")
+    ).replace(/<think>[\s\S]*?<\/think>/g, "");
     return { text, model: json.model ?? r.model, usage: json.usage };
   } catch (err: any) {
     if (ctrl.signal.aborted) throw new Error(`${r.provider} did not answer within ${Math.round(timeoutMs / 1000)} s`);

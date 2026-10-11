@@ -220,7 +220,8 @@ test("LLM analysis works with any provider (OpenAI-compatible and Anthropic); ru
     const body = JSON.parse(b);
     seen.push({ url: req.url, auth: req.headers.authorization ?? req.headers["x-api-key"], body });
     res.writeHead(200, { "content-type": "application/json" });
-    if (req.url.endsWith("/chat/completions")) res.end(JSON.stringify({ model: body.model, choices: [{ message: { content: "```json\n" + JSON.stringify(reply) + "\n```" } }] }));
+    if (req.url === "/api/chat") res.end(JSON.stringify({ model: body.model, message: { content: "<think>hm</think>```json\n" + JSON.stringify(reply) + "\n```" } }));
+    else if (req.url.endsWith("/chat/completions")) res.end(JSON.stringify({ model: body.model, choices: [{ message: { content: "```json\n" + JSON.stringify(reply) + "\n```" } }] }));
     else res.end(JSON.stringify({ model: body.model, content: [{ type: "text", text: "Here:\n" + JSON.stringify(reply) }] }));
   });
   await new Promise((r) => llm.listen(0, "127.0.0.1", r));
