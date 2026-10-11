@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { ScenariaEvent } from "./api";
+import { api, type ConversationMessage, type ConversationSession, type ScenariaEvent } from "./api";
+import { MessageList } from "./NodePanel";
 import type { Dict } from "./i18n";
 import { NodeId } from "./Map";
 
@@ -170,6 +171,67 @@ export function ProtocolDialog(props: { t: Dict; events: ScenariaEvent[]; onSele
             })}
           </tbody>
         </table>
+      </div>
+    </Modal>
+  );
+}
+
+export function ConversationsDialog(props: { t: Dict; onClose: () => void; onSelectNode: (id: string) => void }) {
+  const { t } = props;
+  const [sessions, setSessions] = useState<ConversationSession[] | null>(null);
+  const [open, setOpen] = useState<{ session: ConversationSession; messages: ConversationMessage[] } | null>(null);
+  useEffect(() => {
+    api.conversations().then(setSessions).catch(() => setSessions([]));
+  }, []);
+  return (
+    <Modal wide title={open ? `${open.session.id} · ${open.session.title ?? ""}` : t.conversations} onClose={props.onClose}>
+      <div className="modal-body">
+        {!open && sessions && sessions.length === 0 && <p className="muted">{t.noConversations}</p>}
+        {!open && sessions && sessions.length > 0 && (
+          <table className="log">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>{t.conversation}</th>
+                <th>Provider</th>
+                <th>{t.model}</th>
+                <th>{t.messagesShort}</th>
+                <th>{t.time}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sessions.map((c) => (
+                <tr key={c.id}>
+                  <td>
+                    <button className="btn link" onClick={async () => setOpen(await api.conversation(c.id))}>
+                      {c.id}
+                    </button>
+                  </td>
+                  <td>{c.title ?? "—"}</td>
+                  <td>{c.provider ?? c.source}</td>
+                  <td>{c.model ?? ""}</td>
+                  <td>{c.messageCount}</td>
+                  <td className="muted">{new Date(c.updatedAt).toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {open && (
+          <>
+            <button className="btn link" onClick={() => setOpen(null)}>
+              ← {t.conversations}
+            </button>
+            <MessageList msgs={open.messages} t={t} limit={200} />
+            <p className="muted">
+              {[...new Set(open.messages.map((m) => m.headAt).filter(Boolean))].map((id) => (
+                <button key={id} className="btn link" onClick={() => props.onSelectNode(id!)}>
+                  {id}{" "}
+                </button>
+              ))}
+            </p>
+          </>
+        )}
       </div>
     </Modal>
   );

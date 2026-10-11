@@ -55,6 +55,15 @@ export class ShadowRepo {
   }
 
   private run(args: string[], input?: string, maxBuffer?: number) {
+    // Parallel processes (hooks, proxy, dashboard) may briefly contend for the shadow index lock.
+    for (let attempt = 0; ; attempt++) {
+      const r = this.runOnce(args, input, maxBuffer);
+      if (r.status === 0 || attempt >= 40 || !/index\.lock/.test(String(r.stderr ?? ""))) return r;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+  }
+
+  private runOnce(args: string[], input?: string, maxBuffer?: number) {
     return spawnSync(
       "git",
       ["-c", "core.autocrlf=false", "-c", "core.quotepath=false", "-c", "advice.addEmbeddedRepo=false", "-c", "core.safecrlf=false", ...args],

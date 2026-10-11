@@ -12,6 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type {
   ScenariaConfig,
@@ -25,8 +26,10 @@ export const DIR_NAME = ".scenaria";
 /** Walk up from `start` until a directory containing `.scenaria` is found. */
 export function findRoot(start: string = process.cwd()): string | null {
   let dir = resolve(start);
+  const home = resolve(homedir());
   for (;;) {
-    if (existsSync(join(dir, DIR_NAME, "config.json"))) return dir;
+    // The home folder is never a project root (protects against stray ~/.scenaria/ folders).
+    if (dir !== home && existsSync(join(dir, DIR_NAME, "config.json")) && existsSync(join(dir, DIR_NAME, "state.json"))) return dir;
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;

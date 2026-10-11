@@ -237,6 +237,25 @@ code { font-family: var(--mono); font-size: 0.88em; }
 
 .p-actions { display: flex; gap: 8px; flex-wrap: wrap; padding: 12px 20px; border-top: 1px solid var(--rule); background: var(--surface); }
 
+/* version + conversation */
+.vlabel { font-size: 10.5px; color: var(--ink-3); white-space: nowrap; margin-left: auto; }
+.vlabel + .vdot { margin-left: 4px; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 0 0 8px; font-size: 12.5px; }
+.kv dt { color: var(--ink-2); }
+.kv dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.p-sec .row { display: flex; gap: 6px; flex-wrap: wrap; }
+.p-sec h4 { margin: 8px 0 4px; font-size: 12px; font-weight: 600; color: var(--ink-3); }
+.msgs { list-style: none; margin: 0; padding: 0 !important; display: flex; flex-direction: column; gap: 6px; }
+.msg { border-left: 3px solid var(--rule); padding: 3px 0 3px 9px; }
+.msg.r-user { border-left-color: var(--marker-solid); }
+.msg.r-assistant { border-left-color: var(--ink); }
+.msg.r-tool, .msg.r-system { opacity: 0.8; }
+.msg-head { display: flex; gap: 8px; align-items: baseline; font-size: 11.5px; }
+.msg-role { font-weight: 600; }
+.msg-text { margin: 2px 0 0 !important; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; }
+.msg-tool { display: inline-block; margin: 3px 4px 0 0; font-size: 11px; color: var(--ink-2); border: 1px solid var(--rule); padding: 0 4px; border-radius: 2px; }
+.msgs .more { list-style: none; }
+
 /* ---------- status bar ---------- */
 .statusbar {
   display: flex; align-items: center; gap: 0; border-top: 1px solid var(--rule); background: var(--surface);

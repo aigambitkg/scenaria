@@ -1,7 +1,7 @@
 {
   "name": "scenaria",
-  "version": "0.2.0",
-  "description": "Quicksave & checkpoints for AI agents — any LLM, any framework. A decision tree you can rewind, fork and verify via MCP, HTTP, CLI, function calling and a visual scenario map.",
+  "version": "0.3.0",
+  "description": "Quicksave & checkpoints for AI agents \u2014 any LLM, any framework. A decision tree you can rewind, fork and verify via MCP, HTTP, CLI, function calling and a visual scenario map.",
   "type": "module",
   "bin": {
     "scenaria": "dist/cli.js"
@@ -13,6 +13,8 @@
     "templates",
     "clients",
     "examples",
+    "install.sh",
+    "install.ps1",
     "README.md",
     "README.de.md",
     "LICENSE"
@@ -23,7 +25,10 @@
     "build:ui": "vite build --config ui/vite.config.ts",
     "dev:ui": "vite --config ui/vite.config.ts",
     "test": "node --test --test-concurrency=1 test/*.test.mjs",
-    "demo": "node scripts/demo.mjs"
+    "demo": "node scripts/demo.mjs",
+    "prepare": "node scripts/prepare.mjs",
+    "prepublishOnly": "npm test",
+    "build:binaries": "node scripts/build-binaries.mjs"
   },
   "engines": {
     "node": ">=20"

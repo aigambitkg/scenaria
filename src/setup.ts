@@ -1,10 +1,13 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const CLI = join(here, "cli.js");
-const TEMPLATES = join(here, "..", "templates");
+import { readTemplate, selfInvocation } from "./assets.js";
+
+/** [command, ...args] that starts this Scenaria (node + cli.js, or the standalone binary). */
+const SELF = selfInvocation();
+const CLI_DISPLAY = SELF.join(" ");
 
 /** Supported setup targets. Everything else can use MCP manually, HTTP or the CLI. */
 export const TARGETS = ["claude", "cursor", "vscode", "gemini", "codex", "windsurf", "generic"] as const;
@@ -97,15 +100,15 @@ function writeJson(file: string, data: unknown) {
 const q = (s: string) => (process.platform === "win32" ? `"${s.replace(/"/g, '\\"')}"` : `'${s.replace(/'/g, "'\\''")}'`);
 
 export function hookCommand(event: string) {
-  return `${q(process.execPath)} ${q(CLI)} hook ${event}`;
+  return `${SELF.map(q).join(" ")} hook ${event}`;
 }
 
 /** MCP server entry; the agent label makes every node attributable. */
 function mcpEntry(agent: string, withType = true) {
   return {
     ...(withType ? { type: "stdio" } : {}),
-    command: process.execPath,
-    args: [CLI, "mcp"],
+    command: SELF[0],
+    args: [...SELF.slice(1), "mcp"],
     env: { SCENARIA_AGENT: agent },
   };
 }
@@ -125,7 +128,7 @@ const READ_SAFE_TOOLS = [
 ].map((t) => `mcp__scenaria__${t}`);
 
 /** Our hook commands end in `…cli.js' hook <event>` — matched precisely so user hooks are never touched. */
-const OUR_HOOK = /cli\.js["']?\s+hook\s+(user-prompt|post-tool|pre-tool|stop|session-start)\s*$/;
+const OUR_HOOK = /(?:cli\.js|[\\/]scenaria(?:-[\w-]+)?(?:\.exe)?)["']?\s+hook\s+(user-prompt|post-tool|pre-tool|stop|session-start)\s*$/;
 const isOurs = (h: any) => typeof h?.command === "string" && OUR_HOOK.test(h.command);
 
 /** Insert or replace a marker-delimited block (only complete start…end pairs are replaced). */
@@ -143,7 +146,7 @@ function upsertBlock(file: string, block: string, style: "html" | "hash" = "html
 }
 
 function rules(autoCapture: boolean) {
-  const raw = readFileSync(join(TEMPLATES, "rules", "agent-rules.md"), "utf8");
+  const raw = readTemplate("rules/agent-rules.md");
   return raw.replace(
     "{{AUTO_CAPTURE}}",
     autoCapture ? "- Clarifying questions and plan approvals are captured automatically; do not record them twice.\n" : "",
@@ -186,7 +189,7 @@ function setupClaudeTarget(root: string, r: SetupResult, claudeMd: boolean) {
   const agentFile = join(root, ".claude", "agents", "scenaria-verifier.md");
   if (!existsSync(agentFile)) {
     mkdirSync(dirname(agentFile), { recursive: true });
-    writeFileSync(agentFile, readFileSync(join(TEMPLATES, "claude", "agents", "scenaria-verifier.md"), "utf8"));
+    writeFileSync(agentFile, readTemplate("claude/agents/scenaria-verifier.md"));
     r.changes.push(".claude/agents/scenaria-verifier.md → verifier sub-agent");
   }
   if (claudeMd) {
@@ -220,7 +223,7 @@ function setupCodex(root: string, r: SetupResult) {
   const s = JSON.stringify;
   upsertBlock(
     file,
-    [`[mcp_servers.scenaria]`, `command = ${s(process.execPath)}`, `args = [${s(CLI)}, "mcp"]`, ``, `[mcp_servers.scenaria.env]`, `SCENARIA_AGENT = "codex"`].join("\n"),
+    [`[mcp_servers.scenaria]`, `command = ${s(SELF[0])}`, `args = [${[...SELF.slice(1), "mcp"].map((a) => s(a)).join(", ")}]`, ``, `[mcp_servers.scenaria.env]`, `SCENARIA_AGENT = "codex"`].join("\n"),
     "hash",
   );
   r.changes.push('.codex/config.toml → MCP server "scenaria" (Codex; project config is used for trusted projects)');
@@ -267,7 +270,7 @@ export function setupAgents(root: string, targets: Target[], opts: { rulesFiles?
     r.notes.push(
       [
         "Any other agent:",
-        `  MCP (stdio):  ${process.execPath} ${CLI} mcp   (env SCENARIA_ROOT=<project>, SCENARIA_AGENT=<name>, SCENARIA_MODEL=<model>)`,
+        `  MCP (stdio):  ${CLI_DISPLAY} mcp   (env SCENARIA_ROOT=<project>, SCENARIA_AGENT=<name>, SCENARIA_MODEL=<model>)`,
         "  Shell:        scenaria call scenaria_checkpoint '{\"title\":\"…\"}'",
         "  HTTP:         scenaria serve  →  POST /api/v1/tools/<tool>",
         "  Schemas:      scenaria tools --format openai|anthropic|gemini",
@@ -281,6 +284,134 @@ export function setupAgents(root: string, targets: Target[], opts: { rulesFiles?
 /** Backwards compatible entry point (init --claude). */
 export function setupClaude(root: string, opts: { claudeMd?: boolean } = {}): string[] {
   return setupAgents(root, ["claude"], { rulesFiles: opts.claudeMd }).changes;
+}
+
+// ------------------------------------------------------------------ detection & global setup
+
+function onPath(cmd: string): boolean {
+  const r = spawnSync(process.platform === "win32" ? "where" : "which", [cmd], { stdio: "ignore" });
+  return r.status === 0;
+}
+
+/** Which agents are installed on this machine? Used by `scenaria start` and `setup --global`. */
+export function detectAgents(home = homedir()): Target[] {
+  const has = (p: string) => existsSync(join(home, p));
+  const app = (name: string) => process.platform === "darwin" && existsSync(`/Applications/${name}.app`);
+  const found: Target[] = [];
+  if (onPath("claude") || has(".claude")) found.push("claude");
+  if (has(".cursor") || app("Cursor")) found.push("cursor");
+  if (onPath("code") || has(".vscode") || app("Visual Studio Code")) found.push("vscode");
+  if (onPath("gemini") || has(".gemini")) found.push("gemini");
+  if (onPath("codex") || has(".codex")) found.push("codex");
+  if (has(".codeium/windsurf") || app("Windsurf")) found.push("windsurf");
+  return found;
+}
+
+function vscodeUserDir(home: string) {
+  if (process.platform === "darwin") return join(home, "Library", "Application Support", "Code", "User");
+  if (process.platform === "win32") return join(process.env.APPDATA ?? join(home, "AppData", "Roaming"), "Code", "User");
+  return join(home, ".config", "Code", "User");
+}
+
+/**
+ * Register Scenaria once for every project (user-level configs). The MCP server then
+ * resolves the project from the workspace / working directory and initializes it on
+ * first use (only in folders that look like projects — never the home folder).
+ */
+export function setupGlobal(targets: Target[], home = homedir()): SetupResult {
+  const r: SetupResult = { changes: [], notes: [] };
+  const set = new Set(targets);
+  const root = (rel: string) => join(home, rel);
+  // Preflight all JSON files first.
+  const files: string[] = [];
+  if (set.has("claude")) files.push(root(".claude/settings.json"));
+  if (set.has("cursor")) files.push(root(".cursor/mcp.json"));
+  if (set.has("gemini")) files.push(root(".gemini/settings.json"));
+  if (set.has("vscode")) files.push(join(vscodeUserDir(home), "mcp.json"));
+  if (set.has("windsurf")) files.push(root(".codeium/windsurf/mcp_config.json"));
+  for (const f of files) readJsonFile(f);
+
+  const writeServer = (file: string, key: "mcpServers" | "servers", entry: unknown, label: string) => {
+    const { data, commented } = readJsonFile(file);
+    if (commented) {
+      r.notes.push(`${file} contains comments — add this under "${key}" yourself:\n${JSON.stringify({ scenaria: entry }, null, 2)}`);
+      return;
+    }
+    data[key] ??= {};
+    data[key].scenaria = entry;
+    writeJson(file, data);
+    r.changes.push(`${file.replace(home, "~")} → MCP server "scenaria" (${label}, all projects)`);
+  };
+
+  if (set.has("claude")) {
+    if (onPath("claude")) {
+      // Name BEFORE -e (the -e option is variadic); only replace an existing entry if adding fails because it exists.
+      const addArgs = ["mcp", "add", "--scope", "user", "scenaria", "-e", "SCENARIA_AGENT=claude-code", "--", ...SELF, "mcp"];
+      let add = spawnSync("claude", addArgs, { encoding: "utf8" });
+      if (add.status !== 0 && /already exists/i.test(`${add.stderr}${add.stdout}`)) {
+        spawnSync("claude", ["mcp", "remove", "--scope", "user", "scenaria"], { stdio: "ignore" });
+        add = spawnSync("claude", addArgs, { encoding: "utf8" });
+      }
+      if (add.status === 0) r.changes.push('Claude Code → MCP server "scenaria" (user scope, all projects)');
+      else r.notes.push(`Could not run "claude mcp add" (${(add.stderr || "").trim()}). Run: claude mcp add --scope user scenaria -- ${CLI_DISPLAY} mcp`);
+    } else {
+      r.notes.push(`Claude Code CLI not on PATH. Run later: claude mcp add --scope user scenaria -- ${CLI_DISPLAY} mcp`);
+    }
+    // Hooks in the user settings: they act only in Scenaria projects (auto-initialized on first use).
+    const settingsFile = root(".claude/settings.json");
+    const read = readJsonFile(settingsFile);
+    if (read.commented) r.notes.push("~/.claude/settings.json contains comments — hooks were not added.");
+    else {
+      const settings = read.data;
+      settings.hooks ??= {};
+      const add = (event: string, entry: any) => {
+        const list: any[] = Array.isArray(settings.hooks[event]) ? settings.hooks[event] : [];
+        const cleaned = list.map((m) => ({ ...m, hooks: (m.hooks ?? []).filter((h: any) => !isOurs(h)) })).filter((m) => m.hooks.length > 0);
+        cleaned.push(entry);
+        settings.hooks[event] = cleaned;
+      };
+      const cmd = (event: string, timeout = 30) => ({ type: "command", command: hookCommand(event), timeout });
+      add("UserPromptSubmit", { hooks: [cmd("user-prompt", 20)] });
+      add("PostToolUse", { matcher: "AskUserQuestion|ExitPlanMode", hooks: [cmd("post-tool")] });
+      add("PreToolUse", { matcher: "Bash", hooks: [cmd("pre-tool")] });
+      add("Stop", { hooks: [cmd("stop", 60)] });
+      add("SessionStart", { hooks: [cmd("session-start", 20)] });
+      settings.permissions ??= {};
+      settings.permissions.allow = Array.from(new Set([...(settings.permissions.allow ?? []), ...READ_SAFE_TOOLS]));
+      writeJson(settingsFile, settings);
+      r.changes.push("~/.claude/settings.json → hooks + tool permissions (all projects)");
+    }
+    upsertBlock(root(".claude/CLAUDE.md"), rules(true));
+    r.changes.push("~/.claude/CLAUDE.md → Scenaria working rules");
+  }
+  if (set.has("cursor")) {
+    writeServer(root(".cursor/mcp.json"), "mcpServers", { ...mcpEntry("cursor"), args: [...SELF.slice(1), "mcp", "--root", "${workspaceFolder}"] }, "Cursor");
+  }
+  if (set.has("vscode")) {
+    writeServer(join(vscodeUserDir(home), "mcp.json"), "servers", { ...mcpEntry("vscode-copilot"), args: [...SELF.slice(1), "mcp", "--root", "${workspaceFolder}"] }, "VS Code");
+  }
+  if (set.has("gemini")) {
+    writeServer(root(".gemini/settings.json"), "mcpServers", mcpEntry("gemini-cli", false), "Gemini CLI");
+    upsertBlock(root(".gemini/GEMINI.md"), rules(false));
+    r.changes.push("~/.gemini/GEMINI.md → Scenaria working rules");
+  }
+  if (set.has("codex")) {
+    const file = root(".codex/config.toml");
+    const current = existsSync(file) ? readFileSync(file, "utf8") : "";
+    if (codexDefinesScenaria(current.replace(/# scenaria:start[\s\S]*?# scenaria:end/g, ""))) {
+      r.notes.push("~/.codex/config.toml already defines mcp_servers.scenaria — left unchanged.");
+    } else {
+      const j = JSON.stringify;
+      upsertBlock(file, [`[mcp_servers.scenaria]`, `command = ${j(SELF[0])}`, `args = [${[...SELF.slice(1), "mcp"].map((a) => j(a)).join(", ")}]`, ``, `[mcp_servers.scenaria.env]`, `SCENARIA_AGENT = "codex"`].join("\n"), "hash");
+      r.changes.push("~/.codex/config.toml → MCP server \"scenaria\" (all projects)");
+    }
+    upsertBlock(root(".codex/AGENTS.md"), rules(false));
+    r.changes.push("~/.codex/AGENTS.md → Scenaria working rules");
+  }
+  if (set.has("windsurf")) {
+    writeServer(root(".codeium/windsurf/mcp_config.json"), "mcpServers", mcpEntry("windsurf", false), "Windsurf");
+  }
+  return r;
 }
 
 export function parseTargets(spec: string): Target[] {

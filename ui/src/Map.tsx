@@ -79,6 +79,7 @@ const ScNode = memo(({ data, selected }: NodeProps<Node<ScData>>) => {
           {GLYPH[n.type]}
         </span>
         {via ? <span className="sc-kind via" title={t.types[n.type]}>↳ {via}</span> : <span className="sc-kind">{t.types[n.type]}</span>}
+        {n.scenarioId && <span className="vlabel">{n.scenarioId}/v{n.version}</span>}
         <span className={`vdot v-${v}`} title={t.verification[v]} />
       </div>
       <div className="sc-title">{n.type === "decision" ? n.question ?? n.title : n.title}</div>

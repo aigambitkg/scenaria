@@ -38,6 +38,12 @@ s.startMission({
   ...agent,
 });
 
+const chatA = { externalId: "demo-claude", source: "transcript", provider: "anthropic", model: "claude-opus-5-5", agent: "claude-code" };
+s.logMessages(chatA, [
+  { role: "user", text: L("Baue ein DSGVO-konformes Kontaktformular für Sonnenkorn, Versand an den Vertrieb.", "Build a GDPR-compliant contact form for Sonnenkorn that emails sales.") },
+  { role: "assistant", text: L("Ich schlage Astro vor: statische Seite, kaum JavaScript. Soll ich so starten?", "I suggest Astro: static site, minimal JavaScript. Shall I start that way?") },
+  { role: "user", text: L("Ja, los.", "Yes, go ahead.") },
+]);
 s.decide({
   question: L("Welches Framework für die Website?", "Which framework for the website?"),
   options: [
@@ -75,6 +81,10 @@ s.decide({
   ...agent,
 });
 
+s.logMessages(chatA, [
+  { role: "assistant", text: L("Für den Versand nehme ich den n8n-Webhook, weil ihr n8n schon nutzt. In welchen Sprachen soll das Formular erscheinen?", "For delivery I'll use the n8n webhook since you already run n8n. Which languages should the form support?") },
+  { role: "user", text: L("Deutsch und Englisch bitte.", "German and English, please.") },
+]);
 s.decide({
   question: L("In welchen Sprachen soll das Formular erscheinen?", "Which languages should the form support?"),
   title: L("Sprache: Formularsprache", "Language: form language"),
@@ -136,6 +146,10 @@ const fork = s.fork(decisionId, "Resend API", {
   lesson: L("Kunde möchte keinen eigenen n8n-Betrieb übernehmen", "Client does not want to operate n8n themselves"),
   ...altAgent,
 });
+s.logMessages({ externalId: "demo-cursor", source: "proxy", provider: "openai", model: "gpt-5", agent: "cursor" }, [
+  { role: "user", text: L("Probier die Variante mit Resend statt n8n.", "Try the Resend variant instead of n8n.") },
+  { role: "assistant", text: L("Erledigt: API-Route mit Resend, Schlüssel nur serverseitig.", "Done: API route with Resend, key server-side only."), toolCalls: [{ name: "scenaria_checkpoint" }] },
+]);
 w("src/pages/kontakt.astro", "<form method=post action=/api/contact>…</form>\n");
 w("src/pages/api/contact.ts", "import { Resend } from 'resend'; export const POST = async () => new Response('ok');\n");
 const alt = s.checkpoint({

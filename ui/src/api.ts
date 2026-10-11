@@ -1,6 +1,6 @@
-import type { ScenariaConfig, ScenariaEvent, ScenariaNode, ScenariaState } from "../../src/core/types";
+import type { ConversationMessage, ConversationSession, ScenariaConfig, ScenariaEvent, ScenariaNode, ScenariaState } from "../../src/core/types";
 
-export type { ScenariaNode, ScenariaEvent };
+export type { ScenariaNode, ScenariaEvent, ConversationMessage, ConversationSession };
 
 export interface Graph {
   config: ScenariaConfig;
@@ -38,4 +38,9 @@ export const api = {
   verify: (id: string, body: { status?: string; notes?: string; auto?: boolean; runCommand?: boolean }) =>
     req<ScenariaNode>("/api/verify", { id, ...body }),
   checkpoint: (title: string) => req<ScenariaNode | null>("/api/checkpoint", { title }),
+  nodeMessages: (id: string) => req<{ leading: ConversationMessage[]; after: ConversationMessage[] }>(`/api/node/${id}/messages`),
+  folder: (id: string, open: boolean) => req<{ folder: string | null }>(`/api/node/${id}/folder`, { open }),
+  conversations: () => req<ConversationSession[]>("/api/v1/conversations"),
+  conversation: (id: string) => req<{ session: ConversationSession; messages: ConversationMessage[] }>(`/api/v1/conversations/${encodeURIComponent(id)}`),
+  versions: () => req<any[]>("/api/v1/versions"),
 };

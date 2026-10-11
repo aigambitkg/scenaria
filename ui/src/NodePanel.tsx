@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type ScenariaNode } from "./api";
+import { api, type ConversationMessage, type ScenariaNode } from "./api";
 import type { Dict } from "./i18n";
 import type { Placed } from "./layout";
 import { NodeId } from "./Map";
@@ -24,6 +24,39 @@ function renderInline(s: string) {
   return parts.map((p, i) => (p.startsWith("`") && p.endsWith("`") ? <code key={i}>{p.slice(1, -1)}</code> : <span key={i}>{p}</span>));
 }
 
+export function MessageList({ msgs, t, limit = 6 }: { msgs: ConversationMessage[]; t: Dict; limit?: number }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? msgs : msgs.slice(-limit);
+  return (
+    <ol className="msgs">
+      {!all && msgs.length > limit && (
+        <li className="more">
+          <button className="btn link" onClick={() => setAll(true)}>
+            {t.showMore} (+{msgs.length - limit})
+          </button>
+        </li>
+      )}
+      {shown.map((m) => (
+        <li key={m.id} className={`msg r-${m.role}`}>
+          <div className="msg-head">
+            <span className="msg-role">{t.roles[m.role] ?? m.role}</span>
+            <span className="muted">
+              {m.id}
+              {m.model ? ` · ${m.model}` : ""}
+            </span>
+          </div>
+          {m.text && <p className="msg-text">{m.text.length > 700 ? m.text.slice(0, 700) + "…" : m.text}</p>}
+          {m.toolCalls?.map((tc, i) => (
+            <code key={i} className="msg-tool">
+              {tc.name}
+            </code>
+          ))}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 function fmtTime(iso: string) {
   const d = new Date(iso);
   return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
@@ -43,12 +76,19 @@ export function NodePanel(props: {
   onDiff: (from: string, to: string) => void;
   onVerify: (id: string, body: { status?: string; notes?: string; auto?: boolean }) => Promise<void>;
   toast: (msg: string) => void;
+  graphVersion?: number;
 }) {
   const { placed, allNodes, t } = props;
   const [ctx, setCtx] = useState<{ tokens: number; markdown: string } | null>(null);
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
+  const [msgs, setMsgs] = useState<{ leading: ConversationMessage[]; after: ConversationMessage[] } | null>(null);
   const node = placed?.kind === "node" ? placed.node! : null;
+
+  useEffect(() => {
+    setMsgs(null);
+    if (node) api.nodeMessages(node.id).then(setMsgs).catch(() => setMsgs(null));
+  }, [node?.id, props.graphVersion]);
 
   useEffect(() => {
     setCtx(null);
@@ -213,6 +253,87 @@ export function NodePanel(props: {
             </ul>
           </section>
         ) : null}
+
+        <section className="p-sec version">
+          <h3>{t.versionSec}</h3>
+          <dl className="kv">
+            {n.scenarioId && (
+              <>
+                <dt>{t.scenario}</dt>
+                <dd>
+                  <strong>
+                    {n.scenarioId}/v{n.version}
+                  </strong>
+                  {n.forkedFrom ? <span className="muted"> ← {n.forkedFrom}</span> : null}
+                </dd>
+              </>
+            )}
+            {n.uid && (
+              <>
+                <dt>{t.uidLabel}</dt>
+                <dd>
+                  <code>{n.uid}</code>
+                </dd>
+              </>
+            )}
+            {n.snapshot && (
+              <>
+                <dt>Snapshot</dt>
+                <dd>
+                  <code>{n.snapshot.commit.slice(0, 12)}</code>
+                </dd>
+              </>
+            )}
+          </dl>
+          {n.snapshot && (
+            <div className="row">
+              <button
+                className="btn"
+                onClick={async () => {
+                  const r = await api.folder(n.id, true);
+                  if (r.folder) props.toast(r.folder);
+                }}
+              >
+                {t.openFolder}
+              </button>
+              <button
+                className="btn"
+                onClick={async () => {
+                  const r = await api.folder(n.id, false);
+                  if (!r.folder) return;
+                  try {
+                    await navigator.clipboard.writeText(r.folder);
+                    props.toast(t.pathCopied);
+                  } catch {
+                    props.toast(r.folder);
+                  }
+                }}
+              >
+                {t.copyPath}
+              </button>
+            </div>
+          )}
+        </section>
+
+        <section className="p-sec convo">
+          <h3>
+            {t.conversation}
+            {msgs ? <span className="count">{msgs.leading.length + msgs.after.length}</span> : null}
+          </h3>
+          {msgs && msgs.leading.length === 0 && msgs.after.length === 0 && <p className="muted">{t.noMessages}</p>}
+          {msgs && msgs.leading.length > 0 && (
+            <>
+              <h4>{t.leadingHere}</h4>
+              <MessageList msgs={msgs.leading} t={t} limit={4} />
+            </>
+          )}
+          {msgs && msgs.after.length > 0 && (
+            <>
+              <h4>{t.afterHere}</h4>
+              <MessageList msgs={msgs.after} t={t} limit={4} />
+            </>
+          )}
+        </section>
 
         {n.verification?.checks?.length ? (
           <section className="p-sec">

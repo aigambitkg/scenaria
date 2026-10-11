@@ -28,13 +28,33 @@
 - [x] Python client (stdlib only) and an OpenAI-compatible agent example (OpenAI, Azure, Mistral, Ollama, vLLM, …)
 - [x] Vendor-neutral verifier prompt
 
+## Done in 0.3 (one install, one overlay)
+
+- [x] `scenaria start`: init, auto-detect and wire agents, baseline, dashboard, proxy and auto-save in one command
+- [x] `scenaria setup --global`: every project, with auto-init only in real projects
+- [x] Single-file binaries (Bun) with embedded dashboard, `install.sh` / `install.ps1`, release pipeline, npm-ready package
+- [x] IDs everywhere: node `uid` (ULID), scenarios `s1…`, versions `s2/v5`, conversations `c1…`, messages `m1…`
+- [x] Conversation overlay linked to the tree (`headAt`), visible per node in the dashboard and in snapshot folders
+- [x] Universal LLM proxy (OpenAI-compatible and Anthropic, streaming) for any provider
+- [x] Claude Code transcript capture, HTTP and CLI logging, imports (ChatGPT, Claude.ai, OpenAI lists, JSONL)
+- [x] Snapshot folders per version (hardlinked, read-only, `index.md`), `scenaria open`, `--copy-to`
+- [x] `scenaria mirror`: versions as `refs/scenaria/*` in the project repo
+
+## Next: capture everywhere
+
+- [ ] Browser extension for ChatGPT / Claude.ai / Gemini web (live capture without exports)
+- [ ] Homebrew tap and winget package
+- [ ] Gemini native API (`generateContent`) and Bedrock/Vertex shapes in the proxy
+- [ ] Map ChatGPT conversation branches (edited messages) to Scenaria scenarios on import
+- [ ] Conversation search across all providers
+
 ## Phase 4: Verifier and protocol
 
 - [ ] Run the verifier automatically after N checkpoints, or when the agent stops (opt-in hook)
 - [ ] Dashboard: "suggested rewind target" banner when a node fails
 - [ ] Export the audit report as Markdown/PDF (ISO/IEC 42001-friendly: decisions, verdicts, irreversible effects, who/when)
 - [ ] Compare two branches side by side (capsule + diff)
-- [ ] `scenaria gc` / prune: drop autosaves older than N days, `git gc` the shadow repo
+- [ ] `scenaria gc` / prune: drop autosaves older than N days, prune snapshot folders/blobs, `git gc` the shadow repo
 
 ## Phase 4b: Organizations
 
@@ -53,7 +73,6 @@
 - [ ] Semantic search across the knowledge base (optional Qdrant/pgvector)
 - [ ] Token metrics per mission (capsule vs. transcript over time)
 - [ ] Hook into Claude Code's native checkpoints, once headless rewind is exposed
-- [ ] Publish to npm (`npx scenaria init --claude`)
 
 ## Known limits
 

@@ -45,7 +45,17 @@ export interface Verification {
 }
 
 export interface ScenariaNode {
-  id: string; // n1, n2, ...
+  id: string; // n1, n2, ... (short, per project)
+  /** Globally unique, time-sortable id (ULID) — stable across exports and merges. */
+  uid?: string;
+  /** Scenario = one linear line of work. A new branch (fork, or new work after a rewind) starts a new scenario. */
+  scenarioId?: string;
+  /** Step number on the path from the mission root (root = 0). (scenarioId, version) is unique. */
+  version?: number;
+  /** For the first node of a new scenario: the node it branched off. */
+  forkedFrom?: string;
+  /** Browsable snapshot folder (relative to the project root), if materialized. */
+  snapshotFolder?: string;
   type: NodeType;
   missionId: string;
   parentId: string | null;
@@ -89,8 +99,33 @@ export interface ScenariaNode {
   meta?: Record<string, unknown>;
 }
 
+export interface SnapshotFolderConfig {
+  /** Materialize a browsable folder per node (hardlinked, read-only, deduplicated). */
+  enabled: boolean;
+  /** Relative to the project root. */
+  path: string;
+  /** Skip materialization for trees larger than this (snapshots still work). */
+  maxFiles: number;
+  /**
+   * How files are placed: "auto" = copy-on-write clone where the filesystem supports it
+   * (APFS, btrfs, xfs), otherwise a hardlink; "copy" = always independent copies (more disk).
+   */
+  link?: "auto" | "copy";
+}
+
+export interface ProxyConfig {
+  /** Upstream base URLs (including the version path), e.g. https://api.openai.com/v1 */
+  upstreams: Record<string, string>;
+  /** After each assistant turn: checkpoint if project files changed. */
+  autoCheckpoint: boolean;
+}
+
 export interface ScenariaConfig {
   version: 1;
+  snapshotFolders?: SnapshotFolderConfig;
+  /** Also publish snapshot refs (refs/scenaria/*) into the project's own git repo. */
+  mirrorToProjectGit?: boolean;
+  proxy?: ProxyConfig;
   projectName: string;
   createdAt: string;
   /** Extra gitignore-style patterns excluded from snapshots. */
@@ -107,6 +142,52 @@ export interface ScenariaState {
   head: string | null;
   activeMission: string | null;
   counter: number;
+  /** Data schema version (2 = uid/scenario/version on every node). */
+  schema?: number;
+  scenarioCounter?: number;
+  messageCounter?: number;
+}
+
+export type MessageRole = "user" | "assistant" | "system" | "tool";
+
+/** One conversation (a chat thread / agent session) from any provider. */
+export interface ConversationSession {
+  id: string; // c1, c2, ...
+  uid: string;
+  /** External id (e.g. Claude Code session id, proxy-derived hash, import id). */
+  externalId?: string;
+  title?: string;
+  provider?: string; // openai, anthropic, ollama, google, …
+  model?: string;
+  agent?: string;
+  source: Source | "proxy" | "import" | "transcript";
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+}
+
+export interface ToolCallRecord {
+  name: string;
+  arguments?: string;
+}
+
+/** A single message. `headAt` links it into the decision tree (the HEAD node when it was said). */
+export interface ConversationMessage {
+  id: string; // m1, m2, ...
+  uid: string;
+  sessionId: string;
+  role: MessageRole;
+  text: string;
+  toolCalls?: ToolCallRecord[];
+  toolName?: string;
+  provider?: string;
+  model?: string;
+  agent?: string;
+  ts: string;
+  headAt: string | null;
+  hash: string;
+  /** Hash of the whole conversation up to and including this message (dedupe across resends/edits). */
+  chain?: string;
 }
 
 export type EventType =
@@ -119,7 +200,8 @@ export type EventType =
   | "autosave"
   | "rewind"
   | "verify"
-  | "update";
+  | "update"
+  | "messages";
 
 export interface ScenariaEvent {
   ts: string;

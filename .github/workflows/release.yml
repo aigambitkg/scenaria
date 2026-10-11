@@ -1,0 +1,68 @@
+name: Release
+
+# Push a tag like v0.3.0 → tests, npm package, single-file binaries for macOS/Linux/Windows.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - name: Publish to npm (needs the NPM_TOKEN secret)
+        if: ${{ env.NODE_AUTH_TOKEN != '' }}
+        run: npm publish --provenance --access public
+
+  binaries:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            targets: darwin-arm64 darwin-x64
+          - os: ubuntu-latest
+            targets: linux-x64 linux-arm64 windows-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci
+      - run: npm run build
+      - run: node scripts/build-binaries.mjs ${{ matrix.targets }}
+      - name: Ad-hoc sign macOS binaries
+        if: runner.os == 'macOS'
+        run: for f in release/scenaria-darwin-*; do codesign --force --sign - "$f"; done
+      - name: Smoke test (native target)
+        run: |
+          case "$(uname -s)-$(uname -m)" in
+            Darwin-arm64) ./release/scenaria-darwin-arm64 --help | head -1 ;;
+            Linux-x86_64) ./release/scenaria-linux-x64 --help | head -1 ;;
+          esac
+      - name: Compress
+        run: |
+          cd release
+          for f in scenaria-*; do
+            case "$f" in
+              *.exe) zip -9 "${f%.exe}.zip" "$f" && rm "$f" ;;
+              *) gzip -9 "$f" ;;
+            esac
+          done
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*

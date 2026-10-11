@@ -1,12 +1,19 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
+import { join } from "node:path";
 import { Scenaria } from "./core/engine.js";
+import { Store, resolveRoot } from "./core/store.js";
 import { optionLabel } from "./core/context.js";
 import type { ScenariaNode } from "./core/types.js";
 
 const HELP = `Scenaria — quicksave & checkpoints for AI agents (any LLM, any framework)
 
 Usage: scenaria <command> [options]
+
+Quick start
+  start [--for <targets>] [--no-open] [--no-watch] [--port 4477]
+                                        One command: init, auto-detect & wire your agents, dashboard + proxy + auto-save
+  setup --global [--for <targets>]      Register Scenaria once for ALL projects (user-level agent configs)
 
 Setup
   init [--for <targets>] [--no-rules]   Initialize .scenaria/ and wire agents:
@@ -28,6 +35,18 @@ Navigate
   rewind <id> [--lesson ..] [--no-files]
   fork <decisionId> <option> [--lesson ..]
   diff <fromId> [toId|working]
+
+Versions, folders & conversations
+  versions [missionId]                  Every version with its ids (node, uid, scenario/version, snapshot, folder)
+  open <id> [--copy-to <dir>] [--print] [--rebuild]
+                                        Open a version's snapshot folder (or copy it out as a writable folder)
+  mirror [--enable|--disable]           Publish refs/scenaria/* into the project's own git repo
+  conversations                         Recorded conversations (all providers)
+  conversation <id>                     Print one conversation
+  import <file> [--format auto|chatgpt|claude-ai|claude-code|openai|jsonl]
+                                        Import chat history (ChatGPT/Claude.ai exports, transcripts, message lists)
+  log-message --role user|assistant --text ".." [--session <id>] [--title ..]
+                                        Record a message from any tool
 
 Verify & document
   verify <id> [--status passed|warning|failed] [--notes ..] [--by ..] [--run] [--no-auto]
@@ -61,6 +80,18 @@ const opts = {
   "args-file": { type: "string" },
   interval: { type: "string" },
   quiet: { type: "string" },
+  global: { type: "boolean" },
+  force: { type: "boolean" },
+  rebuild: { type: "boolean" },
+  "no-watch": { type: "boolean" },
+  "copy-to": { type: "string" },
+  print: { type: "boolean" },
+  enable: { type: "boolean" },
+  disable: { type: "boolean" },
+  role: { type: "string" },
+  text: { type: "string" },
+  session: { type: "string" },
+  title: { type: "string" },
   name: { type: "string" },
   port: { type: "string" },
   "no-open": { type: "boolean" },
@@ -116,6 +147,36 @@ function describe(n: ScenariaNode): string {
   return lines.join("\n");
 }
 
+/** Auto-save loop: cheap fingerprint per tick, a version after a quiet period. */
+function startWatch(s: Scenaria, o: { interval: number; quiet: number; agent: string; model?: string; user?: string; log: boolean }) {
+  let lastPrint = "";
+  let changedAt = 0;
+  let saves = 0;
+  const tick = () => {
+    try {
+      const fp = s.repo!.fingerprint();
+      if (fp !== lastPrint) {
+        const first = lastPrint === "";
+        lastPrint = fp;
+        if (!first || s.isDirty()) changedAt = Date.now();
+        return;
+      }
+      if (changedAt && Date.now() - changedAt >= o.quiet) {
+        changedAt = 0;
+        const n = s.autoCheckpoint({ agent: o.agent, model: o.model, user: o.user });
+        if (n) {
+          if (o.log) process.stdout.write(`${C.green}◆${C.reset} ${n.id} ${n.scenarioId}/v${n.version} ${n.title}\n`);
+          if (++saves % 20 === 0) s.repo!.git(["gc", "--auto", "-q"], { allowFail: true });
+        }
+      }
+    } catch (err: any) {
+      process.stderr.write(`${C.yellow}! ${err?.message ?? err}${C.reset}\n`);
+    }
+  };
+  tick();
+  return setInterval(tick, o.interval);
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const cmd = argv[0];
@@ -145,7 +206,7 @@ async function main() {
 
   switch (cmd) {
     case "init": {
-      const s = Scenaria.init(v.root, { projectName: v.name });
+      const s = Scenaria.init(v.root, { projectName: v.name, force: v.force });
       let msg = `${C.green}✔${C.reset} Scenaria initialized in ${s.store.dir}${s.repo ? "" : `\n${C.yellow}! git not found — file snapshots disabled${C.reset}`}`;
       const spec = [v.for, v.claude ? "claude" : ""].filter(Boolean).join(",");
       if (spec) {
@@ -177,37 +238,141 @@ async function main() {
     case "watch": {
       const s = Scenaria.open(v.root);
       if (!s.repo) throw new Error("watch needs git for snapshots");
-      const interval = Math.max(1, Number(v.interval ?? 3)) * 1000;
       const quiet = Math.max(0, Number(v.quiet ?? 15)) * 1000;
-      let lastPrint = "";
-      let changedAt = 0;
-      let saves = 0;
       process.stdout.write(`Watching ${s.root} — auto-save after ${quiet / 1000}s without changes. Ctrl+C to stop.\n`);
-      const tick = () => {
-        try {
-          // Cheap change detection (paths + size + mtime) — no git objects are written per tick.
-          const fp = s.repo!.fingerprint();
-          if (fp !== lastPrint) {
-            const first = lastPrint === "";
-            lastPrint = fp;
-            if (!first || s.isDirty()) changedAt = Date.now();
-            return;
-          }
-          if (changedAt && Date.now() - changedAt >= quiet) {
-            changedAt = 0;
-            const n = s.autoCheckpoint({ agent: v.agent ?? process.env.SCENARIA_AGENT ?? "watch", model: v.model, user: v.user });
-            if (n) {
-              process.stdout.write(`${C.green}◆${C.reset} ${n.id} ${n.title}\n`);
-              if (++saves % 20 === 0) s.repo!.git(["gc", "--auto", "-q"], { allowFail: true });
-            }
-          }
-        } catch (err: any) {
-          process.stderr.write(`${C.yellow}! ${err?.message ?? err}${C.reset}\n`);
-        }
-      };
-      tick();
-      setInterval(tick, interval);
+      startWatch(s, { interval: Math.max(1, Number(v.interval ?? 3)) * 1000, quiet, agent: v.agent ?? process.env.SCENARIA_AGENT ?? "watch", model: v.model, user: v.user, log: true });
       return;
+    }
+    case "start": {
+      const { setupAgents, parseTargets, detectAgents } = await import("./setup.js");
+      const { startServer } = await import("./server.js");
+      const startRoot = v.root ?? process.cwd();
+      const s = new Store(resolveRoot(startRoot)).exists ? Scenaria.open(startRoot) : Scenaria.init(startRoot, { force: v.force });
+      const targets = v.for ? parseTargets(v.for) : detectAgents();
+      const r = setupAgents(s.root, [...targets, "generic"].filter((t, i, a) => a.indexOf(t) === i) as any, { rulesFiles: !v["no-rules"] });
+      // Baseline AFTER wiring, so agent config files are part of the starting state.
+      if (!v["no-watch"]) s.ensureBaseline({ agent: "scenaria", user: v.user, source: "cli" });
+      const port = v.port ? Number(v.port) : 4477;
+      const srv = await startServer(s, { port, open: !v["no-open"], host: "127.0.0.1", quiet: true });
+      const base = srv.url;
+      const lines = [
+        "",
+        `${C.bold}Scenaria is running${C.reset} for ${s.root}`,
+        "",
+        `  Dashboard      ${C.cyan}${base}${C.reset}`,
+        `  Agents wired   ${targets.length ? targets.join(", ") : "none detected (MCP/HTTP/CLI still available)"}`,
+        `  Auto-save      ${v["no-watch"] ? "off" : "on — every file change becomes a version"}`,
+        "",
+        `  ${C.bold}Record conversations from ANY provider${C.reset} — set your app's base URL to:`,
+        `    OpenAI / compatible   ${base}/proxy/openai`,
+        `    Anthropic             ${base}/proxy/anthropic`,
+        `    Ollama (local)        ${base}/proxy/ollama`,
+        `    Mistral · Groq · OpenRouter · Gemini · LM Studio   ${base}/proxy/<mistral|groq|openrouter|gemini|lmstudio>`,
+        "",
+        `  Snapshot folders   ${s.folderConfig().enabled ? join(s.root, s.folderConfig().path) : "off"}`,
+        ...r.notes.map((n) => `\n${C.yellow}→${C.reset} ${n}`),
+        "",
+        "Ctrl+C to stop.",
+        "",
+      ];
+      process.stdout.write(lines.join("\n"));
+      if (!v["no-watch"] && s.repo) startWatch(s, { interval: 3000, quiet: 10000, agent: v.agent ?? "watch", model: v.model, user: v.user, log: false });
+      return;
+    }
+    case "setup": {
+      const { setupGlobal, parseTargets, detectAgents } = await import("./setup.js");
+      if (!v.global) throw new Error("Usage: scenaria setup --global [--for claude,cursor,…]   (per project: scenaria init --for …)");
+      const { writeGlobalConfig, globalConfigPath } = await import("./core/global.js");
+      const targets = v.for ? parseTargets(v.for) : detectAgents();
+      const r = setupGlobal(targets);
+      writeGlobalConfig({ autoInit: true, setupAt: new Date().toISOString(), targets });
+      const msg = [
+        `${C.green}✔${C.reset} Global setup for: ${targets.join(", ") || "no agents detected"}`,
+        ...r.changes.map((c) => `${C.green}✔${C.reset} ${c}`),
+        `${C.green}✔${C.reset} ${globalConfigPath()} → auto-initialize projects on first use`,
+        ...r.notes.map((n) => `${C.yellow}→${C.reset} ${n}`),
+        "",
+        "Restart your agents. Every project now gets decision checkpoints automatically.",
+      ];
+      return out(msg.join("\n"), r);
+    }
+    case "versions": {
+      const s = Scenaria.open(v.root);
+      const vs = s.versions(p[0]);
+      const human = vs
+        .map((x) => `${(x.label ?? "").padEnd(8)} ${x.id.padEnd(5)} ${x.type.padEnd(10)} ${C.dim}${(x.snapshot ?? "").slice(0, 10)} ${x.uid}${C.reset}  ${x.title}`)
+        .join("\n");
+      return out(human || "(no versions yet)", vs);
+    }
+    case "open": {
+      const s = Scenaria.open(v.root);
+      if (!p[0]) throw new Error("Usage: scenaria open <id> [--copy-to <dir>] [--print]");
+      const folder = s.ensureFolder(p[0], { rebuild: v.rebuild });
+      if (!folder) throw new Error(`${p[0]} has no file snapshot`);
+      if (v["copy-to"]) {
+        const { cpSync, chmodSync, readdirSync, lstatSync } = await import("node:fs");
+        cpSync(folder, v["copy-to"], { recursive: true, dereference: false, filter: (src) => !src.includes(".scenaria-version") });
+        // copies are writable (snapshot files are read-only on purpose)
+        const walk = (d: string) => {
+          for (const e of readdirSync(d)) {
+            const f = join(d, e);
+            const st = lstatSync(f); // never follow symlinks out of the copy
+            if (st.isSymbolicLink()) continue;
+            if (st.isDirectory()) walk(f);
+            else chmodSync(f, st.mode | 0o200);
+          }
+        };
+        walk(v["copy-to"]);
+        return out(`Copied ${p[0]} to ${v["copy-to"]} (writable)`, { folder, copy: v["copy-to"] });
+      }
+      if (!v.print) {
+        const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
+        const { spawn } = await import("node:child_process");
+        try {
+          spawn(cmd, [folder], { stdio: "ignore", detached: true }).unref();
+        } catch {}
+      }
+      return out(folder, { folder });
+    }
+    case "mirror": {
+      const s = Scenaria.open(v.root);
+      if (v.enable || v.disable) {
+        const cfg = s.config();
+        cfg.mirrorToProjectGit = Boolean(v.enable);
+        s.store.writeConfig(cfg);
+      }
+      const r = s.mirrorToProjectGit();
+      return out(`${r.ok ? C.green + "✔" : C.yellow + "!"}${C.reset} ${r.message}${v.enable ? " (now automatic after every version)" : ""}\n  e.g. git log refs/scenaria/heads/s1   ·   git worktree add ../try-s2 refs/scenaria/scenarios/s2/v3`, r);
+    }
+    case "conversations": {
+      const s = Scenaria.open(v.root);
+      const list = s.conversations.listSessions();
+      const human = list.map((c) => `${c.id.padEnd(5)} ${(c.provider ?? "").padEnd(10)} ${(c.model ?? "").padEnd(18)} ${String(c.messageCount).padStart(4)} msgs  ${C.dim}${c.source}${C.reset}  ${c.title ?? ""}`).join("\n");
+      return out(human || "(no conversations recorded yet)", list);
+    }
+    case "conversation": {
+      const s = Scenaria.open(v.root);
+      const { renderConversation } = await import("./core/conversations.js");
+      const sess = s.conversations.getSession(p[0] ?? "");
+      const msgs = s.conversations.messages(sess.id);
+      return out(`# ${sess.id} ${sess.title ?? ""} (${sess.provider ?? ""} ${sess.model ?? ""})\n\n${renderConversation(msgs)}`, { session: sess, messages: msgs });
+    }
+    case "import": {
+      const s = Scenaria.openOrInit(v.root);
+      const { importConversations } = await import("./ingest.js");
+      if (!p[0]) throw new Error("Usage: scenaria import <file> [--format auto|chatgpt|claude-ai|claude-code|openai|jsonl]");
+      const r = importConversations(s, p[0], (v.format ?? "auto") as any);
+      return out(`${C.green}✔${C.reset} Imported ${r.messages} messages from ${r.conversations} conversation(s)`, r);
+    }
+    case "log-message": {
+      const s = Scenaria.openOrInit(v.root);
+      if (!v.text) throw new Error('Usage: scenaria log-message --role user|assistant --text "…" [--session <id>]');
+      const r = s.logMessages(
+        { externalId: v.session ?? `cli:${actor.agent}`, title: v.title, agent: actor.agent, model: v.model, source: "cli" },
+        [{ role: (v.role ?? "user") as any, text: v.text, model: v.model }],
+        "append",
+      );
+      return out(r.added.length ? `${r.added[0].id} recorded in ${r.session.id}` : "Duplicate — not recorded again", r);
     }
     case "tools": {
       const { toolSchemas } = await import("./tools.js");

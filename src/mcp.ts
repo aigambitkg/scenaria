@@ -1,6 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { Scenaria } from "./core/engine.js";
+import { Store, resolveRoot } from "./core/store.js";
+import { isPlausibleProject } from "./core/global.js";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
 import { INSTRUCTIONS, TOOLS, type ToolContext } from "./tools.js";
 
 /**
@@ -8,14 +12,23 @@ import { INSTRUCTIONS, TOOLS, type ToolContext } from "./tools.js";
  * registry in tools.ts. Attribution via env: SCENARIA_AGENT, SCENARIA_MODEL, SCENARIA_USER.
  */
 export function createMcpServer(root?: string) {
-  const open = () => Scenaria.openOrInit(root);
+  const explicitRoot = root && !root.includes("${") ? root : undefined;
+  const open = () => {
+    const r = resolveRoot(explicitRoot);
+    if (new Store(r).exists) return Scenaria.open(r);
+    const trusted = Boolean(explicitRoot || process.env.SCENARIA_ROOT) && resolve(r) !== resolve(homedir());
+    if (!trusted && !isPlausibleProject(r)) {
+      throw new Error(`No Scenaria project at ${r}. Open a project folder (or set SCENARIA_ROOT) — Scenaria never initializes your home folder.`);
+    }
+    return Scenaria.init(r);
+  };
   const ctx: ToolContext = {
     agent: process.env.SCENARIA_AGENT || "mcp-agent",
     model: process.env.SCENARIA_MODEL || undefined,
     user: process.env.SCENARIA_USER || undefined,
     source: "mcp",
   };
-  const server = new McpServer({ name: "scenaria", version: "0.2.0" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "scenaria", version: "0.3.0" }, { instructions: INSTRUCTIONS });
   for (const t of TOOLS) {
     server.registerTool(
       t.name,

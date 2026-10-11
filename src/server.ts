@@ -6,8 +6,10 @@ import { fileURLToPath } from "node:url";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Scenaria } from "./core/engine.js";
 import { callTool, toolSchemas, type SchemaFormat, type ToolContext } from "./tools.js";
+import { handleProxy } from "./proxy.js";
+import { UI_DIR, embeddedUi, hasDiskUi } from "./assets.js";
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";
 
 function header(req: IncomingMessage, name: string): string | undefined {
   const v = req.headers[name];
@@ -27,7 +29,6 @@ function parseArgs(a: unknown): unknown {
 }
 
 const here = dirname(fileURLToPath(import.meta.url));
-const UI_DIR = join(here, "ui");
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -43,6 +44,25 @@ const MIME: Record<string, string> = {
 function send(res: ServerResponse, status: number, body: unknown, type = "application/json; charset=utf-8") {
   res.writeHead(status, { "content-type": type, "cache-control": "no-store" });
   res.end(typeof body === "string" ? body : JSON.stringify(body));
+}
+
+async function readRaw(req: IncomingMessage, limit: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const c of req) {
+    size += (c as Buffer).length;
+    if (size > limit) throw new Error("Body too large");
+    chunks.push(c as Buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+/** Reveal a folder in Finder / Explorer / the file manager (local mode only). */
+function openPath(path: string) {
+  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
+  try {
+    spawn(cmd, [path], { stdio: "ignore", detached: true }).unref();
+  } catch {}
 }
 
 async function readBody(req: IncomingMessage): Promise<any> {
@@ -134,6 +154,26 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
     }
     const p = url.pathname;
     const token = opts.token;
+
+    // ---------- LLM proxy (conversation overlay for any provider) ----------
+    if (p.startsWith("/proxy/")) {
+      if (!token) {
+        if (!isLoopbackHost(req.headers.host)) return send(res, 421, { error: "unexpected Host header" });
+        if (req.headers.origin && !isLoopbackHost(safeHost(req.headers.origin))) return send(res, 403, { error: "cross-origin request rejected" });
+      } else {
+        // Authorization carries the provider's API key, so team mode uses its own header.
+        if (!tokenMatches(header(req, "x-scenaria-token"), token)) return send(res, 401, { error: "proxy needs the x-scenaria-token header in team mode" });
+        if (req.headers.origin && safeHost(req.headers.origin) !== req.headers.host) return send(res, 403, { error: "cross-origin request rejected" });
+      }
+      // Only JSON bodies: plain HTML forms cannot send them cross-site without CORS.
+      const mediaType = String(req.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
+      if (req.method === "POST" && !(mediaType === "application/json" || /^application\/[\w.+-]+\+json$/.test(mediaType))) {
+        return send(res, 415, { error: "proxy accepts JSON requests only" });
+      }
+      const raw = await readRaw(req, 50 * 1024 * 1024);
+      return handleProxy(s, req, res, url, raw, { allowUpstreamOverride: !token });
+    }
+
     let viaBearer = false;
     if (!token) {
       // Local mode — DNS-rebinding protection: only answer to loopback host names.
@@ -192,6 +232,32 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           }
         }
         if (req.method === "GET" && p === "/api/v1/export") return send(res, 200, s.exportJson());
+        if (req.method === "GET" && p === "/api/v1/versions") return send(res, 200, s.versions(url.searchParams.get("mission") ?? undefined));
+        if (req.method === "GET" && p === "/api/v1/conversations") return send(res, 200, s.conversations.listSessions());
+        const cm = p.match(/^\/api\/v1\/conversations\/([\w:.-]+)$/);
+        if (req.method === "GET" && cm) {
+          const sess = s.conversations.getSession(decodeURIComponent(cm[1]));
+          return send(res, 200, { session: sess, messages: s.conversations.messages(sess.id) });
+        }
+        if (req.method === "POST" && p === "/api/v1/messages") {
+          const b = await readBody(req);
+          if (!b || !Array.isArray(b.messages)) return send(res, 400, { ok: false, error: "body needs messages: [{role, text}]" });
+          const sess = b.session ?? {};
+          const r = s.logMessages(
+            {
+              externalId: sess.externalId ?? sess.id ?? `api:${ctx.agent}`,
+              sessionId: sess.sessionId,
+              title: sess.title,
+              provider: sess.provider,
+              model: sess.model ?? ctx.model,
+              agent: sess.agent ?? ctx.agent,
+              source: "api",
+            },
+            b.messages.map((m: any) => ({ role: m.role, text: String(m.text ?? m.content ?? ""), ts: m.ts, model: m.model, toolCalls: m.toolCalls })),
+            b.mode === "history" ? "history" : "append",
+          );
+          return send(res, 200, { ok: true, session: r.session, added: r.added.length, messages: r.added });
+        }
 
         if (req.method === "GET" && p === "/api/graph") {
           const g = s.graph();
@@ -236,20 +302,37 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           const b = await readBody(req);
           return send(res, 200, s.checkpoint({ title: String(b.title || "Manual checkpoint"), outputs: b.outputs, agent: "dashboard", source: "ui" }));
         }
+        m = p.match(/^\/api\/node\/([\w-]+)\/messages$/);
+        if (req.method === "GET" && m) {
+          const node = s.node(m[1]);
+          return send(res, 200, { leading: s.conversations.messagesLeadingTo(node), after: s.conversations.messagesAt(node.id) });
+        }
+        m = p.match(/^\/api\/node\/([\w-]+)\/folder$/);
+        if (req.method === "POST" && m) {
+          const folder = s.ensureFolder(m[1]);
+          const b = await readBody(req).catch(() => ({}));
+          if (folder && b?.open && !token) openPath(folder);
+          return send(res, 200, { folder });
+        }
         m = p.match(/^\/api\/node\/([\w-]+)$/);
         if (req.method === "GET" && m) return send(res, 200, s.node(m[1]));
         return send(res, 404, { error: "not found" });
       }
 
-      // static UI
-      if (!existsSync(UI_DIR)) {
-        return send(res, 500, "Dashboard not built. Run: npm run build", "text/plain; charset=utf-8");
+      // static UI (from disk, or embedded in the standalone binary)
+      if (hasDiskUi()) {
+        let file = normalize(join(UI_DIR, decodeURIComponent(p)));
+        if (!file.startsWith(UI_DIR)) return send(res, 403, "forbidden", "text/plain");
+        if (!existsSync(file) || statSync(file).isDirectory()) file = join(UI_DIR, "index.html");
+        res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream", "cache-control": "no-cache" });
+        return res.end(readFileSync(file));
       }
-      let file = normalize(join(UI_DIR, decodeURIComponent(p)));
-      if (!file.startsWith(UI_DIR)) return send(res, 403, "forbidden", "text/plain");
-      if (!existsSync(file) || statSync(file).isDirectory()) file = join(UI_DIR, "index.html");
-      res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream", "cache-control": "no-cache" });
-      res.end(readFileSync(file));
+      const rel = decodeURIComponent(p).replace(/^\/+/, "");
+      const asset = (rel && embeddedUi(rel)) || embeddedUi("index.html");
+      if (!asset) return send(res, 500, "Dashboard not built. Run: npm run build", "text/plain; charset=utf-8");
+      const name = rel && embeddedUi(rel) ? rel : "index.html";
+      res.writeHead(200, { "content-type": MIME[extname(name)] ?? "application/octet-stream", "cache-control": "no-cache" });
+      res.end(asset);
     } catch (err: any) {
       send(res, 400, { error: err?.message ?? String(err) });
     }
@@ -269,7 +352,7 @@ function openBrowser(url: string) {
 
 export async function startServer(
   s: Scenaria,
-  opts: { port?: number; open?: boolean; host?: string; token?: string; showToken?: boolean } = {},
+  opts: { port?: number; open?: boolean; host?: string; token?: string; showToken?: boolean; quiet?: boolean } = {},
 ) {
   const host0 = opts.host ?? "127.0.0.1";
   if (!isLoopbackHost(host0) && !opts.token) {
@@ -293,11 +376,12 @@ export async function startServer(
   });
   const url = `http://${host === "0.0.0.0" ? "localhost" : host}:${port}`;
   const uiUrl = opts.token ? (opts.showToken ? `${url}/?token=${encodeURIComponent(opts.token)}` : `${url}/?token=<your token>`) : url;
-  process.stdout.write(
+  if (!opts.quiet) process.stdout.write(
     [
       `Scenaria ${VERSION} → ${uiUrl}`,
       `  project: ${s.root}`,
       `  API:     ${url}/api/v1/tools  (schemas: ?format=openai|anthropic|gemini|json)`,
+      `  Proxy:   ${url}/proxy/openai · /proxy/anthropic · /proxy/ollama · /proxy/<provider>  (records every conversation)`,
       opts.token ? `  auth:    Authorization: Bearer <token>` : `  mode:    local only (127.0.0.1)`,
       "Ctrl+C to stop.",
       "",

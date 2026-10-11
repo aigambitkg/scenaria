@@ -29,14 +29,15 @@ function short(s: string | undefined, max = 220): string {
  */
 export function composeContext(
   path: ScenariaNode[],
-  opts: { fullCheckpoints?: number; lastGood?: string | null } = {},
+  opts: { fullCheckpoints?: number; lastGood?: string | null; lastUserRequest?: string | null } = {},
 ): string {
   const full = opts.fullCheckpoints ?? 3;
   const mission = path[0];
   const target = path[path.length - 1];
   const lines: string[] = [];
 
-  lines.push(`# Scenaria resume context — ${target.id}`);
+  const label = target.scenarioId !== undefined && target.version !== undefined ? ` (${target.scenarioId}/v${target.version})` : "";
+  lines.push(`# Scenaria resume context — ${target.id}${label}`);
   lines.push("");
   lines.push(`Mission ${mission.id}: **${mission.title}**`);
   if (mission.goal) {
@@ -103,6 +104,7 @@ export function composeContext(
   ).slice(-15);
   if (earlierFacts.length) lines.push("", "## Established facts (earlier on this path)", ...bullets(earlierFacts));
 
+  if (opts.lastUserRequest) lines.push("", "## Latest user request on this path", short(opts.lastUserRequest, 800));
   if (opts.lastGood) lines.push("", `Last verified-good node on this path: ${opts.lastGood}`);
   if (target.snapshot) {
     lines.push("", `Files are at snapshot ${target.snapshot.commit.slice(0, 10)} (${target.snapshot.files} files).`);

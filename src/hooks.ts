@@ -1,6 +1,8 @@
 import { appendFileSync, existsSync, readFileSync, statSync } from "node:fs";
 import { Scenaria } from "./core/engine.js";
 import { findRoot } from "./core/store.js";
+import { ingestClaudeTranscript } from "./ingest.js";
+import { isPlausibleProject, readGlobalConfig } from "./core/global.js";
 
 /**
  * Claude Code hook handlers. Contract: never block the agent, never fail
@@ -148,8 +150,20 @@ function logError(root: string | null, err: unknown) {
 
 export async function handleHook(event: string, input: HookInput): Promise<string | null> {
   const start = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const root = findRoot(process.env.CLAUDE_PROJECT_DIR || start) ?? findRoot(start);
-  if (!root) return null; // project not initialized → stay out of the way
+  let root = findRoot(process.env.CLAUDE_PROJECT_DIR || start) ?? findRoot(start);
+  if (!root) {
+    // Global setup: initialize real projects automatically on first use; otherwise stay out of the way.
+    const candidate = process.env.CLAUDE_PROJECT_DIR || start;
+    const evName = event || input.hook_event_name || "";
+    if (readGlobalConfig().autoInit && (evName === "user-prompt" || evName === "UserPromptSubmit") && isPlausibleProject(candidate)) {
+      try {
+        Scenaria.init(candidate);
+        root = candidate;
+      } catch {
+        return null;
+      }
+    } else return null;
+  }
   try {
     const s = Scenaria.open(root);
     // Session scratch is shared by parallel hook processes → always read-modify-write under the lock.
@@ -168,12 +182,17 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
       case "UserPromptSubmit": {
         const prompt = (input.prompt ?? "").trim();
         if (!prompt || prompt.startsWith("/")) break;
-        if (!s.head()) {
-          s.startMission({ title: excerpt(prompt, 80), goal: excerpt(prompt, 600), brief: excerpt(prompt, 2000), agent: "user", source: "hook" });
-        }
+        s.claimMission(excerpt(prompt, 80), excerpt(prompt, 600), { agent: "user", source: "hook" });
         updSession((cur) => {
           cur.pendingPrompt = excerpt(prompt, 300);
         });
+        // Conversation overlay: catch up on the transcript, then record this prompt.
+        ingestClaudeTranscript(s, input.transcript_path, input.session_id);
+        s.logMessages(
+          { externalId: `claude-code:${input.session_id ?? input.transcript_path ?? "session"}`, source: "transcript", provider: "anthropic", agent: "claude-code" },
+          [{ role: "user", text: prompt, agent: "claude-code" }],
+          "append",
+        );
         break;
       }
 
@@ -241,6 +260,8 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
 
       case "stop":
       case "Stop": {
+        // Record the turn's conversation first, so it links to the state it led away from.
+        ingestClaudeTranscript(s, input.transcript_path, input.session_id);
         const irreversible = session.pendingIrreversible ?? [];
         const summary = lastAssistantText(input.transcript_path);
         const transcriptTokens = input.transcript_path && existsSync(input.transcript_path) ? Math.round(statSync(input.transcript_path).size / 4) : undefined;

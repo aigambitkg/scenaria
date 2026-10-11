@@ -134,3 +134,82 @@ The visual language comes from the scenario-tree diagrams of operations research
 - **Active timeline:** traced like a highlighter on a printout. This is the one loud element.
 
 Typefaces: Instrument Sans for the UI and STIX Two Text italic for ids and the axis. Both are bundled, so the dashboard works offline.
+
+## Identity and versions (v0.3)
+
+Every node carries:
+- **`uid`**: a ULID, globally unique and time-sortable. It is stable across exports and merges.
+- **`scenarioId`**: one linear line of work. A node opens a **new scenario** when its parent already continues in its own scenario, which covers forks and new work after a rewind. It also opens one when it explores a non-chosen option of a decision. `forkedFrom` names the branch point.
+- **`version`**: the step number on the path from the mission root. `(scenarioId, version)` is unique and is shown as `s2/v5`.
+
+Snapshot commits are pinned under several refs:
+- `refs/scenaria/<nodeId>`
+- `refs/scenaria/scenarios/<s>/v<n>`
+- `refs/scenaria/heads/<s>`
+
+`scenaria mirror` fetches `refs/scenaria/*` into the project's own repository. This is opt-in and touches nothing else. Projects from older versions are migrated on open (schema 2).
+
+## Conversation overlay
+
+`src/core/conversations.ts` stores **sessions** (`c1`, `uid`, provider, model, agent, source) in `conversations/sessions.json`. **Messages** go into one JSONL file per session (`m1`, `uid`, role, text, tool calls, model, timestamp, hash). Each message stores **`headAt`**, the decision-tree node that was HEAD when it was said. This one field turns separate chats into an overlay on the tree:
+- "led here" = messages at the parent node, said before this node was created;
+- "after this point" = messages at this node;
+- the resume capsule includes the latest user request on the path;
+- snapshot folders contain the conversation along the path.
+
+Deduplication uses a **chain hash** per message (hash of the whole conversation up to and including it; tool-call arguments normalized). Two append modes:
+- **history**: the full chat history is resent, as chat APIs and imports do. Only the part after the longest matching prefix is stored, and a diverged tail (an edited or regenerated message) is stored as new turns.
+- **append**: new messages only. Exact repeats of the last few messages are skipped.
+
+Sources:
+- Claude Code transcripts (incremental by byte offset, from hooks);
+- the proxy;
+- `POST /api/v1/messages`;
+- `scenaria log-message`;
+- `scenaria import`: ChatGPT export (current branch of the conversation tree), Claude.ai export, OpenAI message lists, generic JSONL, Claude Code JSONL; `.zip` is read via `unzip`.
+
+## LLM proxy
+
+`src/proxy.ts` serves `/proxy/<provider>/<path>` and forwards to `proxy.upstreams[provider]` (or to `x-scenaria-upstream`):
+- **Forwarding:** headers go through unchanged, except hop-by-hop headers, cookies, origin/referer and `x-scenaria-*`. The response streams through chunk by chunk.
+- **Recognized shapes:** OpenAI Chat Completions, OpenAI Responses and Anthropic Messages, as JSON or as server-sent events. Text and tool calls are reassembled from the stream.
+- **Conversation identity:** taken from `x-scenaria-session`, otherwise a hash of the system prompt plus the first user message. That hash stays the same across the turns of one conversation.
+- **Order of operations:**
+  1. If there is no mission yet, the first request names it, or renames an auto-baseline.
+  2. The request history is recorded before forwarding.
+  3. The answer is recorded after the stream ends.
+  4. `autoCheckpoint` runs with the user's request as title.
+- **Security:** In local mode the proxy is loopback-only, rejects foreign `Origin`, and accepts JSON bodies only (HTML forms cannot send JSON cross-site without CORS). In team mode it needs `x-scenaria-token`, because `Authorization` carries the provider key, and `x-scenaria-upstream` is ignored, so only configured upstreams can be reached. Provider `set-cookie` and `access-control-*` headers are stripped. API keys are never stored.
+- **Robustness:** Backpressure: the proxy waits for the client to drain. A client disconnect cancels the provider request, so a model doesn't keep generating and billing. There is an idle timeout of 10 minutes.
+
+## Snapshot folders
+
+`src/core/folders.ts` materializes each new node into `.scenaria/snapshots/<mission>/<scenario>/v<NNN>-<id>-<slug>/`:
+1. List the tree with `git ls-tree -r -z`.
+2. Read missing blobs in one `git cat-file --batch`.
+3. Store them content-addressed in `.scenaria/blobs/` (read-only, 0444 or 0555).
+4. Hardlink them into the folder, with a copy as fallback on a different filesystem. Symlinks stay symlinks; nested repos become empty directories.
+5. Write `.scenaria-version/` with `node.json`, `README.md` (decision path) and `conversation.md`, then regenerate `index.md`.
+
+The folders must live inside `.scenaria/`, so they are never snapshotted themselves. Trees with more than `maxFiles` entries are skipped with a warning. `scenaria open` materializes older nodes on demand.
+
+## One-command start and distribution
+
+- `scenaria start`:
+  1. init;
+  2. `detectAgents()` (binaries on PATH, `~/.claude`, `~/.cursor`, apps in /Applications …);
+  3. wire them;
+  4. baseline mission, taken after wiring, so agent configs belong to the baseline;
+  5. dashboard, API and proxy in one process;
+  6. auto-save loop (stat fingerprint per tick, a version after 10 s of quiet).
+- `scenaria setup --global` writes user-level configs and sets `~/.config/scenaria/config.json` → `autoInit: true` (deliberately not `~/.scenaria/`, which would mark the home folder as a project):
+  - Claude Code: `claude mcp add --scope user`, plus hooks and rules in `~/.claude`;
+  - Cursor and VS Code: user `mcp.json` with `--root ${workspaceFolder}`;
+  - Gemini CLI, Codex, Windsurf: their user configs.
+
+  Hooks and the MCP server then initialize a project on first use, but only if `isPlausibleProject()` passes: never the home folder, a filesystem root, a dot-folder in home such as `~/.codex` (compared by real path) or an unresolved `${…}`, and only where a project marker such as `.git`, `package.json`, `pyproject.toml` or `AGENTS.md` exists. `Scenaria.init` itself refuses forbidden roots unless `--force` is given, and `findRoot` never treats home as a project.
+- **Distribution:**
+  - npm package (`dist/` prebuilt, `prepare` builds clones automatically);
+  - **single-file binaries** built with Bun (`scripts/build-binaries.mjs`). Dashboard and templates are embedded via `globalThis.__SCENARIA_EMBEDDED__`, and `selfInvocation()` makes hooks and MCP configs call the binary itself;
+  - `install.sh` / `install.ps1` download the right binary. On macOS they remove quarantine and ad-hoc sign;
+  - GitHub Actions: CI on Ubuntu and macOS (Node 20/22), and a release on tag that runs tests, npm publish, binaries for darwin/linux/windows, macOS signing and compression.

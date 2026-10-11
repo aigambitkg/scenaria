@@ -5,7 +5,7 @@ import { dict, initialLang, saveLang, type Lang } from "./i18n";
 import { layoutTree } from "./layout";
 import { NodeId, ScenarioMap } from "./Map";
 import { NodePanel } from "./NodePanel";
-import { DiffDialog, ProtocolDialog, RewindDialog } from "./Dialogs";
+import { ConversationsDialog, DiffDialog, ProtocolDialog, RewindDialog } from "./Dialogs";
 
 type Pending =
   | { mode: "rewind"; node: ScenariaNode }
@@ -22,6 +22,7 @@ export function App() {
   const [pending, setPending] = useState<Pending>(null);
   const [diff, setDiff] = useState<{ from: string; to: string; stat: string; patch: string } | null>(null);
   const [log, setLog] = useState<ScenariaEvent[] | null>(null);
+  const [convos, setConvos] = useState(false);
   const [toasts, setToasts] = useState<{ id: number; msg: string }[]>([]);
   const toastId = useRef(0);
   const t = dict[lang];
@@ -156,6 +157,9 @@ export function App() {
           >
             {t.saveNow}
           </button>
+          <button className="btn" onClick={() => setConvos(true)}>
+            {t.conversations}
+          </button>
           <button className="btn" onClick={async () => setLog((await api.log()).events)}>
             {t.protocol}
           </button>
@@ -190,6 +194,7 @@ export function App() {
           headId={headId}
           t={t}
           toast={toast}
+          graphVersion={graph?.version}
           onRewind={(node) => setPending({ mode: "rewind", node })}
           onFork={(decision, optionId, label) => setPending({ mode: "fork", decision, optionId, label })}
           onDiff={async (from, to) => {
@@ -255,6 +260,20 @@ export function App() {
               setSelected(id);
             }
             setLog(null);
+          }}
+        />
+      )}
+      {convos && (
+        <ConversationsDialog
+          t={t}
+          onClose={() => setConvos(false)}
+          onSelectNode={(id) => {
+            const n = graph?.nodes.find((x) => x.id === id);
+            if (n) {
+              setMissionId(n.missionId);
+              setSelected(id);
+            }
+            setConvos(false);
           }}
         />
       )}
