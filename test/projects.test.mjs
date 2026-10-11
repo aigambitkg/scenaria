@@ -90,6 +90,19 @@ test("the person switches the dashboard between projects; agents and other tabs 
     // the single-use link stays used across the switch
     const again = await fetch(srv.approvalUrl, { redirect: "manual" });
     assert.match(again.headers.get("location") ?? "", /approval=invalid/);
+    // agents' endpoints stay with the project the server was started in (Alpha)
+    const agentCall = await fetch(`${base}/api/v1/tools/scenaria_checkpoint`, { method: "POST", headers: { "content-type": "application/json", "x-scenaria": "1" }, body: JSON.stringify({ title: "agent of Alpha keeps working" }) });
+    assert.equal(agentCall.status, 200);
+    assert.ok(a.s.store.listNodes().some((n) => n.title === "agent of Alpha keeps working"), "lands in Alpha");
+    assert.ok(!b.s.store.listNodes().some((n) => n.title === "agent of Alpha keeps working"), "never in Beta");
+    const pasted = await fetch(`${base}/api/v1/messages`, { method: "POST", headers: { "content-type": "application/json", "x-scenaria": "1" }, body: JSON.stringify({ session: { externalId: "client-a" }, messages: [{ role: "user", text: "CLIENT-A confidential prompt" }] }) });
+    assert.equal(pasted.status, 200);
+    assert.equal(b.s.conversations.listSessions().length, 0, "agents' conversations never land in the dashboard's project");
+    // the dashboard itself follows the switch
+    const dash = await (await fetch(`${base}/api/v1/versions`, { headers: { "x-scenaria-view": "dashboard" } })).json();
+    assert.ok(JSON.stringify(dash).length > 2);
+    const pj = await (await fetch(`${base}/api/projects`, { headers: { cookie } })).json();
+    assert.deepEqual([pj.agents.name, pj.agents.same], ["Alpha", false]);
     // and back
     assert.equal((await post("/api/projects/switch", { root: a.s.root }, cookie)).status, 200);
     assert.equal((await (await fetch(`${base}/api/graph`)).json()).config.projectName, "Alpha");
@@ -113,6 +126,8 @@ test("team mode: no project list and no switching", async () => {
     const page = await (await fetch(`${srv.url}/api/projects`, { headers: h })).json();
     assert.equal(page.canSwitch, false);
     assert.deepEqual(page.projects, []);
+    const f = await fetch(`${srv.url}/api/projects/forget`, { method: "POST", headers: { ...h, "content-type": "application/json" }, body: JSON.stringify({ root: "/x" }) });
+    assert.ok(f.status === 400 || f.status === 403, String(f.status));
   } finally {
     srv.close();
   }

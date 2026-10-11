@@ -26,6 +26,7 @@ export function ProjectSwitcher(props: { t: Dict; lang: "de" | "en"; name: strin
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [path, setPath] = useState("");
+  const [confirmForget, setConfirmForget] = useState<string | null>(null);
   const box = useRef<HTMLDivElement>(null);
 
   const load = async () => {
@@ -83,6 +84,7 @@ export function ProjectSwitcher(props: { t: Dict; lang: "de" | "en"; name: strin
           {err && <p className="error small">{err}</p>}
           {page && !page.person && <p className="qnote q-warn small">🔒 {t.pjLocked}</p>}
           {page && page.person && !page.canSwitch && <p className="muted small">{t.pjNoSwitch}</p>}
+          {page?.agents && !page.agents.same && <p className="qnote q-info small">{t.pjAgentsStay(page.agents.name)}</p>}
           {page?.person && (
             <ul className="pj-list">
               {others.map((x) => (
@@ -97,19 +99,29 @@ export function ProjectSwitcher(props: { t: Dict; lang: "de" | "en"; name: strin
                     </span>
                     <span className="muted small">{x.exists ? (x.current ? t.pjCurrent : ago(x.lastSeen, props.lang)) : t.pjMissing}</span>
                   </button>
-                  {!x.current && (
-                    <button
-                      className="btn icon"
-                      title={t.pjForget}
-                      aria-label={`${t.pjForget}: ${x.name}`}
-                      onClick={async () => {
-                        await api.forgetProject(x.root).catch((e) => setErr(errText(e)));
-                        load();
-                      }}
-                    >
-                      ✕
-                    </button>
-                  )}
+                  {!x.current &&
+                    (confirmForget === x.root ? (
+                      <span className="pj-confirm small">
+                        {t.pjForgetAsk}{" "}
+                        <button
+                          className="btn link"
+                          onClick={async () => {
+                            setConfirmForget(null);
+                            await api.forgetProject(x.root).catch((e) => setErr(errText(e)));
+                            load();
+                          }}
+                        >
+                          {t.pjYes}
+                        </button>{" "}
+                        <button className="btn link" onClick={() => setConfirmForget(null)}>
+                          {t.pjNo}
+                        </button>
+                      </span>
+                    ) : (
+                      <button className="btn icon" title={t.pjForget} aria-label={`${t.pjForget}: ${x.name}`} onClick={() => setConfirmForget(x.root)}>
+                        ✕
+                      </button>
+                    ))}
                   {busy === x.root && <span className="muted small">…</span>}
                 </li>
               ))}

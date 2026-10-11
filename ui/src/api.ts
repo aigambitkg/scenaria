@@ -19,6 +19,7 @@ export interface ProjectsPage {
   canSwitch: boolean;
   person: boolean;
   projects: { name: string; root: string; lastSeen: string; exists: boolean; current: boolean }[];
+  agents: { name: string; root?: string; same: boolean } | null;
 }
 export interface ExpertPage {
   reports: { id: string; createdAt: string; scope: ExpertReport["scope"]; model: string | null; maturity: ExpertReport["maturity"]; findings: number; recommendations: number; projects: string[]; verified?: boolean }[];
@@ -78,7 +79,8 @@ export interface Graph {
 async function req<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method: body === undefined ? "GET" : "POST",
-    headers: body === undefined ? {} : { "content-type": "application/json", "x-scenaria": "1" },
+    // The dashboard marks its requests: after a project switch they follow it (agents' calls do not).
+    headers: body === undefined ? { "x-scenaria-view": "dashboard" } : { "content-type": "application/json", "x-scenaria": "1", "x-scenaria-view": "dashboard" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));

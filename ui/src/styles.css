@@ -672,3 +672,4 @@ table.gate tr.current td:first-child { box-shadow: inset 4px 0 0 var(--marker-so
 }
 .pj-open { display: flex; gap: 6px; }
 .pj-open input { flex: 1; min-width: 0; }
+.pj-confirm { white-space: nowrap; }

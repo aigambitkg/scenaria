@@ -259,7 +259,11 @@ The person's projects are remembered in `~/.config/scenaria/projects.json` (dash
   (its open dashboards get an SSE `project` event and remount; requests already running finish in the
   project they started in, and the old automatic-forecast timer stops).
 - The list and the switch are the person's (approval session) and only in local mode; agents only see
-  the current project's name, never folders. Agents (MCP/CLI) keep working in their own project.
+  the current project's name, never folders. Agents keep working in their own project: MCP/CLI agents
+  run in their own process, and the server's agent endpoints (`/api/v1/*` tool calls, pasted answers,
+  conversation logging and the LLM proxy `/proxy/*`) stay bound to the project the server was started
+  in (where auto-save runs too). Only requests the dashboard marks (`x-scenaria-view: dashboard`) follow
+  a switch; the switcher says so when the two differ.
 - The UI keeps the session API keys (memory only) across switches; everything else is reloaded.
 - The daily limit of automatic forecasts is one budget for all projects together.
 

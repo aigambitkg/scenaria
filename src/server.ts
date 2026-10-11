@@ -138,6 +138,8 @@ export interface AppOptions {
   linkState?: { secret?: string };
   /** The server can switch the dashboard to another of the person's projects (local mode only). */
   onSwitch?: (root: string) => Promise<{ name: string; root: string }>;
+  /** The project agents' HTTP/proxy endpoints of this server stay on (the one it was started with). */
+  agentsProject?: { name: string; root: string };
 }
 
 function approvalCookie(req: IncomingMessage): string | undefined {
@@ -593,6 +595,8 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
             current: { name: s.config().projectName, root: person ? s.root : undefined },
             canSwitch: Boolean(opts.onSwitch) && !token,
             person,
+            // Agents' HTTP tools, the LLM proxy and auto-save stay with the project the server was started in.
+            agents: opts.agentsProject ? { name: opts.agentsProject.name, root: person ? opts.agentsProject.root : undefined, same: realRoot(opts.agentsProject.root) === here } : null,
             projects: person ? listProjects({ includeMissing: true }).map((x) => ({ name: x.name, root: x.root, lastSeen: x.lastSeen, exists: x.exists, current: realRoot(x.root) === here })) : [],
           });
         }
@@ -610,6 +614,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           }
         }
         if (req.method === "POST" && p === "/api/projects/forget") {
+          if (token) return send(res, 400, { error: "Not available in team mode." });
           const b = await readBody(req);
           const target = String(b?.root ?? "");
           if (realRoot(target) === realRoot(s.root)) return send(res, 400, { error: "The open project cannot be forgotten." });
@@ -815,6 +820,7 @@ export async function startServer(
   const approvalSecret = randomBytes(24).toString("hex");
   const linkState = { secret: opts.token ? approverToken : approvalCode };
   let current = s;
+  const agentsProject = { name: s.config().projectName, root: s.root };
   const make = (proj: Scenaria): ReturnType<typeof createApp> =>
     createApp(proj, {
       token: opts.token,
@@ -822,6 +828,7 @@ export async function startServer(
       approverToken,
       approvalSecret,
       linkState,
+      agentsProject,
       onSwitch: opts.token
         ? undefined
         : async (root: string) => {
@@ -836,7 +843,15 @@ export async function startServer(
           },
     });
   let app = make(s);
-  const server = createServer((req, res) => app.handler(req, res));
+  // Agents' endpoints never follow the dashboard: their tool calls, pasted answers and the LLM proxy
+  // keep writing into the project the server was started in (that is where they work and where
+  // auto-save runs). Only requests from the dashboard itself (marked by its client) follow a switch.
+  const home = app;
+  const forAgents = (req: IncomingMessage) => {
+    const p = (req.url ?? "/").split("?")[0];
+    return p.startsWith("/proxy/") || (p.startsWith("/api/v1/") && req.headers["x-scenaria-view"] !== "dashboard");
+  };
+  const server = createServer((req, res) => (forAgents(req) ? home : app).handler(req, res));
   const host = opts.host ?? "127.0.0.1";
   let port = opts.port ?? 4477;
   await new Promise<void>((resolve, reject) => {
