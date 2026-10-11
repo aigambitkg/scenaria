@@ -8,7 +8,8 @@ import { optionLabel } from "./core/context.js";
 import { agentPrompt, type PromptKind } from "./core/prompts.js";
 import { recall, renderRecall } from "./core/recall.js";
 import { applyBlocks } from "./core/blocks.js";
-import { SECTIONS, checkExpectations, renderExpectations, renderWorkspace, resolveRefs, workspace, type Section } from "./core/workspace.js";
+import { SECTIONS, checkExpectations, renderExpectations, renderWorkspace, resolveRefs, stringPayload, workspace, type Section } from "./core/workspace.js";
+import { renderCanon } from "./core/canon.js";
 import { dossier, analysisPrompt, projectMetrics, renderMetrics, runAnalysis } from "./core/analysis.js";
 import type { ScenariaNode } from "./core/types.js";
 
@@ -49,6 +50,16 @@ Context integrity & handoffs
                                         Shared board; with --reader only what that reader does not know yet
   resolve <ref> [<ref> …]               Resolve references (n12, n12.f2, n9.q1, r3)
   expect "<assumption>" […]             Check assumptions; prints only deviations
+  string [id]                           One line of work as a payload: past constraints, decisions, future checks, verdict
+
+Canon events (fixed points; agents only propose — you approve)
+  canon [list]                          Active fixed points and open proposals
+  canon add --past|--future "<text>" [--check "<cmd>"] [--due YYYY-MM-DD] [--soft]
+  canon approve|reject|retire <id> [--why ..]   (interactive terminal or dashboard only)
+  canon suggest [--llm <provider> --model <m>]  The archivist's candidates (with --llm: stored as proposals)
+  canon check [id …]                    Run the check commands of approved events (interactive only)
+  canon key                             Your approver public key (give it to teammates who should trust you)
+  canon trust <public key> [--name ..]  Trust a teammate's approvals on this machine (interactive only)
   rewind <id> [--lesson ..] [--no-files]
   fork <decisionId> <option> [--lesson ..]
   diff <fromId> [toId|working]
@@ -159,6 +170,11 @@ const opts = {
   sections: { type: "string" },
   reader: { type: "string" },
   reseal: { type: "boolean" },
+  past: { type: "string" },
+  future: { type: "string" },
+  check: { type: "string" },
+  due: { type: "string" },
+  soft: { type: "boolean" },
 } as const;
 
 const C = process.stdout.isTTY
@@ -311,6 +327,9 @@ async function main() {
         `${C.bold}Scenaria is running${C.reset} for ${s.root}`,
         "",
         `  Dashboard      ${C.cyan}${base}${C.reset}`,
+        srv.approvalUrl
+          ? `  Approval link  ${C.cyan}${srv.approvalUrl}${C.reset}  ${C.dim}(canon approvals — works once${v["no-open"] ? "" : "; already opened in your browser"})${C.reset}`
+          : `  Approval link  ${C.dim}${v["no-open"] ? "only shown in an interactive terminal" : "opened in your browser"}${C.reset}`,
         `  Agents wired   ${targets.length ? targets.join(", ") : "none detected (MCP/HTTP/CLI still available)"}`,
         `  Auto-save      ${v["no-watch"] ? "off" : "on — every file change becomes a version"}`,
         "",
@@ -564,6 +583,82 @@ async function main() {
       if (!p.length) throw new Error('Usage: scenaria expect "n12 done" "n7 = Postgres" …');
       const r = checkExpectations(s, p);
       return out(renderExpectations(r), r);
+    }
+    case "string": {
+      const s = Scenaria.open(v.root);
+      const pl = stringPayload(s, p[0]);
+      const icon = pl.verdict === "valid" ? `${C.green}✔ valid` : pl.verdict === "invalid" ? `${C.red}✘ invalid` : `${C.yellow}? unproven`;
+      return out(`${JSON.stringify(pl, null, 2)}\n\n${icon}${C.reset} ${pl.reasons.join("; ")}`, pl);
+    }
+    case "canon": {
+      const s = Scenaria.open(v.root);
+      const sub = p[0] ?? "list";
+      // Binding decisions are a person's: they need a terminal AND typing the confirmation on it.
+      // (A speed bump against agents, not a security boundary — the approval itself is signed and audited.)
+      const interactive = async (confirm: string, what: string) => {
+        if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("This needs an interactive terminal (a person). Agents can only propose: scenaria_canon {action: \"propose\"}. Or use the dashboard → Kanon (approval link).");
+        const { createInterface } = await import("node:readline/promises");
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        try {
+          const answer = (await rl.question(`${what}\nType "${confirm}" to confirm: `)).trim();
+          if (answer !== confirm) throw new Error("Not confirmed — nothing changed.");
+        } finally {
+          rl.close();
+        }
+      };
+      const who = { user: v.user, via: "cli" };
+      if (sub === "list") {
+        const all = s.canon();
+        const prop = all.filter((k) => k.status === "proposed");
+        const lines = [...(renderCanon(all, 100).length ? ["Active:", ...renderCanon(all, 100)] : ["No active canon events."]), ...(prop.length ? ["Proposals (approve: scenaria canon approve <id>):", ...prop.map((k) => `- ${k.id} (${k.kind}) ${k.text}  ${C.dim}from ${k.proposedBy ?? k.source}${C.reset}`)] : [])];
+        return out(lines.join("\n"), all);
+      }
+      if (sub === "add") {
+        const kind = v.future !== undefined ? "future" : "past";
+        const text = v.future ?? v.past ?? p.slice(1).join(" ");
+        await interactive("add", `Add binding ${kind} canon event: "${text}"${v.check ? `\n  check command (runs when you start checks): ${v.check}` : ""}`);
+        const ev = s.addCanonAsUser({ kind, text, check: v.check, due: v.due, hard: !v.soft }, who);
+        return out(`${ev.id} (${ev.kind}, ${ev.hard ? "hard" : "soft"}) active: ${ev.text}`, ev);
+      }
+      if (sub === "approve" || sub === "reject" || sub === "retire") {
+        if (!p[1]) throw new Error(`Usage: scenaria canon ${sub} <id>`);
+        const cur = s.canon().find((k) => k.id === p[1]);
+        if (!cur) throw new Error(`Unknown canon event "${p[1]}"`);
+        await interactive(p[1], `${sub} ${cur.id} (${cur.kind}): "${cur.text}"${cur.suggestedCheck ? `\n  suggested check (NOT adopted from the CLI; set it in the dashboard if wanted): ${cur.suggestedCheck}` : ""}`);
+        const ev = s.decideCanon(p[1], sub, { ...who, reason: v.why });
+        return out(`${ev.id} is now ${ev.status}: ${ev.text}`, ev);
+      }
+      if (sub === "check") {
+        const cmds = s.canon().filter((k) => k.status === "active" && k.check && (!p.slice(1).length || p.slice(1).includes(k.id)));
+        await interactive("run", `Run these check commands in ${s.root}:\n${cmds.map((k) => `  ${k.id}: ${k.check}`).join("\n") || "  (none)"}`);
+        const r = await s.checkCanon(p.slice(1).length ? p.slice(1) : undefined, v.user ?? "cli");
+        return out(r.length ? r.map((x) => `${x.status === "passed" ? C.green + "✔" : C.red + "✘"}${C.reset} ${x.id} ${x.detail}`).join("\n") : "No approved canon event has a check command.", r);
+      }
+      if (sub === "key") {
+        const { ownApproverKey } = await import("./core/canon.js");
+        const k = ownApproverKey();
+        return out(`Your approver key ${k.id}\n${k.pub}\n${C.dim}Teammates trust your approvals with: scenaria canon trust ${k.pub} --name "<you>"${C.reset}`, k);
+      }
+      if (sub === "trust") {
+        const { trustApprover, trustedApprovers } = await import("./core/canon.js");
+        if (!p[1]) {
+          const ks = trustedApprovers();
+          return out(ks.length ? ks.map((k) => `- ${k.id} ${k.name ?? ""}  ${C.dim}since ${k.addedAt.slice(0, 10)}${C.reset}`).join("\n") : "No teammate keys trusted (your own key always counts).", ks);
+        }
+        await interactive("trust", `Trust approver key ${p[1].slice(0, 24)}…${v.name ? ` (${v.name})` : ""}?\nEvery canon decision signed with it will be binding on this machine. Only do this with a key you got from that person directly.`);
+        const k = trustApprover(p[1], v.name);
+        return out(`Trusted approver key ${k.id}${k.name ? ` (${k.name})` : ""}.`, k);
+      }
+      if (sub === "suggest") {
+        if (v.llm) {
+          const { archivistProposals } = await import("./core/canon-llm.js");
+          const r = await archivistProposals(s, { provider: v.llm, model: v.model, lang: v.lang === "en" ? "en" : "de" });
+          return out(`${r.proposed.length} proposal(s) by the archivist (${r.model})${r.skipped ? `, ${r.skipped} skipped` : ""}:\n${r.proposed.map((k) => `- ${k.id} (${k.kind}) ${k.text}`).join("\n")}\nApprove: scenaria canon approve <id>  (or dashboard → Kanon)`, r);
+        }
+        const sug = s.suggestCanon();
+        return out(sug.length ? sug.map((x) => `- (${x.kind}) ${x.text}  ${C.dim}${x.why}${C.reset}`).join("\n") : "No candidates found in the history.", sug);
+      }
+      throw new Error("Usage: scenaria canon [list|add|approve|reject|retire|suggest|check|key|trust]");
     }
     case "rules": {
       const s = Scenaria.open(v.root);

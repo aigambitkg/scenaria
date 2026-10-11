@@ -68,6 +68,32 @@ Fehlende Angaben werden auf der Karte und im Tool-Ergebnis markiert.
   - Ganz ohne API: `scenaria analyze --dossier` kopiert das Dossier für jeden Chat, das Ergebnis fügst du wieder ein.
 - **Der Kreis schließt sich:** Übernommene Empfehlungen werden **Projektregeln**, die ab dann jede Kontext-Kapsel und jeder Agent-Prompt enthält.
 
+## Kanon-Events: die Fixpunkte des Projekts
+
+Manches muss gelten, egal welcher Agent als Nächstes arbeitet. Scenaria nennt diese Fixpunkte **Kanon-Events**:
+- **Vergangenheit:** feste Vorgaben, z. B. „Läuft nur in AWS eu-central-1“, „nur TypeScript“, „keine Cookies ohne Einwilligung“.
+- **Zukunft:** Meilensteine, die die Arbeit bestehen muss, z. B. „10.000 Anfragen/s bis 1.1.2027“, optional mit einem Prüfbefehl als Beweis.
+
+So wird über Fixpunkte entschieden:
+- **Du gibst frei, Agenten schlagen vor.** Agenten (`scenaria_canon {action: "propose"}`), Chat-Blöcke und der **Archivar** erzeugen nur Vorschläge. Verbindlich wird ein Fixpunkt erst mit deiner Freigabe: im Dashboard unter *Kanon* oder per `scenaria canon approve` in einem interaktiven Terminal. Die Freigabe wird protokolliert (wer, über welchen Weg).
+- **Der Archivar** schlägt Kandidaten aus der Historie vor: geprüfte oder sichere Entscheidungen sowie Pflichten in Fakten und Regeln. Mit `scenaria canon suggest --llm …` oder *Archivar fragen* extrahiert ein beliebiges LLM Vorschläge samt Belegen.
+- **Prüfungen startest nur du.** Geprüft werden ausschließlich freigegebene Fixpunkte: `scenaria canon check` oder *Prüfungen ausführen*; Agenten lösen sie nie aus. Ein vorgeschlagener Befehl wird nur dann zur Prüfung, wenn du genau diesen Befehl mit *übernehmen* bestätigst.
+- **Freigaben sind signiert.** Jede verbindliche Entscheidung trägt eine Ed25519-Signatur deines Freigabe-Schlüssels (`~/.config/scenaria/approver-key.pem`, nie im Projekt). Signaturen sind an das Projekt und an eine Revision gebunden, und dein Rechner merkt sich (außerhalb des Projekts) die neueste gesehene Revision – eine ältere signierte `canon.json` zurückzuspielen oder eine aus einem anderen Projekt zu kopieren, funktioniert also auch nicht. Ein Eintrag mit fehlender, falscher, veralteter oder fremder (nicht vertrauter) Signatur ist **nicht verbindlich** und erscheint als *Nicht verbindlich – bitte prüfen* (z. B. wenn `canon.json` von Hand, von einem Agenten oder durch einen Merge geändert wurde). Im Team: `scenaria canon key` zeigt deinen öffentlichen Schlüssel, `scenaria canon trust <Schlüssel> --name ..` vertraut dem eines anderen.
+- **Der Freigabe-Link** (`scenaria start`/`ui`) öffnet das Dashboard mit Freigaberecht in deinem Browser. Er funktioniert genau einmal und wird nur in einem interaktiven Terminal angezeigt.
+
+Was das ehrlich schützt: Agenten, Chat-Blöcke, API-Tokens und Änderungen an Dateien im Repository können nichts verbindlich machen. Es ist manipulations-*erkennend*, nicht manipulations-*sicher*: Ein bösartiges Programm mit deinen vollen Benutzerrechten kann deinen Schlüssel lesen.
+
+So werden Fixpunkte durchgesetzt:
+- Jede Kapsel und jeder Prompt enthält die aktiven Fixpunkte; harte fallen nie dem Token-Budget zum Opfer.
+- Entscheidungen geben an, welche sie respektieren (`respectsCanon`).
+- Einen zu brechen erfordert `breaksCanon` plus Begründung. Das erscheint im Projekt-Check, im Treue-Diagramm (⚑) und auf der Tafel.
+
+**Der String:** `scenaria string` (bzw. `scenaria_context {mode: "string"}`) macht aus einer Arbeitslinie ein Paket:
+- Vorgaben aus der Vergangenheit;
+- getroffene Entscheidungen;
+- Zukunftsprüfungen mit ihrem Status;
+- ein Urteil: *gültig*, *noch nicht bewiesen* oder *ungültig*.
+
 ## Kontext-Treue: sehen, wo Kontext abbrach, sich änderte oder manipuliert wurde
 
 Klickst du einen Knoten an, zeigt das Dashboard eine Linie vom Projektstart bis zu diesem Knoten, mit Prozentwert je Schritt. Der Wert jedes Knotens setzt sich zusammen aus:
@@ -155,7 +181,7 @@ Unveränderte Dateien werden nur einmal gespeichert – auf macOS (APFS) als Cop
 
 ## Funktioniert mit jedem LLM und Agenten-Stack
 
-Claude Code (MCP + Hooks), Cursor, VS Code/Copilot, Gemini CLI, Codex, Windsurf (MCP + `AGENTS.md`), jede API mit Function Calling (`scenaria tools --format openai|anthropic|gemini`), LangChain/CrewAI/AutoGen über den Python-Client, n8n/Make über HTTP, Shell-Agenten über `scenaria call`. Alle Wege nutzen dieselben 17 Werkzeuge.
+Claude Code (MCP + Hooks), Cursor, VS Code/Copilot, Gemini CLI, Codex, Windsurf (MCP + `AGENTS.md`), jede API mit Function Calling (`scenaria tools --format openai|anthropic|gemini`), LangChain/CrewAI/AutoGen über den Python-Client, n8n/Make über HTTP, Shell-Agenten über `scenaria call`. Alle Wege nutzen dieselben 18 Werkzeuge.
 
 ## Für Organisationen
 

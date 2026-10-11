@@ -12,7 +12,8 @@ import { Scenaria } from "./core/engine.js";
 import { optionLabel } from "./core/context.js";
 import { recall, renderRecall } from "./core/recall.js";
 import { projectMetrics, renderMetrics } from "./core/analysis.js";
-import { SECTIONS, checkExpectations, referenceCapsule, renderExpectations, renderWorkspace, resolveRefs, workspace } from "./core/workspace.js";
+import { SECTIONS, checkExpectations, referenceCapsule, renderExpectations, renderWorkspace, resolveRefs, stringPayload, workspace } from "./core/workspace.js";
+import { renderCanon } from "./core/canon.js";
 import type { ScenariaNode, Source } from "./core/types.js";
 
 export interface ToolContext {
@@ -50,6 +51,7 @@ Use it like a quicksave, on your own:
 - Need older details: scenaria_recall instead of re-reading long histories. Refer to items by reference (n12, n12.f2, r3) instead of copying them; resolve with scenaria_get_node {refs}.
 - Taking over work from another agent or session: scenaria_workspace {reader: "<your name>"} gives only what you do not know yet; scenaria_expect with your assumptions returns only the deviations.
 - Give facts a confidence when you are not sure ({text, confidence}); low-confidence items are flagged for checking.
+- Canon events (k1, …) are the project's fixed points. Check every decision against them (respectsCanon); breaking one needs breaksCanon + a rationale. New fixed point noticed → scenaria_canon {action: "propose"} — only the user can approve it.
 Keep entries short; never record facts you did not verify.`;
 
 export function brief(n: ScenariaNode): string {
@@ -125,6 +127,8 @@ export const TOOLS: ToolDef[] = [
       rationale: str.optional().describe("Why this option (required when an option is chosen)"),
       context: str.optional().describe("The situation that made this decision necessary: constraints, facts, the user's request"),
       basedOn: list.describe("References this decision rests on, e.g. [\"n12.f2\", \"n7\", \"r3\"]"),
+      respectsCanon: list.describe("Canon events (k1, …) you checked this decision against and that it respects"),
+      breaksCanon: list.describe("Canon events this decision knowingly breaks — explain why in rationale"),
       servesGoal: str.optional().describe("How the chosen option serves the project's main goal / the current task"),
       expectedOutcome: str.optional().describe("What should be observable if the decision was right"),
       assumptions: list.describe("Assumptions this decision relies on"),
@@ -132,12 +136,17 @@ export const TOOLS: ToolDef[] = [
     },
     run(s, a, c) {
       const chosen = a.chosen !== undefined && a.chosen !== "";
+      const known = new Set(s.canon().filter((k) => k.status === "active").map((k) => k.id));
+      for (const id of [...(a.respectsCanon ?? []), ...(a.breaksCanon ?? [])]) if (!known.has(id)) throw new Error(`Unknown or not approved canon event "${id}". Active: ${[...known].join(", ") || "none"}`);
+      if (a.breaksCanon?.length && !a.rationale?.trim()) throw new Error("breaksCanon needs a rationale: why is breaking the fixed point justified?");
       if (chosen && !a.rationale?.trim() && s.config().requireRationale !== false) {
         throw new Error("rationale is required when an option is chosen: say in one sentence why it beats the alternatives (and add context + servesGoal).");
       }
       const n = s.decide({ ...a, ...actor(c) });
       const missing = [!n.context && !n.trigger ? "context" : null, !n.servesGoal ? "servesGoal" : null, (n.options?.length ?? 0) < 2 ? "alternatives" : null].filter(Boolean);
-      const hint = missing.length ? `\nquality: missing ${missing.join(", ")} — include them next time.` : "";
+      const canonHint = known.size && !n.respectsCanon && !n.breaksCanon ? `\ncanon: state which fixed points (${[...known].slice(0, 6).join(", ")}) this decision respects (respectsCanon) or breaks (breaksCanon).` : "";
+      const broken = n.breaksCanon?.length ? `\nWARNING: breaks canon ${n.breaksCanon.join(", ")} — the user will see this.` : "";
+      const hint = (missing.length ? `\nquality: missing ${missing.join(", ")} — include them next time.` : "") + canonHint + broken;
       return { text: `Decision recorded.\n${brief(n)}${hint}`, data: n };
     },
   },
@@ -213,9 +222,13 @@ export const TOOLS: ToolDef[] = [
     title: "Resume context",
     description:
       "Compact resume capsule for a node (default HEAD): goal, brief, decisions taken on the path, current facts/outputs, lessons. Use it instead of re-reading long histories. mode \"refs\" = an even shorter index of references to resolve on demand.",
-    input: { id: str.optional(), mode: z.enum(["full", "refs"]).optional(), budget: z.number().int().min(300).max(20000).optional() },
+    input: { id: str.optional(), mode: z.enum(["full", "refs", "string"]).optional(), budget: z.number().int().min(300).max(20000).optional() },
     annotations: { readOnlyHint: true },
     run(s, a) {
+      if (a.mode === "string") {
+        const p = stringPayload(s, a.id);
+        return { text: JSON.stringify(p, null, 2), data: p };
+      }
       if (a.mode === "refs") {
         const text = referenceCapsule(s, a.id);
         return { text: `${text}\n\n(≈ ${Math.ceil(text.length / 4)} tokens)`, data: { markdown: text } };
@@ -336,6 +349,35 @@ export const TOOLS: ToolDef[] = [
     run(s, a) {
       const r = checkExpectations(s, a.expectations);
       return { text: renderExpectations(r), data: r };
+    },
+  },
+  {
+    name: "scenaria_canon",
+    title: "Canon events (fixed points)",
+    description:
+      "The project's fixed points: past constraints every decision must respect and future milestones the work must survive. list = active + proposed; suggest = the archivist's candidates from the history (nothing stored); propose = suggest a new fixed point — it stays a proposal until the USER approves it in the dashboard.",
+    input: {
+      action: z.enum(["list", "suggest", "propose"]),
+      kind: z.enum(["past", "future"]).optional(),
+      text: str.optional().describe("One short imperative or measurable sentence"),
+      due: str.optional().describe("future: YYYY-MM-DD"),
+      check: str.optional().describe("Shell command that proves it (exit 0); runs only when the user starts it"),
+      evidence: list.describe("Node references, e.g. [\"n12\"]"),
+    },
+    run(s, a, c) {
+      if (a.action === "list") {
+        const all = s.canon();
+        const act = renderCanon(all, 50);
+        const prop = all.filter((k) => k.status === "proposed").map((k) => `- ${k.id} (${k.kind}, proposed — awaiting the user): ${k.text}`);
+        return { text: [act.length ? "Active:" : "No active canon events.", ...act, ...(prop.length ? ["Proposals:", ...prop] : [])].join("\n"), data: all };
+      }
+      if (a.action === "suggest") {
+        const sug = s.suggestCanon();
+        return { text: sug.length ? sug.map((x) => `- (${x.kind}) ${x.text} — ${x.why}`).join("\n") : "No candidates found in the history.", data: sug };
+      }
+      if (!a.kind || !a.text) throw new Error("propose needs kind and text");
+      const ev = s.proposeCanon({ kind: a.kind, text: a.text, due: a.due, check: a.check, evidence: a.evidence }, actor(c));
+      return { text: `${ev.id} ${ev.status === "proposed" ? "proposed — the user approves it in the dashboard (Kanon)" : `already exists (${ev.status})`}: ${ev.text}`, data: ev };
     },
   },
   {

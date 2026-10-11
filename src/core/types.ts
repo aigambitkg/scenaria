@@ -100,6 +100,10 @@ export interface ScenariaNode {
 
   /** References this node builds on (node ids or item refs like "n12.f2", "r3"). */
   basedOn?: string[];
+  /** Canon events (k1, …) the decision was checked against and respects. */
+  respectsCanon?: string[];
+  /** Canon events the decision knowingly breaks (needs a rationale; flagged everywhere). */
+  breaksCanon?: string[];
 
   // fact capsule
   facts?: string[];
@@ -145,6 +149,8 @@ export interface ScenariaConfig {
   mirrorToProjectGit?: boolean;
   proxy?: ProxyConfig;
   projectName: string;
+  /** Random project identity; canon signatures are bound to it (created on the first signed change). */
+  projectId?: string;
   createdAt: string;
   /** Extra gitignore-style patterns excluded from snapshots. */
   exclude: string[];
@@ -262,7 +268,8 @@ export type EventType =
   | "goal"
   | "migrate"
   | "rule"
-  | "analysis";
+  | "analysis"
+  | "canon";
 
 export interface ScenariaEvent {
   ts: string;

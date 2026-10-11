@@ -88,6 +88,32 @@ Missing fields are flagged on the map and in the agent's tool result.
   - Without any API: `scenaria analyze --dossier` copies the dossier into any chat, and you paste the result back.
 - **The loop closes:** accepted recommendations become **project rules**. Every capsule and every agent prompt carries them from then on.
 
+## Canon events: the project's fixed points
+
+Some things must hold no matter which agent works next. Scenaria calls them **canon events**:
+- **Past:** settled constraints, e.g. "Runs only in AWS eu-central-1", "TypeScript only", "No cookies without consent".
+- **Future:** milestones the work must survive, e.g. "10k requests/s by 2027-01-01", optionally with a check command that proves it.
+
+How they are governed:
+- **You approve, agents propose.** Agents (`scenaria_canon {action: "propose"}`), chat blocks and the **archivist** only create proposals. A fixed point becomes binding when you approve it: in the dashboard under *Canon*, or with `scenaria canon approve` in an interactive terminal. The approval is recorded (who, via which surface).
+- **The archivist** suggests candidates from the recorded history: verified or confident decisions, and obligations in facts and rules. With `scenaria canon suggest --llm …` or *Ask the archivist*, any LLM extracts proposals with evidence.
+- **Checks run only on your request.** Only approved events are checked: `scenaria canon check` or *Run checks*; agents never trigger them. A suggested command only becomes the check if you tick *adopt* for exactly that command.
+- **Approvals are signed.** Every binding decision carries an Ed25519 signature from your approver key (`~/.config/scenaria/approver-key.pem`, never in the project). Signatures are bound to the project and to a revision, and your machine remembers the newest revision it has seen (outside the project), so restoring an older signed `canon.json` or copying one from another project doesn't work either. An event whose signature is missing, wrong, outdated or from a key you don't trust is **not binding** and shows up as *not binding — review needed* (e.g. `canon.json` edited by hand, by an agent or by a merge). Teammates: `scenaria canon key` prints your public key; `scenaria canon trust <key> --name ..` trusts someone else's.
+- **The approval link** (`scenaria start`/`ui`) opens the dashboard with approval rights in your browser. It works once and is printed only in an interactive terminal.
+
+What this protects against, honestly: agents, chat blocks, API tokens and edits to repository files can't make anything binding. It is tamper-evident, not tamper-proof: a malicious program running with your full user rights can read your key.
+
+How canon events are enforced:
+- Every capsule and every prompt carries the active fixed points; hard ones are never trimmed by the token budget.
+- Decisions state which ones they respect (`respectsCanon`).
+- Breaking one needs `breaksCanon` plus a rationale. It shows up in the health check, the fidelity chart (⚑) and the board.
+
+**The string:** `scenaria string` (and `scenaria_context {mode: "string"}`) turns one line of work into a payload:
+- past constraints;
+- the decisions taken;
+- future checks with their status;
+- a verdict: *valid*, *not yet proven* or *invalid*.
+
 ## Context fidelity: see where context broke, changed or was manipulated
 
 Select any node to see a line from the project root to that node, with a percentage per step. Each node's score combines:
@@ -193,7 +219,7 @@ Unchanged files are stored only once. On macOS (APFS) they are copy-on-write clo
 | **Aider · Open Interpreter · shell agents** | CLI | `scenaria call scenaria_checkpoint '{"title":"…"}'` |
 | **Agents without any tool support** | File watcher | `scenaria watch` |
 
-All paths use **one tool registry**: the same 17 tools with the same validation behave identically over MCP, HTTP, CLI and function calling.
+All paths use **one tool registry**: the same 18 tools with the same validation behave identically over MCP, HTTP, CLI and function calling.
 
 ## For organizations
 
@@ -224,6 +250,7 @@ All paths use **one tool registry**: the same 17 tools with the same validation 
 | `scenaria_health` | Deterministic quality check of the tree (incl. manipulation) |
 | `scenaria_workspace` | Shared board by sections; with a reader name only the gap |
 | `scenaria_expect` | Check assumptions; returns only deviations |
+| `scenaria_canon` | List fixed points, archivist suggestions, propose a new one (approval stays with the user) |
 
 Manual MCP config for any client:
 
@@ -260,7 +287,8 @@ scenaria checkpoint "<title>" --out .. [--done --summary ..]
 scenaria status | tree [id] [--full] | show <id> | context [id] [--budget 1500] | recall "<keywords>"
 scenaria prompt [--kind mcp|cli|chat] [--lang de|en] | ingest-text [file] | rules [add|rm]
 scenaria analyze [--llm <provider> --model <m>] [--dossier]
-scenaria fidelity [id] | integrity | workspace [--reader ..] [--sections ..] | resolve <refs> | expect "<assumption>" …
+scenaria fidelity [id] | integrity | workspace [--reader ..] [--sections ..] | resolve <refs> | expect "<assumption>" … | string [id]
+scenaria canon [list|add --past|--future ".." [--check ..] [--due ..]|approve|reject|retire <id>|suggest [--llm ..]|check|key|trust <key>]
 scenaria rewind <id> [--lesson ..]       scenaria fork <decisionId> <option>      scenaria diff <from> [to]
 scenaria versions | open <id> [--copy-to dir] | mirror [--enable]
 scenaria conversations | conversation <id> | import <file> | log-message --role .. --text ..
@@ -277,6 +305,7 @@ Global flags: `--root`, `--json`, `--agent`, `--model`, `--user`.
   config.json        settings (snapshot folders, proxy upstreams, mirror, verifyCommand, …)
   state.json         HEAD, project root, current task, counters
   memory.json        project rules (carried by every capsule and prompt)
+  canon.json         canon events: fixed points, proposals, approvals, last checks (commit it)
   ledger.jsonl       integrity ledger (content hash per write, hash-chained)
   readers.json       what each reader already knows (workspace deltas)
   analyses/          stored LLM analyses

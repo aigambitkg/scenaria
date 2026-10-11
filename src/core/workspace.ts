@@ -19,8 +19,9 @@ import { optionLabel } from "./context.js";
 import { tokenize } from "./recall.js";
 import { writeJsonAtomic } from "./store.js";
 import type { ScenariaNode } from "./types.js";
+import { canonState, readCanon } from "./canon.js";
 
-export const SECTIONS = ["goals", "decisions", "facts", "questions", "rules", "lessons", "risks"] as const;
+export const SECTIONS = ["goals", "canon", "decisions", "facts", "questions", "rules", "lessons", "risks"] as const;
 export type Section = (typeof SECTIONS)[number];
 
 export interface BoardItem {
@@ -79,10 +80,17 @@ export function board(s: Scenaria, opts: { sections?: Section[]; at?: string } =
     if (n.verification?.status === "failed") add({ ref: `${n.id}.v`, section: "risks", text: `failed check on ${n.id}: ${one(n.verification.notes ?? n.title, 200)}`, node: n.id });
   });
   for (const r of s.rules()) add({ ref: r.id, section: "rules", text: one(r.text, 300), node: "n0" });
+  for (const k of readCanon(s.store)) {
+    if (k.status !== "active" && k.status !== "proposed") continue;
+    const status = k.status === "proposed" ? "proposed — not binding" : `${k.hard ? "hard" : "soft"}${k.lastCheck ? `, check ${k.lastCheck.status}` : ""}`;
+    add({ ref: k.id, section: "canon", text: `${k.kind}${k.due ? ` (by ${k.due})` : ""}: ${one(k.text, 300)}`, status, basedOn: k.evidence, node: "n0" });
+  }
+  // A decision that breaks a canon event is a risk for everyone downstream.
+  for (const n of path) if (n.breaksCanon?.length) add({ ref: `${n.id}.k`, section: "risks", text: `${n.id} breaks canon ${n.breaksCanon.join(", ")}: ${one(n.rationale ?? n.title, 160)}`, node: n.id });
   return items;
 }
 
-const REF = /^(n\d+)(?:\.([fqoli])(\d+))?$|^(r\d+)$/;
+const REF = /^(n\d+)(?:\.([fqoli])(\d+))?$|^(r\d+)$|^(k\d+)$/;
 
 /** Resolve references to their content (only what was asked for). */
 export function resolveRefs(s: Scenaria, refs: string[]) {
@@ -92,7 +100,11 @@ export function resolveRefs(s: Scenaria, refs: string[]) {
   return refs.slice(0, 50).map((raw) => {
     const ref = String(raw).trim();
     const m = ref.match(REF);
-    if (!m) return { ref, error: "unknown reference format (use n12, n12.f2, n12.q1, n12.o1, n12.l1, n12.i1 or r3)" };
+    if (!m) return { ref, error: "unknown reference format (use n12, n12.f2, n12.q1, n12.o1, n12.l1, n12.i1, r3 or k2)" };
+    if (m[5]) {
+      const k = readCanon(s.store).find((x) => x.id === m[5]);
+      return k ? { ref, section: "canon", kind: k.kind, text: k.text, status: k.status, hard: k.hard, due: k.due, check: k.check, lastCheck: k.lastCheck, evidence: k.evidence } : { ref, error: "no such canon event" };
+    }
     if (m[4]) {
       const r = rules.find((x) => x.id === m[4]);
       return r ? { ref, section: "rules", text: r.text, source: r.source } : { ref, error: "no such rule" };
@@ -287,6 +299,16 @@ export function checkExpectations(s: Scenaria, expectations: string[]): Expectat
       if (!opt) return { expectation: e, status: "contradicted", evidence: n.id, detail: `"${m[2].trim()}" is not an option of ${n.id}; taken: ${optionLabel(n, taken) ?? "open"}` };
       return opt.id === taken ? { expectation: e, status: "confirmed", evidence: n.id, detail: `taken: ${opt.label}` } : { expectation: e, status: "contradicted", evidence: n.id, detail: `taken on this path: ${optionLabel(n, taken) ?? "open"}, not ${opt.label}` };
     }
+    if ((m = e.match(/^(k\d+)(?:\s+(?:holds|gilt|valid|active|aktiv|passes|passed))?$/i))) {
+      const k = readCanon(s.store).find((x) => x.id === m![1]);
+      if (!k) return { expectation: e, status: "contradicted", detail: `${m[1]} does not exist` };
+      if (k.status !== "active") return { expectation: e, status: "contradicted", evidence: k.id, detail: `${k.id} is ${k.status}, not binding` };
+      const broken = path.filter((n) => n.breaksCanon?.includes(k.id)).map((n) => n.id);
+      if (broken.length) return { expectation: e, status: "contradicted", evidence: broken[0], detail: `${k.id} is broken on this path by ${broken.join(", ")}` };
+      if (k.lastCheck?.status === "failed") return { expectation: e, status: "contradicted", evidence: k.id, detail: `last check of ${k.id} failed: ${k.lastCheck.detail ?? ""}` };
+      if (k.check && k.lastCheck?.status !== "passed") return { expectation: e, status: "unknown", evidence: k.id, detail: `${k.id} has a check that has not passed yet` };
+      return { expectation: e, status: "confirmed", evidence: k.id, detail: one(k.text, 120) };
+    }
     if ((m = e.match(/^(n\d+\.[fqoli]\d+|r\d+)(?:\s+(?:holds|gilt|valid|active|aktiv))?$/i))) {
       const it = items.find((i) => i.ref === m![1]);
       if (it) return { expectation: e, status: it.status === "failed" ? "contradicted" : "confirmed", evidence: it.ref, detail: it.status === "failed" ? "its node failed verification" : one(it.text, 120) };
@@ -347,4 +369,87 @@ export function renderExpectations(r: ExpectationResult[]): string {
   const lines = [`${ok}/${r.length} expectations confirmed.${dev.length ? " Deviations:" : " No deviations — proceed."}`];
   for (const d of dev) lines.push(`- ${d.status === "contradicted" ? "✗" : "?"} "${d.expectation}" — ${d.detail}${d.evidence ? ` [${d.evidence}]` : ""}`);
   return lines.join("\n");
+}
+
+// ------------------------------------------------------------------ the "string" (one line of work as a payload)
+
+export interface StringPayload {
+  string: string;
+  head: string;
+  past_constraints: { ref: string; text: string; hard?: boolean }[];
+  decisions: { ref: string; question: string; taken: string | null; why?: string; confidence?: number; respectsCanon?: string[]; breaksCanon?: string[] }[];
+  present_decision: StringPayload["decisions"][number] | null;
+  future_checks: { ref: string; text: string; due?: string; status: "passed" | "failed" | "not run" | "no check"; hard: boolean }[];
+  verdict: "valid" | "unproven" | "invalid";
+  reasons: string[];
+}
+
+/**
+ * One line of work (root → node) as the payload that passes from past to present to future:
+ * past fixed points, the decisions taken on this line, future fixed points with their check status,
+ * and a verdict. Invalid = a hard canon event is broken or its check failed.
+ */
+export function stringPayload(s: Scenaria, at?: string): StringPayload {
+  const head = at ?? s.store.readState().head;
+  if (!head) throw new Error("No nodes yet.");
+  const path = s.path(head);
+  const cs = canonState(s.store);
+  const canon = cs.events.filter((k) => k.status === "active");
+  const decisions = path
+    .map((n, i) => ({ n, next: path[i + 1] }))
+    .filter(({ n }) => n.type === "decision")
+    .map(({ n, next }) => ({
+      ref: n.id,
+      question: one(n.question ?? n.title, 160),
+      taken: optionLabel(n, next?.viaOption ?? n.chosen) ?? null,
+      why: n.rationale ? one(n.rationale, 160) : undefined,
+      confidence: n.confidence,
+      respectsCanon: n.respectsCanon,
+      breaksCanon: n.breaksCanon,
+    }));
+  const reasons: string[] = [];
+  const notes: string[] = [];
+  const onLine = new Set(path.map((n) => n.id));
+  // A check result counts for this line only if it ran on a node of this line with a clean tree.
+  const checkOf = (k: (typeof canon)[number]) => (k.lastCheck && k.lastCheck.node && onLine.has(k.lastCheck.node) && k.lastCheck.clean ? k.lastCheck.status : undefined);
+  const broken = new Set(path.flatMap((n) => n.breaksCanon ?? []));
+  for (const k of canon) {
+    if (!broken.has(k.id)) continue;
+    const by = path.filter((n) => n.breaksCanon?.includes(k.id)).map((n) => n.id).join(", ");
+    if (k.hard) reasons.push(`hard canon ${k.id} is broken on this line (${by})`);
+    else notes.push(`soft canon ${k.id} is broken on this line (${by})`);
+  }
+  const future = canon
+    .filter((k) => k.kind === "future")
+    .map((k) => {
+      const st = checkOf(k);
+      return { ref: k.id, text: k.text, due: k.due, hard: k.hard, status: (st ?? (k.check ? "not run" : "no check")) as StringPayload["future_checks"][number]["status"] };
+    });
+  for (const f of future) if (f.status === "failed" && f.hard) reasons.push(`future canon ${f.ref} failed its check on this line`);
+  for (const k of canon.filter((x) => x.kind === "past" && x.hard && checkOf(x) === "failed")) reasons.push(`past canon ${k.id} failed its check on this line`);
+  const tampered = cs.events.filter((k) => k.status === "tampered").map((k) => k.id);
+  const untrusted = cs.events.filter((k) => k.status === "untrusted").map((k) => k.id);
+  const unproven = future.filter((f) => f.status !== "passed" && f.hard).map((f) => f.ref);
+  const checkTampered = canon.filter((k) => k.checkTampered).map((k) => k.id);
+  const verdict = reasons.length ? "invalid" : unproven.length || tampered.length || untrusted.length || cs.missing.length || checkTampered.length || cs.error ? "unproven" : "valid";
+  if (checkTampered.length) reasons.push(`check result of canon ${checkTampered.join(", ")} was changed outside Scenaria — run the check again`);
+  if (cs.missing.length) reasons.push(`approved canon ${cs.missing.join(", ")} is missing from canon.json (deleted outside Scenaria)`);
+  if (cs.error) reasons.push(`canon could not be read (${cs.error.slice(0, 160)}) — the fixed points of this line are unknown`);
+  if (!reasons.length && unproven.length) reasons.push(`not yet proven on this line: ${unproven.join(", ")} (run the canon checks on this line, or confirm them in the dashboard)`);
+  if (tampered.length) reasons.push(`canon ${tampered.join(", ")} changed outside Scenaria — not binding until re-approved`);
+  if (untrusted.length) reasons.push(`canon ${untrusted.join(", ")} signed by an untrusted approver key — not binding until re-approved or the key is trusted`);
+  reasons.push(...notes);
+  return {
+    string: `${path[path.length - 1].scenarioId ?? "?"} · ${path.map((n) => n.id).join("→")}`,
+    head,
+    past_constraints: [
+      ...canon.filter((k) => k.kind === "past").map((k) => ({ ref: k.id, text: k.text, hard: k.hard })),
+      ...s.rules().map((r) => ({ ref: r.id, text: r.text })),
+    ],
+    decisions,
+    present_decision: decisions[decisions.length - 1] ?? null,
+    future_checks: future,
+    verdict,
+    reasons,
+  };
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { api, type AnalysisRecord, type ConversationMessage, type ConversationSession, type Metrics, type ProjectRule, type ScenariaEvent } from "./api";
+import { api, type AnalysisRecord, type CanonEvent, type CanonSuggestion, type ConversationMessage, type ConversationSession, type Metrics, type ProjectRule, type ScenariaEvent, type StringPayload } from "./api";
 import { MessageList } from "./NodePanel";
 import type { Dict } from "./i18n";
 import { NodeId } from "./Map";
@@ -729,5 +729,271 @@ function Evidence({ ids, onSelect }: { ids?: string[]; onSelect: (id: string) =>
           </button>
         ))}
     </span>
+  );
+}
+
+/** Canon events: the project's fixed points. Agents and the archivist propose — the person decides here. */
+export function CanonDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: string) => void; onClose: () => void; onSelectNode: (id: string) => void; onChanged: () => void }) {
+  const { t } = props;
+  const [events, setEvents] = useState<CanonEvent[]>([]);
+  const [sugs, setSugs] = useState<CanonSuggestion[]>([]);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [missing, setMissing] = useState<string[]>([]);
+  const [approval, setApproval] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [adopt, setAdopt] = useState<Record<string, string | undefined>>({});
+  const [form, setForm] = useState({ kind: "past", text: "", check: "", due: "", hard: true });
+  const [verdict, setVerdict] = useState<StringPayload | null>(null);
+
+  const reload = async () => {
+    const r = await api.canon();
+    setEvents(r.events);
+    setSugs(r.suggestions);
+    setFileError(r.error);
+    setMissing(r.missing ?? []);
+    setApproval(r.approval);
+    try {
+      const g = await api.graph();
+      if (g.state.head) setVerdict(await api.stringAt(g.state.head));
+    } catch {
+      setVerdict(null);
+    }
+  };
+  useEffect(() => {
+    reload().catch((e) => setErr(String(e?.message ?? e)));
+  }, []);
+  const run = async (key: string, fn: () => Promise<unknown>) => {
+    setBusy(key);
+    setErr(null);
+    try {
+      await fn();
+      await reload();
+      props.onChanged();
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setBusy(null);
+    }
+  };
+  const locked = !approval || Boolean(busy);
+  const active = events.filter((e) => e.status === "active");
+  const proposed = events.filter((e) => e.status === "proposed");
+  const tampered = events.filter((e) => e.status === "tampered" || e.status === "untrusted");
+  const pending = (e: CanonEvent) => e.status === "proposed" || e.status === "tampered" || e.status === "untrusted";
+  const closed = events.filter((e) => e.status === "rejected" || e.status === "retired");
+  const row = (e: CanonEvent) => (
+    <li key={e.id} className={`canon-item k-${e.kind} ${e.status === "tampered" || e.status === "untrusted" ? "tampered" : ""}`}>
+      <div className="canon-main">
+        <span className="canon-id">{e.id}</span>
+        <span className={`chip ${e.kind === "past" ? "k-past" : "k-future"}`}>{t.canonKinds[e.kind]}</span>
+        <span className="chip">{e.hard ? t.canonHard : t.canonSoft}</span>
+        {e.due && <span className="chip">{t.canonDue} {e.due}</span>}
+        {e.lastCheck && <span className={`chip v-${e.lastCheck.status}`}>{e.lastCheck.status === "passed" ? "✓" : "✘"} {e.lastCheck.how === "manual" ? t.canonConfirmed : t.canonChecked}</span>}
+        {e.status === "untrusted" && (
+          <span className="chip v-failed">
+            ⛔ {t.canonUntrusted} {e.keyId}
+          </span>
+        )}
+        {e.status === "tampered" && <span className="chip v-failed">⛔ {t.canonTampered}</span>}
+      </div>
+      <p>{e.text}</p>
+      {e.check && !pending(e) && (
+        <p className="small">
+          {t.canonRuns}: <code className="cmd">{e.check}</code>
+        </p>
+      )}
+      {/* Not yet binding: any command is only a suggestion until the person adopts exactly this text. */}
+      {pending(e) &&
+        [...new Set([e.check, e.suggestedCheck].filter((c): c is string => Boolean(c)))].map((cmd) => (
+          <div key={cmd} className="small suggested">
+            {t.canonSuggestedCheck}: <code className="cmd">{cmd}</code>
+            <label className="check">
+              <input type="checkbox" checked={adopt[e.id] === cmd} onChange={(x) => setAdopt({ ...adopt, [e.id]: x.target.checked ? cmd : undefined })} />
+              <span>{t.canonAdoptCheck}</span>
+            </label>
+          </div>
+        ))}
+      <p className="muted small">
+        {e.evidence?.length ? (
+          <>
+            {t.canonEvidence}:{" "}
+            {e.evidence.map((r) =>
+              /^n\d+/.test(r) ? (
+                <button key={r} className="btn link" onClick={() => props.onSelectNode(r.split(".")[0])}>
+                  <NodeId id={r.split(".")[0]} />
+                </button>
+              ) : (
+                <span key={r}>{r} </span>
+              ),
+            )}
+            {" · "}
+          </>
+        ) : null}
+        {e.status === "proposed" ? `${t.canonFrom} ${e.proposedBy ?? e.source}` : e.decidedBy ? `${e.status === "active" ? t.canonApprovedBy : e.status} ${e.decidedBy} (${e.decidedVia ?? "?"})` : ""}
+      </p>
+      <div className="row">
+        {pending(e) && (
+          <>
+            <button className="btn ok" disabled={locked} onClick={() => run(e.id, () => api.decideCanon(e.id, "approve", adopt[e.id] ? { adoptCheck: adopt[e.id] } : {}))}>
+              {e.status === "proposed" ? t.canonApprove : t.canonReapprove}
+            </button>
+            <button className="btn bad" disabled={locked} onClick={() => run(e.id, () => api.decideCanon(e.id, "reject"))}>
+              {t.canonReject}
+            </button>
+          </>
+        )}
+        {e.status === "active" && (
+          <>
+            {e.kind === "future" && (
+              <button className="btn" disabled={locked} onClick={() => run(e.id, () => api.decideCanon(e.id, "confirm"))}>
+                {t.canonConfirm}
+              </button>
+            )}
+            <button className="btn" disabled={locked} onClick={() => run(e.id, () => api.decideCanon(e.id, "retire"))}>
+              {t.canonRetire}
+            </button>
+          </>
+        )}
+      </div>
+    </li>
+  );
+  return (
+    <Modal wide title={t.canonTitle} onClose={props.onClose}>
+      <div className="modal-body analysis canon">
+        <p className="hint">{t.canonIntro}</p>
+        {!approval && <p className="qnote q-warn">🔒 {t.canonLocked}</p>}
+        {fileError && <p className="error">{fileError}</p>}
+        {missing.length > 0 && (
+          <p className="error">
+            ⛔ {missing.join(", ")}: {t.canonMissing}
+          </p>
+        )}
+        {err && <p className="error">{err}</p>}
+        {verdict && (
+          <section className={`a-sec verdict-box v-${verdict.verdict}`}>
+            <strong>
+              {t.canonVerdict}: {t.canonVerdicts[verdict.verdict]}
+            </strong>{" "}
+            <span className="muted">{verdict.string}</span>
+            {verdict.reasons.length > 0 && <p className="small">{verdict.reasons.join(" · ")}</p>}
+          </section>
+        )}
+        {tampered.length > 0 && (
+          <section className="a-sec">
+            <h3>⛔ {t.canonTamperedTitle}</h3>
+            <p className="hint">{t.canonTamperedHint}</p>
+            <ul className="canon-list">{tampered.map(row)}</ul>
+          </section>
+        )}
+        {proposed.length > 0 && (
+          <section className="a-sec">
+            <h3>
+              {t.canonProposals} <span className="count">{proposed.length}</span>
+            </h3>
+            <ul className="canon-list">{proposed.map(row)}</ul>
+          </section>
+        )}
+        <section className="a-sec">
+          <h3>
+            {t.canonActive} <span className="count">{active.length}</span>
+            <button
+              className="btn"
+              disabled={locked || !active.some((e) => e.check)}
+              onClick={() =>
+                run("check", async () => {
+                  const r = await api.checkCanon();
+                  props.toast(r.map((x) => `${x.id} ${x.status === "passed" ? "✓" : "✘"}`).join(" · ") || t.canonNoChecks);
+                })
+              }
+            >
+              {busy === "check" ? t.running : t.canonRunChecks}
+            </button>
+          </h3>
+          {active.length ? <ul className="canon-list">{active.map(row)}</ul> : <p className="muted">{t.canonNone}</p>}
+        </section>
+        <section className="a-sec">
+          <h3>{t.canonArchivist}</h3>
+          <p className="hint">{t.canonArchivistHint}</p>
+          {sugs.length > 0 ? (
+            <ul className="canon-list">
+              {sugs.map((sg, i) => (
+                <li key={i} className="canon-item">
+                  <div className="canon-main">
+                    <span className={`chip ${sg.kind === "past" ? "k-past" : "k-future"}`}>{t.canonKinds[sg.kind]}</span>
+                    <span className="muted small">{sg.why}</span>
+                  </div>
+                  <p>{sg.text}</p>
+                  <button className="btn ok" disabled={locked} onClick={() => run(`s${i}`, () => api.addCanon({ kind: sg.kind, text: sg.text, hard: true, evidence: sg.evidence }))}>
+                    {t.canonAdopt}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">{t.canonNoSuggestions}</p>
+          )}
+          <button
+            className="btn"
+            disabled={Boolean(busy)}
+            onClick={() =>
+              run("llm", async () => {
+                const r = await api.archivist(props.lang);
+                props.toast(`${r.proposed.length} ${t.canonLlmProposed} (${r.model})`);
+              })
+            }
+          >
+            {busy === "llm" ? t.running : t.canonAskLlm}
+          </button>
+        </section>
+        <section className="a-sec">
+          <h3>{t.canonNew}</h3>
+          <form
+            className="canon-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (form.text.trim().length < 4 || locked) return;
+              run("add", async () => {
+                await api.addCanon({ kind: form.kind, text: form.text, hard: form.hard, check: form.check || undefined, due: form.kind === "future" && form.due ? form.due : undefined });
+                setForm({ ...form, text: "", check: "", due: "" });
+              });
+            }}
+          >
+            <div className="seg" role="radiogroup">
+              {(["past", "future"] as const).map((k) => (
+                <button type="button" key={k} role="radio" aria-checked={form.kind === k} className={form.kind === k ? "on" : ""} onClick={() => setForm({ ...form, kind: k })}>
+                  {t.canonKinds[k]}
+                </button>
+              ))}
+            </div>
+            <input value={form.text} placeholder={form.kind === "past" ? t.canonPastPh : t.canonFuturePh} onChange={(e) => setForm({ ...form, text: e.target.value })} />
+            <input value={form.check} placeholder={t.canonCheckPh} onChange={(e) => setForm({ ...form, check: e.target.value })} />
+            {form.kind === "future" && <input type="date" value={form.due} onChange={(e) => setForm({ ...form, due: e.target.value })} />}
+            <label className="check">
+              <input type="checkbox" checked={form.hard} onChange={(e) => setForm({ ...form, hard: e.target.checked })} />
+              <span>{t.canonHardLabel}</span>
+            </label>
+            <button className="btn primary" type="submit" disabled={locked || form.text.trim().length < 4}>
+              {t.canonAdd}
+            </button>
+          </form>
+        </section>
+        {closed.length > 0 && (
+          <details className="a-sec">
+            <summary>
+              {t.canonClosed} ({closed.length})
+            </summary>
+            <ul className="canon-list">
+              {closed.map((e) => (
+                <li key={e.id} className="canon-item closed">
+                  <span className="canon-id">{e.id}</span> <span className="chip">{e.status}</span> {e.text}
+                  {e.reason ? <span className="muted small"> — {e.reason}</span> : null}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </div>
+    </Modal>
   );
 }

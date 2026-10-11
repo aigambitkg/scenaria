@@ -57,6 +57,19 @@
 - [x] Global workspace by sections, item references (`n12.f2`), reader deltas (theory of mind) with invalidation after rewinds
 - [x] Expectations / predictive coding (`scenaria_expect`), confidence per fact, `basedOn` references, reference capsule
 
+## Done in 0.6 (canon events, stage 1)
+
+- [x] Canon events (past constraints, future milestones) with proposal → approval by a person, audit trail
+- [x] Archivist suggestions (deterministic + any LLM), checks run on request, string payload with verdict
+- [x] Canon in capsule, prompts, reminder, board, expectations, health check and fidelity chart; dashboard dialog
+- [x] Signed approvals (Ed25519, trusted approver keys outside the project), one-time approval link, explicit adoption of check commands
+
+## Next: canon stages 2–3
+
+- [ ] Canon gate per string: run future checks in a worktree of each branch's snapshot, "surviving strings" view
+- [ ] Relay protocol (archivist → craftsman → oracle) for high-impact decisions, role prompts for any LLM, parallel branches
+- [ ] Approver keys in the OS keychain / hardware keys (passkey, YubiKey) so a local process cannot read them
+
 ## Next: capture everywhere
 
 - [ ] Optional embedding-based fidelity (any OpenAI-compatible `/embeddings`, e.g. Ollama) for cross-language projects

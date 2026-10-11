@@ -3,7 +3,16 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { userInfo } from "node:os";
+
+function defaultUserName() {
+  try {
+    return process.env.SCENARIA_USER || userInfo().username || "local user";
+  } catch {
+    return "local user";
+  }
+}
 import type { Scenaria } from "./core/engine.js";
 import { callTool, toolSchemas, type SchemaFormat, type ToolContext } from "./tools.js";
 import { handleProxy } from "./proxy.js";
@@ -11,10 +20,11 @@ import { UI_DIR, embeddedUi, hasDiskUi } from "./assets.js";
 import { agentPrompt, type PromptKind } from "./core/prompts.js";
 import { applyBlocks } from "./core/blocks.js";
 import { recall } from "./core/recall.js";
-import { SECTIONS, checkExpectations, resolveRefs, workspace, type Section } from "./core/workspace.js";
+import { SECTIONS, checkExpectations, resolveRefs, stringPayload, workspace, type Section } from "./core/workspace.js";
+import { archivistProposals } from "./core/canon-llm.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
-export const VERSION = "0.5.0";
+export const VERSION = "0.6.0";
 
 const KEY_ENVS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "AZURE_OPENAI_API_KEY"];
 
@@ -103,6 +113,26 @@ export function isLoopbackHost(host: string | undefined): boolean {
 export interface AppOptions {
   /** Shared secret for team/server mode. Required when listening on a non-loopback host. */
   token?: string;
+  /**
+   * Binding canon decisions (approve, reject, retire, confirm, add, run checks) need an approval
+   * session: a cookie the server sets only when the approval link is opened. Local mode: the link
+   * carries `approvalCode` (opened by `scenaria start/ui`, printed only in that terminal).
+   * Team mode: the link carries `approverToken` (a separate secret); without it, approvals over HTTP are off.
+   */
+  approvalCode?: string;
+  approverToken?: string;
+  /** For tests: fixed session secret. */
+  approvalSecret?: string;
+}
+
+function approvalCookie(req: IncomingMessage): string | undefined {
+  const m = (req.headers.cookie ?? "").match(/(?:^|;\s*)scenaria_approval=([^;]+)/);
+  if (!m) return undefined;
+  try {
+    return decodeURIComponent(m[1]);
+  } catch {
+    return undefined;
+  }
 }
 
 function tokenMatches(given: string | undefined, token: string): boolean {
@@ -130,6 +160,12 @@ function bearer(req: IncomingMessage): string | undefined {
 
 export function createApp(s: Scenaria, opts: AppOptions = {}) {
   const clients = new Set<ServerResponse>();
+  const approvalSecret = opts.approvalSecret ?? randomBytes(24).toString("hex");
+  // Local mode: the link works ONCE (the browser Scenaria opens redeems it within a second), so a copy
+  // that shows up later in a log or a process list is useless — and if someone else used it first,
+  // your own click fails visibly. Team mode: the configured approver token.
+  let approvalLinkSecret = opts.token ? opts.approverToken : opts.approvalCode;
+  const isApprover = (req: IncomingMessage) => tokenMatches(approvalCookie(req), approvalSecret);
   let lastVersion = s.store.version();
   const timer = setInterval(() => {
     const v = s.store.version();
@@ -207,6 +243,26 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
       if (req.method === "POST" && req.headers.origin && safeHost(req.headers.origin) !== req.headers.host) {
         return send(res, 403, { error: "cross-origin request rejected" });
       }
+    }
+    // Approval link: sets the approval session cookie (never shown to scripts: HttpOnly, SameSite=Strict).
+    if (!p.startsWith("/api/") && url.searchParams.has("approve")) {
+      if (isApprover(req)) {
+        res.writeHead(302, { location: "/" });
+        return res.end();
+      }
+      if (approvalLinkSecret && tokenMatches(url.searchParams.get("approve") ?? undefined, approvalLinkSecret)) {
+        if (!opts.token) approvalLinkSecret = undefined; // single use
+        res.writeHead(302, { location: "/", "set-cookie": `scenaria_approval=${encodeURIComponent(approvalSecret)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200` });
+        return res.end();
+      }
+      return send(
+        res,
+        403,
+        opts.token
+          ? "This approval link is not valid."
+          : "This approval link is not valid or was already used (it works once and changes every time Scenaria starts). If you did not open it yourself, someone else did: restart Scenaria and check the canon history.",
+        "text/plain; charset=utf-8",
+      );
     }
     const ctx: ToolContext = {
       agent: header(req, "x-scenaria-agent") ?? "http-client",
@@ -306,6 +362,44 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           const b = await readBody(req);
           if (!Array.isArray(b?.expectations)) return send(res, 400, { error: "body needs expectations: [string]" });
           return send(res, 200, checkExpectations(s, b.expectations.map(String)));
+        }
+
+        // ---------- canon events (fixed points) ----------
+        if (req.method === "GET" && p === "/api/approval") return send(res, 200, { granted: isApprover(req), mode: token ? (opts.approverToken ? "team" : "disabled") : "local" });
+        if (req.method === "GET" && p === "/api/canon") {
+          const st = s.canonState();
+          return send(res, 200, { events: st.events, error: st.error, missing: st.missing, suggestions: st.error ? [] : s.suggestCanon(), approval: isApprover(req) });
+        }
+        // Binding canon actions: only with the approval session (not with the API/agent token).
+        if (p.startsWith("/api/canon") && req.method === "POST" && p !== "/api/canon/archivist" && !isApprover(req)) {
+          return send(res, 403, { error: "Approvals need the approval link from the terminal running Scenaria (scenaria start/ui). Agents can only propose.", code: "approval_required" });
+        }
+        // The approver is the person at this machine (local) — client-supplied names are only a claim in team mode.
+        const approver = token ? `${ctx.user ?? "approver"} (team approver link)` : `${defaultUserName()} (local approval link)`;
+        if (req.method === "GET" && p === "/api/v1/string") return send(res, 200, stringPayload(s, url.searchParams.get("at") ?? undefined));
+        if (req.method === "POST" && p === "/api/canon") {
+          // The dashboard is a person's surface: adding here makes the event binding (audited as "dashboard").
+          const b = await readBody(req);
+          return send(res, 200, s.addCanonAsUser({ kind: b?.kind, text: String(b?.text ?? ""), hard: b?.hard !== false, check: b?.check, due: b?.due || undefined, evidence: Array.isArray(b?.evidence) ? b.evidence : undefined }, { user: approver, via: "dashboard" }));
+        }
+        if (req.method === "POST" && p === "/api/canon/decide") {
+          const b = await readBody(req);
+          if (!["approve", "reject", "retire", "confirm"].includes(b?.action)) return send(res, 400, { error: "action must be approve, reject, retire or confirm" });
+          const adoptCheck = typeof b?.adoptCheck === "string" ? b.adoptCheck : b?.adoptCheck === true;
+          return send(res, 200, s.decideCanon(String(b?.id ?? ""), b.action, { user: approver, via: "dashboard", reason: b?.reason, adoptCheck }));
+        }
+        if (req.method === "POST" && p === "/api/canon/check") {
+          const b = await readBody(req);
+          return send(res, 200, await s.checkCanon(Array.isArray(b?.ids) ? b.ids.map(String) : undefined, approver));
+        }
+        if (req.method === "POST" && p === "/api/canon/archivist") {
+          const b = await readBody(req);
+          if (token && b?.baseUrl) return send(res, 400, { error: "custom base URLs are disabled in team mode" });
+          try {
+            return send(res, 200, await archivistProposals(s, { provider: b?.provider, model: b?.model, baseUrl: b?.baseUrl, apiKey: b?.apiKey, lang: b?.lang === "en" ? "en" : "de" }));
+          } catch (err: any) {
+            return send(res, 502, { error: err?.message ?? String(err) });
+          }
         }
 
         // ---------- analysis & rules ----------
@@ -461,13 +555,17 @@ function openBrowser(url: string) {
 
 export async function startServer(
   s: Scenaria,
-  opts: { port?: number; open?: boolean; host?: string; token?: string; showToken?: boolean; quiet?: boolean } = {},
+  opts: { port?: number; open?: boolean; host?: string; token?: string; showToken?: boolean; quiet?: boolean; approverToken?: string; showApprovalLink?: boolean } = {},
 ) {
   const host0 = opts.host ?? "127.0.0.1";
   if (!isLoopbackHost(host0) && !opts.token) {
     throw new Error("Listening on a non-loopback host requires a token (--token or SCENARIA_TOKEN).");
   }
-  const app = createApp(s, { token: opts.token });
+  const approvalCode = randomBytes(18).toString("base64url");
+  // Print the link only to a person's terminal: when an agent starts the server, its output is the agent's.
+  const showLink = opts.showApprovalLink ?? Boolean(process.stdout.isTTY);
+  const approverToken = opts.approverToken ?? process.env.SCENARIA_APPROVER_TOKEN;
+  const app = createApp(s, { token: opts.token, approvalCode, approverToken });
   const server = createServer(app.handler);
   const host = opts.host ?? "127.0.0.1";
   let port = opts.port ?? 4477;
@@ -492,10 +590,18 @@ export async function startServer(
       `  API:     ${url}/api/v1/tools  (schemas: ?format=openai|anthropic|gemini|json)`,
       `  Proxy:   ${url}/proxy/openai · /proxy/anthropic · /proxy/ollama · /proxy/<provider>  (records every conversation)`,
       opts.token ? `  auth:    Authorization: Bearer <token>` : `  mode:    local only (127.0.0.1)`,
+      opts.token
+        ? approverToken
+          ? `  approve: ${url}/?approve=<approver token>  (canon approvals; keep this token away from agents)`
+          : `  approve: off over HTTP (set SCENARIA_APPROVER_TOKEN to allow canon approvals in team mode)`
+        : showLink
+          ? `  approve: ${url}/?approve=${approvalCode}  (approval link for canon decisions — works once, only for you)`
+          : `  approve: ${opts.open ? "opened in your browser" : "start Scenaria from your own terminal to get the approval link"}`,
       "Ctrl+C to stop.",
       "",
     ].join("\n"),
   );
-  if (opts.open) openBrowser(uiUrl);
-  return { server, url, close: () => { app.close(); server.close(); } };
+  if (opts.open) openBrowser(opts.token ? uiUrl : `${url}/?approve=${approvalCode}`);
+  const approvalUrl = opts.token ? (approverToken ? `${url}/?approve=<approver token>` : null) : showLink ? `${url}/?approve=${approvalCode}` : null;
+  return { server, url, approvalUrl, close: () => { app.close(); server.close(); } };
 }

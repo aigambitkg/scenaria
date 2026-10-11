@@ -13,7 +13,7 @@ Every decision point of an agent run leaves a **restorable, verifiable state**. 
    Gemini, Codex…) │                  │                  │                                │            │
                    ▼                  ▼                  ▼                                ▼            ▼
              ┌──────────────────────────────────────────────────────────────────────────────────────┐
-             │  tools.ts — ONE vendor-neutral tool registry (17 tools, zod schemas, validation)      │
+             │  tools.ts — ONE vendor-neutral tool registry (18 tools, zod schemas, validation)      │
              └───────────────────────────────────────────┬──────────────────────────────────────────┘
                                                          ▼
                      ┌─────────────────────┐        ┌──────────────────┐
@@ -161,6 +161,42 @@ On a 30-task project a 600-token capsule still holds the goal, the rules, the cu
     - `branch`: the node has `forkedFrom`;
     - `tampered` / `builtOnTampered`.
   - A tampered node is capped at 25.
+
+## Canon events (fixed points)
+
+- **Storage.** `canon.json` (committed) holds `k1…` events of kind `past` or `future`.
+  - Fields: `hard`, optional `check` command, `due`, `evidence`.
+  - Status flow: `proposed → active → retired`, or `proposed → rejected`.
+  - Audit: `proposedBy`, `decidedBy`, `decidedVia`, plus `canon` events in the log.
+- **Governance.** Only `addCanonAsUser` and `decideCanon` can make an event binding.
+  - They are reached from the dashboard (local: loopback + X-Scenaria; team: token) and from the CLI, where the CLI refuses without an interactive TTY. That keeps agent shells out.
+  - The MCP/HTTP tool `scenaria_canon` can only list, suggest and propose. Engine-level `respectsCanon`/`breaksCanon` only keep approved ids.
+  - Dashboard decisions need the approval session (HttpOnly, SameSite=Strict cookie) set by the approval link. Local mode: a random code per start that works **once** and is printed only to a TTY. Team mode: `SCENARIA_APPROVER_TOKEN`.
+  - **Signatures.** Binding decisions and check results are signed with the person's Ed25519 key (`approver-key.pem` in the global config dir, mode 600). `canonState` computes trust per event: `verified` (valid signature from the own key or a key in `trusted-approvers.json`, also global), `untrusted` (valid signature, unknown key), `tampered`/`unsigned`. Only `verified` events can be `active`; the others get the computed status `tampered`/`untrusted` and are not binding. `keyId` is always derived from the embedded public key. A `lastCheck` counts only with a valid signature from a trusted key.
+  - **Replay/rollback.** Payloads carry `canon/v2`, the project id (`config.json → projectId`) and a per-event revision `rev` that grows with every signed change (checks included). A high-water mark per event (`rev`, status, signature) lives outside the project in `anchors/<projectId>.json` in the global config dir. An older revision, a different record with the same revision, or a proposal reusing an id of a signed event is `tampered`; an approved event missing from the file is reported (`missing`, `canon_missing`). Newer verified revisions (a teammate's, pulled from git) raise the mark; a machine without a mark trusts the first verified revision it sees. Re-approving an unverifiable event never revives one the mark (or the stored status) says was retired/rejected.
+  - **Commands.** Approving never keeps a command implicitly: `adoptCheck` must be `true` (one unambiguous candidate) or the exact command text the person saw.
+  - Limits: tamper-evident, not tamper-proof. A malicious local process with full user rights can read the private key (or the cookie) and forge decisions. The audit trail shows `decidedVia`.
+- **Unreadable `canon.json`** (merge conflict): writers refuse; the capsule says the fixed points are UNKNOWN, `stringPayload` returns `unproven`, health reports `canon_unreadable`.
+- **Archivist.** The deterministic suggestions (nothing stored) come from:
+  - decisions on the HEAD path that are verified, or have ≥ 0.8 confidence plus a rationale;
+  - rules and facts phrased as obligations;
+  - measurable expected outcomes.
+
+  The LLM variant (`canon-llm.ts`) sends the dossier plus the existing canon and stores the returned items as `proposed` (source `archivist`).
+- **Enforcement.**
+  - In the capsule, hard events have priority 0 and are never trimmed.
+  - The reminder and the agent prompt list them.
+  - `scenaria_decide` validates the cited ids; `breaksCanon` needs a rationale on every path (engine-level, so also for chat blocks and the API).
+  - Metrics: `canon_broken`, `canon_check_failed`, `canon_overdue`, `canon_proposed`, `no_canon`, `canon_tampered`, `canon_untrusted`, `canon_unreadable`.
+  - Fidelity: `canonBroken` (score ≤ 40); `respectsCanon` anchors to at least 0.7.
+  - Board: section `canon`, risks for breaks. Expectations: `kN`.
+- **Checks** run `check` with a shell in the project root, only for active events and only on a person's request. The result (`lastCheck`) records HEAD and whether the tree was clean.
+- **String payload** (`stringPayload`):
+  - past canon + rules;
+  - the decisions on the path, with the option taken;
+  - future canon with its check status.
+
+  Verdict: `invalid` if a hard event is broken on the path or its check failed; `unproven` if hard future events are not passed yet; otherwise `valid`.
 
 ## Workspace, references and handoffs
 

@@ -4,10 +4,10 @@ import type { FidelityPoint } from "./api";
 import { NodeId } from "./Map";
 
 /** Flags worth showing on the line (task/lowSignal/noGoal are context, not events). */
-const EVENT_FLAGS = ["tampered", "builtOnTampered", "break", "goalChanged", "branch", "drift", "failed"] as const;
+const EVENT_FLAGS = ["tampered", "builtOnTampered", "canonBroken", "break", "goalChanged", "branch", "drift", "failed"] as const;
 type EventFlag = (typeof EVENT_FLAGS)[number];
-const GLYPH: Record<EventFlag, string> = { tampered: "⛔", builtOnTampered: "⚠", break: "↯", goalChanged: "◎", branch: "⑂", drift: "↗", failed: "✘" };
-const TONE: Record<EventFlag, string> = { tampered: "fail", builtOnTampered: "fail", break: "warn", goalChanged: "lesson", branch: "muted", drift: "warn", failed: "fail" };
+const GLYPH: Record<EventFlag, string> = { tampered: "⛔", builtOnTampered: "⚠", canonBroken: "⚑", break: "↯", goalChanged: "◎", branch: "⑂", drift: "↗", failed: "✘" };
+const TONE: Record<EventFlag, string> = { tampered: "fail", builtOnTampered: "fail", canonBroken: "fail", break: "warn", goalChanged: "lesson", branch: "muted", drift: "warn", failed: "fail" };
 
 export function scoreTone(score: number) {
   return score >= 75 ? "good" : score >= 50 ? "mid" : "low";

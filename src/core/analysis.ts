@@ -17,6 +17,7 @@ import { DEFAULT_PROXY } from "./engine.js";
 import { estimateTokens, optionLabel, taskNodes, taskRollup } from "./context.js";
 import { writeJsonAtomic } from "./store.js";
 import type { AnalysisConfig, ProjectRule, ScenariaNode } from "./types.js";
+import type { CanonEvent } from "./canon.js";
 
 export type Severity = "high" | "medium" | "low";
 
@@ -112,9 +113,35 @@ function emptyStat(): AgentStat {
 export function metrics(
   nodes: ScenariaNode[],
   head: string | null,
-  opts: { rewinds?: number; integrity?: Map<string, "ok" | "tampered" | "unsealed">; ledgerBrokenAt?: number | null; ledgerMissing?: boolean } = {},
+  opts: { rewinds?: number; integrity?: Map<string, "ok" | "tampered" | "unsealed">; ledgerBrokenAt?: number | null; ledgerMissing?: boolean; canon?: CanonEvent[]; canonError?: string | null; canonMissing?: string[] } = {},
 ): Metrics {
   const issues: Issue[] = [];
+  // Canon: fixed points broken, checks failed, deadlines passed, proposals waiting.
+  {
+    const canon = opts.canon ?? [];
+    const act = canon.filter((k) => k.status === "active");
+    const pathNow = pathSet(nodes, head);
+    for (const n of nodes) {
+      for (const id of n.breaksCanon ?? []) {
+        const k = act.find((x) => x.id === id);
+        if (k && pathNow.has(n.id)) issues.push({ code: "canon_broken", severity: k.hard ? "high" : "medium", message: `${n.id} breaks canon ${id} ("${short(k.text)}") on the current line.`, nodeId: n.id, subject: `${id}: ${short(k.text, 70)}` });
+      }
+    }
+    for (const k of act) {
+      if (k.lastCheck?.status === "failed") issues.push({ code: "canon_check_failed", severity: k.hard ? "high" : "medium", message: `Check of canon ${k.id} failed: "${short(k.text)}"`, subject: `${k.id}: ${short(k.text, 70)}` });
+      else if (k.kind === "future" && k.due && k.due < new Date().toISOString().slice(0, 10) && k.lastCheck?.status !== "passed") {
+        issues.push({ code: "canon_overdue", severity: "medium", message: `Canon ${k.id} was due ${k.due} and is not proven: "${short(k.text)}"`, subject: `${k.id}: ${short(k.text, 70)}` });
+      }
+    }
+    for (const k of canon.filter((x) => x.status === "tampered")) issues.push({ code: "canon_tampered", severity: "high", message: `Canon ${k.id} was changed outside Scenaria (approval signature invalid) — not binding until you re-approve it: "${short(k.text)}"`, subject: `${k.id}: ${short(k.text, 70)}` });
+    for (const k of canon.filter((x) => x.status === "untrusted")) issues.push({ code: "canon_untrusted", severity: "high", message: `Canon ${k.id} is signed by an approver key that is not trusted on this machine (${k.keyId ?? "?"}, says "${k.decidedBy ?? "?"}") — not binding. Re-approve it, or trust that teammate's key: scenaria canon trust <public key>.`, subject: `${k.id}: ${short(k.text, 70)}` });
+    for (const k of act.filter((x) => x.checkTampered)) issues.push({ code: "canon_check_tampered", severity: "high", message: `The last check result of canon ${k.id} was changed outside Scenaria (signature invalid) — ignored. Run the check again: "${short(k.text)}"`, subject: `${k.id}: ${short(k.text, 70)}` });
+    for (const id of opts.canonMissing ?? []) issues.push({ code: "canon_missing", severity: "high", message: `Approved canon ${id} is missing from canon.json — it was deleted outside Scenaria. Restore it (e.g. git checkout .scenaria/canon.json).`, subject: id });
+    if (opts.canonError) issues.push({ code: "canon_unreadable", severity: "high", message: opts.canonError });
+    const proposed = canon.filter((k) => k.status === "proposed").length;
+    if (proposed) issues.push({ code: "canon_proposed", severity: "low", message: `${proposed} proposed canon event(s) await your approval.`, value: proposed });
+    if (!act.length && nodes.filter((n) => n.type === "decision").length >= 5) issues.push({ code: "no_canon", severity: "low", message: "No canon events (fixed points) yet — decisions cannot be checked against hard constraints." });
+  }
   if (opts.ledgerMissing) issues.push({ code: "ledger_missing", severity: "high", message: "The integrity ledger was deleted — changes since then cannot be verified. Review, then run: scenaria integrity --reseal" });
   if (opts.ledgerBrokenAt) issues.push({ code: "ledger_broken", severity: "high", message: `The integrity ledger was edited or truncated (line ${opts.ledgerBrokenAt}) — history may have been manipulated.`, value: opts.ledgerBrokenAt });
   for (const n of nodes) {
@@ -237,6 +264,7 @@ export function metrics(
   let health = 100;
   if (!root?.goal) health -= 20;
   health -= Math.min(40, issues.filter((i) => i.code === "tampered" || i.code === "ledger_broken" || i.code === "ledger_missing").length * 20);
+  health -= Math.min(30, issues.filter((i) => ["canon_broken", "canon_check_failed", "canon_tampered", "canon_untrusted", "canon_missing", "canon_check_tampered", "canon_unreadable"].includes(i.code) && i.severity === "high").length * 15);
   health -= Math.min(25, Math.round((1 - decisionQualityAvg) * 40));
   health -= Math.min(30, issues.filter((i) => i.code === "built_on_failure").length * 15);
   health -= Math.min(10, counts.openDecisions * 2);
@@ -266,7 +294,10 @@ function short(s: string | undefined, max = 90): string {
 export function projectMetrics(s: Scenaria): Metrics {
   const rewinds = s.store.readEvents().filter((e) => e.type === "rewind").length;
   const integ = s.integrity();
-  return metrics(s.store.listNodes(), s.store.readState().head, { rewinds, integrity: integ.state, ledgerBrokenAt: integ.ledgerBrokenAt, ledgerMissing: integ.ledgerMissing });
+  return metrics(s.store.listNodes(), s.store.readState().head, { rewinds, integrity: integ.state, ledgerBrokenAt: integ.ledgerBrokenAt, ledgerMissing: integ.ledgerMissing, ...(() => {
+    const cs = s.canonState();
+    return { canon: cs.events, canonError: cs.error, canonMissing: cs.missing };
+  })() });
 }
 
 // ------------------------------------------------------------------ dossier (for any LLM)

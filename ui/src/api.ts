@@ -1,6 +1,10 @@
 import type { AnalysisConfig, ConversationMessage, ConversationSession, ProjectRule, ScenariaConfig, ScenariaEvent, ScenariaNode, ScenariaState } from "../../src/core/types";
 import type { AnalysisRecord, Metrics } from "../../src/core/analysis";
 import type { FidelityPoint } from "../../src/core/fidelity";
+import type { CanonEvent, CanonSuggestion } from "../../src/core/canon";
+import type { StringPayload } from "../../src/core/workspace";
+
+export type { CanonEvent, CanonSuggestion, StringPayload };
 
 export type { ScenariaNode, ScenariaEvent, ConversationMessage, ConversationSession, ProjectRule, AnalysisRecord, Metrics, AnalysisConfig, FidelityPoint };
 
@@ -60,6 +64,13 @@ export const api = {
   ingestText: (text: string) => req<{ created: { id: string; type: string; title: string }[]; errors: string[]; skipped: number }>("/api/v1/ingest-text", { text, log: true }),
   analysis: () => req<Metrics>("/api/analysis"),
   fidelity: () => req<Fidelity>("/api/fidelity"),
+  canon: () => req<{ events: CanonEvent[]; suggestions: CanonSuggestion[]; error: string | null; missing?: string[]; approval: boolean }>("/api/canon"),
+  approval: () => req<{ granted: boolean; mode: "local" | "team" | "disabled" }>("/api/approval"),
+  addCanon: (c: { kind: string; text: string; hard: boolean; check?: string; due?: string; evidence?: string[] }) => req<CanonEvent>("/api/canon", c),
+  decideCanon: (id: string, action: "approve" | "reject" | "retire" | "confirm", opts: { reason?: string; adoptCheck?: boolean | string } = {}) => req<CanonEvent>("/api/canon/decide", { id, action, ...opts }),
+  checkCanon: () => req<{ id: string; status: string; detail: string }[]>("/api/canon/check", {}),
+  archivist: (lang: string) => req<{ proposed: CanonEvent[]; skipped: number; model: string }>("/api/canon/archivist", { lang }),
+  stringAt: (id: string) => req<StringPayload>(`/api/v1/string?at=${encodeURIComponent(id)}`),
   analyses: () => req<AnalysisRecord[]>("/api/analysis/list"),
   dossier: (lang: string) => req<{ text: string; tokens: number; decisions: number; omitted: number }>(`/api/analysis/dossier?lang=${lang}`),
   analysisConfig: () => req<{ config: AnalysisConfig | null; envKeys: string[]; teamMode: boolean }>("/api/analysis/config"),

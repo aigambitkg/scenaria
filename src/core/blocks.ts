@@ -73,7 +73,7 @@ export function applyBlocks(s: Scenaria, text: string, actor: Actor = {}, task?:
     if (!fresh.has(i)) return;
     const before = errors.length;
     try {
-      const type = String(it.type ?? Object.keys(it).find((k) => ["decision", "task", "checkpoint", "lesson", "projectGoal", "rule"].includes(k)) ?? "");
+      const type = String(it.type ?? Object.keys(it).find((k) => ["decision", "task", "checkpoint", "lesson", "projectGoal", "rule", "canon"].includes(k)) ?? "");
       const body = it[type] !== undefined && typeof it[type] === "object" && !Array.isArray(it[type]) ? it[type] : it;
       switch (type) {
         case "decision": {
@@ -91,6 +91,8 @@ export function applyBlocks(s: Scenaria, text: string, actor: Actor = {}, task?:
               confidence: typeof body.confidence === "number" ? body.confidence : undefined,
               assumptions: strList(body.assumptions),
               basedOn: strList(body.basedOn),
+              respectsCanon: strList(body.respectsCanon),
+              breaksCanon: strList(body.breaksCanon),
               tags: ["from-chat"],
               ...actor,
               task,
@@ -131,6 +133,11 @@ export function applyBlocks(s: Scenaria, text: string, actor: Actor = {}, task?:
         case "projectGoal": {
           const g = typeof it.projectGoal === "string" ? it.projectGoal : String(body.text ?? "");
           if (g.trim()) created.push(s.setProjectGoal(g, actor));
+          break;
+        }
+        case "canon": {
+          // From a chat: always a proposal; the user approves it in the dashboard.
+          s.proposeCanon({ kind: body.kind === "future" ? "future" : "past", text: String(body.text ?? ""), due: body.due, evidence: strList(body.evidence) }, actor);
           break;
         }
         case "rule": {

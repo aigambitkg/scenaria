@@ -78,12 +78,21 @@ export interface CapsuleOptions {
   /** Token budget; lower-priority parts are dropped first. Default 1500. */
   budget?: number;
   rules?: { id: string; text: string }[];
+  /** Active canon events (fixed points); hard ones are never dropped. */
+  canon?: { line: string; hard: boolean }[];
+  canonProposals?: number;
+  canonTampered?: string[];
+  canonUntrusted?: string[];
+  /** canon.json could not be read (e.g. merge conflict): the fixed points are unknown. */
+  canonError?: string | null;
+  /** Approved events that disappeared from canon.json. */
+  canonMissing?: string[];
   /** Rollup for an earlier task (default: stored summary or deterministic rollup of its path segment). */
   taskSummary?: (goal: ScenariaNode) => string;
 }
 
-type Section = "head" | "rules" | "earlier" | "task" | "state" | "facts" | "request" | "foot";
-const ORDER: Section[] = ["head", "rules", "earlier", "task", "state", "facts", "request", "foot"];
+type Section = "head" | "canon" | "rules" | "earlier" | "task" | "state" | "facts" | "request" | "foot";
+const ORDER: Section[] = ["head", "canon", "rules", "earlier", "task", "state", "facts", "request", "foot"];
 
 interface Item {
   section: Section;
@@ -111,6 +120,8 @@ function decisionLine(n: ScenariaNode, next: ScenariaNode | undefined, detail: b
     if (n.servesGoal) out.push(`  - serves goal: ${short(n.servesGoal, 180)}`);
     if (n.expectedOutcome) out.push(`  - expected: ${short(n.expectedOutcome, 180)}`);
     if (n.basedOn?.length) out.push(`  - based on: ${n.basedOn.slice(0, 8).join(", ")}`);
+    if (n.breaksCanon?.length) out.push(`  - ⚠ BREAKS canon ${n.breaksCanon.join(", ")}`);
+    else if (n.respectsCanon?.length) out.push(`  - respects canon ${n.respectsCanon.join(", ")}`);
     if (n.confidence !== undefined && n.confidence < 0.6) out.push(`  - confidence ${Math.round(n.confidence * 100)} % — verify before building on it`);
     for (const a of n.assumptions ?? []) out.push(`  - assumption: ${short(a, 200)}`);
   }
@@ -148,6 +159,13 @@ export function composeContext(path: ScenariaNode[], opts: CapsuleOptions = {}):
   const goalIdx = path.map((n, i) => (n.type === "goal" ? i : -1)).filter((i) => i >= 0);
   const cur = goalIdx.length ? goalIdx[goalIdx.length - 1] : 0;
 
+  // Fixed points first: hard canon events are never dropped from the capsule.
+  for (const c of opts.canon ?? []) add("canon", c.hard ? 0 : 1, [c.line]);
+  if (opts.canonProposals) add("canon", 1, [`- (${opts.canonProposals} proposed canon event(s) await the user's approval — not binding yet)`]);
+  if (opts.canonError) add("canon", 0, [`- ⚠ The canon (fixed points) could not be read: ${opts.canonError.slice(0, 200)}. Treat hard constraints as UNKNOWN — do not assume there are none; tell the user.`]);
+  if (opts.canonMissing?.length) add("canon", 0, [`- ⚠ ${opts.canonMissing.join(", ")}: approved fixed point(s) missing from canon.json (deleted outside Scenaria) — treat as still binding until the user decides; tell the user.`]);
+  if (opts.canonUntrusted?.length) add("canon", 0, [`- ⚠ ${opts.canonUntrusted.join(", ")}: signed by an approver key that is not trusted here — not binding until the user re-approves or trusts that key; tell the user.`]);
+  if (opts.canonTampered?.length) add("canon", 0, [`- ⚠ ${opts.canonTampered.join(", ")}: changed outside Scenaria (signature invalid) — not binding until the user re-approves; tell the user.`]);
   for (const r of opts.rules ?? []) add("rules", 1, [`- ${r.id}: ${short(r.text, 240)}`]);
 
   // ---- earlier tasks on this path: one line each (newest kept longest)
@@ -242,6 +260,7 @@ export function composeContext(path: ScenariaNode[], opts: CapsuleOptions = {}):
   }
   const lines: string[] = [];
   const headings: Partial<Record<Section, string>> = {
+    canon: "## Canon — fixed points (every decision must respect them; breaking one needs breaksCanon + rationale)",
     rules: "## Project rules (always follow)",
     earlier: "## Earlier tasks on this path",
     task: task ? undefined : "## Path so far (decisions taken)",

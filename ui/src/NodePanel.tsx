@@ -304,6 +304,12 @@ export function NodePanel(props: {
                 <strong>{t.servesGoal}:</strong> {n.servesGoal}
               </p>
             )}
+            {(n.respectsCanon?.length || n.breaksCanon?.length) && (
+              <p className="rationale">
+                {n.breaksCanon?.length ? <span className="chip v-failed">⚑ {t.breaksCanon} {n.breaksCanon.join(", ")}</span> : null}{" "}
+                {n.respectsCanon?.length ? <span className="chip v-passed">✓ {t.respectsCanon} {n.respectsCanon.join(", ")}</span> : null}
+              </p>
+            )}
             {n.expectedOutcome && (
               <p className="rationale">
                 <strong>{t.expectedOutcome}:</strong> {n.expectedOutcome}

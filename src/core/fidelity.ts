@@ -17,7 +17,7 @@ import type { ScenariaNode } from "./types.js";
 import type { IntegrityState } from "./ledger.js";
 import { nodeText, tokenize } from "./recall.js";
 
-export type FidelityFlag = "break" | "drift" | "goalChanged" | "branch" | "tampered" | "builtOnTampered" | "lowSignal" | "noGoal" | "task" | "failed";
+export type FidelityFlag = "break" | "drift" | "goalChanged" | "branch" | "tampered" | "builtOnTampered" | "lowSignal" | "noGoal" | "task" | "failed" | "canonBroken" | "canonRespected";
 
 export interface FidelityPoint {
   id: string;
@@ -112,6 +112,8 @@ export function fidelityAll(nodes: ScenariaNode[], opts: { integrity?: Map<strin
       const goalSet = new Set([...f.mainGoal, ...f.taskGoal]);
       anchor = hasGoal || f.taskGoal.size ? norm(overlap(toks, goalSet), 0.18) : null;
       if (n.servesGoal) anchor = Math.max(anchor ?? 0, 0.8);
+      // Checked against the project's fixed points: anchored even when the wording differs.
+      if (n.respectsCanon?.length) anchor = Math.max(anchor ?? 0, 0.7);
       const window = new Set<string>([...f.taskGoal]);
       for (const a of f.anc.slice(-6)) for (const t of a.toks) window.add(t);
       continuity = norm(overlap(toks, window), 0.15);
@@ -135,6 +137,10 @@ export function fidelityAll(nodes: ScenariaNode[], opts: { integrity?: Map<strin
     } else score = anchor * W.anchor + continuity * W.continuity + integScore * W.integrity + epistemic * W.epistemic;
     score = Math.round(score * 100);
     if (integrity === "tampered") score = Math.min(score, 25);
+    if (n.breaksCanon?.length) {
+      flags.push("canonBroken");
+      score = Math.min(score, 40);
+    } else if (n.respectsCanon?.length) flags.push("canonRespected");
     if (!n.parentId) score = integrity === "tampered" ? 25 : 100;
     // A break: the step neither connects to its path nor to the goal, or fidelity falls sharply.
     if (n.type !== "goal" && n.parentId && signal && ((continuity < 0.12 && (anchor ?? 0) < 0.4) || (f.parent && f.parent.score - score >= 30))) flags.push("break");

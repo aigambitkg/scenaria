@@ -24,6 +24,7 @@ import { ulid, versionLabel } from "./ids.js";
 import { isForbiddenRoot } from "./global.js";
 import { Ledger, checkIntegrity, contentHash } from "./ledger.js";
 import { fidelityAll } from "./fidelity.js";
+import { activeCanon, addCanon, canonLines, canonState, decideCanon, readCanon, runCanonChecks, suggestCanon, type CanonAction, type CanonInput } from "./canon.js";
 
 export interface Actor {
   agent?: string;
@@ -86,6 +87,8 @@ export interface DecisionInput extends Actor {
   expectedOutcome?: string;
   /** References the decision rests on: node ids or item refs ("n12.f2", "r3"). */
   basedOn?: string[];
+  respectsCanon?: string[];
+  breaksCanon?: string[];
   task?: TaskHint;
   assumptions?: string[];
   confidence?: number;
@@ -1109,6 +1112,8 @@ export class Scenaria {
   }
 
   decide(input: DecisionInput): ScenariaNode {
+    // Breaking a fixed point is allowed, but never silently: every path (tools, API, chat blocks) needs a reason.
+    if (input.breaksCanon?.some((x) => String(x).trim()) && !input.rationale?.trim()) throw new Error("breaksCanon needs a rationale: why is breaking the fixed point justified?");
     return this.store.withLock(() => {
       const parent = this.ensureParent(input);
       const id = this.nextId();
@@ -1134,6 +1139,10 @@ export class Scenaria {
         servesGoal: input.servesGoal?.trim() || undefined,
         expectedOutcome: input.expectedOutcome?.trim() || undefined,
         basedOn: clean(input.basedOn),
+        // Only approved canon events count (a proposal is not binding yet).
+        // Breaking wins if an id is listed both ways.
+        respectsCanon: clean(input.respectsCanon?.filter((id) => !input.breaksCanon?.includes(id) && activeCanon(this.store).some((k) => k.id === id))),
+        breaksCanon: clean(input.breaksCanon?.filter((id) => activeCanon(this.store).some((k) => k.id === id))),
         trigger: this.recentUserRequest(parent),
         assumptions: clean(input.assumptions),
         confidence: typeof input.confidence === "number" ? Math.max(0, Math.min(1, input.confidence)) : undefined,
@@ -1464,8 +1473,55 @@ export class Scenaria {
       lastUserRequest: lastUser?.text ?? null,
       budget: opts.budget ?? cfg.contextBudget ?? 1500,
       rules: this.rules(),
+      ...(() => {
+        const cs = canonState(this.store);
+        return {
+          canon: canonLines(cs.events),
+          canonProposals: cs.events.filter((e) => e.status === "proposed").length,
+          canonTampered: cs.events.filter((e) => e.status === "tampered").map((e) => e.id),
+          canonUntrusted: cs.events.filter((e) => e.status === "untrusted").map((e) => e.id),
+          canonError: cs.error,
+          canonMissing: cs.missing,
+        };
+      })(),
     });
     return { nodeId: target, markdown: r.markdown, tokens: estimateTokens(r.markdown), historyTokens, omitted: r.omitted };
+  }
+
+  // ------------------------------------------------------------------ canon events (fixed points)
+  canon() {
+    return readCanon(this.store);
+  }
+
+  /** Canon events with trust info, plus a read error (e.g. merge conflict in canon.json). */
+  canonState() {
+    return canonState(this.store);
+  }
+
+  /** Agents and the archivist propose; the event stays "proposed" until a person approves it. */
+  proposeCanon(input: CanonInput, actor: Actor & { archivist?: boolean } = {}) {
+    return addCanon(this.store, input, { source: actor.archivist ? "archivist" : "agent", by: actor.agent ?? actor.user });
+  }
+
+  /** A person adds a fixed point directly (dashboard / interactive CLI). */
+  addCanonAsUser(input: CanonInput, who: { user?: string; via: string }) {
+    return addCanon(this.store, input, { source: "user", by: who.user ?? defaultUser(), via: who.via });
+  }
+
+  decideCanon(id: string, action: CanonAction, who: { user?: string; via: string; reason?: string; adoptCheck?: boolean | string }) {
+    return decideCanon(this.store, id, action, { by: who.user ?? defaultUser(), via: who.via, reason: who.reason, adoptCheck: who.adoptCheck, head: this.store.readState().head });
+  }
+
+  /** The archivist's candidate fixed points from the recorded history (nothing is stored). */
+  suggestCanon() {
+    const head = this.store.readState().head;
+    return suggestCanon(this.store, this.store.listNodes(), head ? this.path(head) : [], this.rules());
+  }
+
+  /** Run the check commands of approved canon events (a person's action; async). */
+  checkCanon(ids?: string[], by?: string) {
+    const head = this.head();
+    return runCanonChecks(this.store, { root: this.root, head: head?.id ?? null, clean: head ? !this.isDirty(head) : false, ids, by: by ?? defaultUser() });
   }
 
   // ------------------------------------------------------------------ project memory (rules)

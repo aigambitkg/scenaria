@@ -10,6 +10,7 @@
  */
 import type { Scenaria } from "./engine.js";
 import { nearestGoal } from "./context.js";
+import { readCanon, renderCanon } from "./canon.js";
 
 export type PromptKind = "mcp" | "cli" | "chat";
 export type Lang = "de" | "en";
@@ -70,6 +71,7 @@ export function agentPrompt(s: Scenaria, opts: { kind?: PromptKind; lang?: Lang;
           `6. Ältere Details → ${call("scenaria_recall", '{"query": "…"}')} statt lange Verläufe neu zu lesen. Verweise per Referenz (n12, n12.f2, r3) statt Inhalte zu kopieren; auflösen mit ${call("scenaria_get_node", '{"refs": ["n12.f2"]}')}.`,
           `7. Übernimmst du Arbeit von einem anderen Agenten/einer anderen Sitzung → ${call("scenaria_workspace", '{"reader": "<dein Name>"}')} (nur was du noch nicht kennst), dann ${call("scenaria_expect", '{"expectations": ["n12 done", "…"]}')} mit deinen Annahmen – prüfe nur die gemeldeten Abweichungen.`,
           `8. Unsichere Fakten mit Konfidenz festhalten: {"text": "…", "confidence": 0.6}. Einträge knapp, keine unbelegten Fakten.`,
+          `9. Kanon-Events (k1, k2 …) sind die Fixpunkte des Projekts: prüfe jede Entscheidung dagegen (respectsCanon); einen zu brechen braucht breaksCanon + Begründung. Neuen Fixpunkt erkannt → ${call("scenaria_canon", '{"action": "propose", "kind": "past|future", "text": "…"}')} – gültig wird er erst nach meiner Freigabe.`,
         ]
       : [
           `1. At the start: ${call("scenaria_status", "{}")} and ${call("scenaria_context", "{}")}. There is exactly ONE project tree – never start a new one.`,
@@ -81,6 +83,7 @@ export function agentPrompt(s: Scenaria, opts: { kind?: PromptKind; lang?: Lang;
           `6. Older details → ${call("scenaria_recall", '{"query": "…"}')} instead of re-reading long histories. Refer by reference (n12, n12.f2, r3) instead of copying content; resolve with ${call("scenaria_get_node", '{"refs": ["n12.f2"]}')}.`,
           `7. Taking over from another agent or session → ${call("scenaria_workspace", '{"reader": "<your name>"}')} (only what you do not know yet), then ${call("scenaria_expect", '{"expectations": ["n12 done", "…"]}')} with your assumptions — check only the reported deviations.`,
           `8. Record uncertain facts with a confidence: {"text": "…", "confidence": 0.6}. Keep entries short; never record unverified facts.`,
+          `9. Canon events (k1, k2 …) are the project's fixed points: check every decision against them (respectsCanon); breaking one needs breaksCanon + a rationale. New fixed point noticed → ${call("scenaria_canon", '{"action": "propose", "kind": "past|future", "text": "…"}')} — it only becomes binding after my approval.`,
         ];
     lines.push("", ...(steps.filter(Boolean) as string[]));
     if (kind === "cli") {
@@ -105,11 +108,13 @@ export function agentPrompt(s: Scenaria, opts: { kind?: PromptKind; lang?: Lang;
       "```",
       "",
       de
-        ? `Weitere Formen (auch mehrere als JSON-Liste): {"task": {"title": "…", "goal": "…"}} bei einer neuen Aufgabe · {"checkpoint": {"title": "…", "outputs": ["…"], "taskDone": false}} nach einem Ergebnis · {"lesson": "…"} nach einem Fehler${x.goal ? "" : ` · {"projectGoal": "…"} sobald das Hauptziel feststeht`}. Ansonsten antworte ganz normal.`
-        : `Other forms (several as a JSON list): {"task": {"title": "…", "goal": "…"}} for new work · {"checkpoint": {"title": "…", "outputs": ["…"], "taskDone": false}} after a result · {"lesson": "…"} after a mistake${x.goal ? "" : ` · {"projectGoal": "…"} once the main goal is clear`}. Otherwise answer normally.`,
+        ? `Weitere Formen (auch mehrere als JSON-Liste): {"task": {"title": "…", "goal": "…"}} bei einer neuen Aufgabe · {"checkpoint": {"title": "…", "outputs": ["…"], "taskDone": false}} nach einem Ergebnis · {"lesson": "…"} nach einem Fehler · {"canon": {"kind": "past|future", "text": "…"}} für einen neuen Fixpunkt (ich gebe ihn frei)${x.goal ? "" : ` · {"projectGoal": "…"} sobald das Hauptziel feststeht`}. Ansonsten antworte ganz normal.`
+        : `Other forms (several as a JSON list): {"task": {"title": "…", "goal": "…"}} for new work · {"checkpoint": {"title": "…", "outputs": ["…"], "taskDone": false}} after a result · {"lesson": "…"} after a mistake · {"canon": {"kind": "past|future", "text": "…"}} for a new fixed point (I approve it)${x.goal ? "" : ` · {"projectGoal": "…"} once the main goal is clear`}. Otherwise answer normally.`,
     );
   }
 
+  const canon = renderCanon(readCanon(s.store), 12);
+  if (canon.length) lines.push("", de ? "Kanon-Events (Fixpunkte, nie ohne Begründung brechen):" : "Canon events (fixed points, never break them without a rationale):", ...canon);
   if (x.rules.length) {
     lines.push("", de ? "Projektregeln (immer befolgen):" : "Project rules (always follow):", ...x.rules.map((r) => `- ${r.text}`));
   }
@@ -130,5 +135,6 @@ export function promptReminder(s: Scenaria): string {
     `new task → scenaria_start_mission (adds a task to the ONE project tree); real choice → scenaria_decide with context, rationale, servesGoal; step done → scenaria_checkpoint; details → scenaria_recall.`,
   ].filter(Boolean);
   const rules = x.rules.slice(0, 3).map((r) => oneLine(r.text, 120));
-  return parts.join(" · ") + (rules.length ? ` Rules: ${rules.join(" | ")}` : "");
+  const hard = readCanon(s.store).filter((k) => k.status === "active" && k.hard).slice(0, 4).map((k) => `${k.id} ${oneLine(k.text, 90)}`);
+  return parts.join(" · ") + (hard.length ? ` Canon (respect; cite in respectsCanon): ${hard.join(" | ")}.` : "") + (rules.length ? ` Rules: ${rules.join(" | ")}` : "");
 }

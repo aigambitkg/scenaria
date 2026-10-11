@@ -450,3 +450,33 @@ code { font-family: var(--mono); font-size: 0.88em; }
 .fid-table summary { cursor: pointer; font-size: 12px; color: var(--ink-2); margin-top: 6px; }
 .fid-table .log td { padding: 3px 6px; }
 .fidelity .hint { margin-top: 6px !important; font-size: 11.5px; }
+
+/* ---------- v0.6: canon events ---------- */
+.canon-list { list-style: none; padding: 0 !important; display: flex; flex-direction: column; gap: 8px; }
+.canon-item { border: 1px solid var(--rule); border-left: 4px solid var(--ink); border-radius: 2px; padding: 8px 10px; }
+.canon-item.k-future { border-left-style: dashed; }
+.canon-item p { margin: 4px 0 !important; font-size: 13.5px; }
+.canon-main { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.canon-id { font-family: var(--math); font-style: italic; font-size: 15px; }
+.chip.k-past { border-color: var(--ink); color: var(--ink); }
+.chip.k-future { border-color: var(--lesson); color: var(--lesson); }
+.small { font-size: 12px; }
+.canon-form { display: grid; grid-template-columns: 1fr; gap: 8px; max-width: 640px; }
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 3px; overflow: hidden; width: max-content; }
+.seg button { border: 0; background: none; padding: 5px 12px; font: inherit; font-size: 13px; cursor: pointer; color: var(--ink-2); }
+.seg button.on { background: var(--ink); color: var(--surface); }
+.verdict-box { border-left: 4px solid var(--ink-3); padding-left: 10px !important; }
+.verdict-box.v-valid { border-left-color: var(--pass); }
+.verdict-box.v-unproven { border-left-color: var(--warn); }
+.verdict-box.v-invalid { border-left-color: var(--fail); }
+.hchip:not(.good):not(.mid):not(.low) { color: var(--ink-2); }
+/* top bar: many actions — let them wrap instead of clipping */
+.topbar { flex-wrap: wrap; row-gap: 8px; }
+.top-actions { flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.goalbar { min-width: 260px; }
+@media (max-width: 1500px) { .live { display: none; } .top-actions .btn { padding-left: 9px; padding-right: 9px; } }
+.canon-item.tampered { border-left-color: var(--fail); background: color-mix(in srgb, var(--fail) 5%, transparent); }
+.canon-item.closed { border-left-color: var(--rule); color: var(--ink-2); font-size: 13px; }
+code.cmd { white-space: pre-wrap; word-break: break-all; background: var(--paper); border: 1px solid var(--rule); padding: 1px 5px; border-radius: 2px; }
+.suggested { border: 1px dashed var(--warn); padding: 6px 8px; border-radius: 2px; margin: 4px 0; }
+.suggested .check { margin-top: 4px; }

@@ -5,7 +5,7 @@ import { dict, initialLang, saveLang, type Lang } from "./i18n";
 import { layoutTree, taskOf } from "./layout";
 import { NodeId, ScenarioMap } from "./Map";
 import { NodePanel } from "./NodePanel";
-import { AnalysisDialog, ConversationsDialog, DiffDialog, PromptDialog, ProtocolDialog, RewindDialog } from "./Dialogs";
+import { AnalysisDialog, CanonDialog, ConversationsDialog, DiffDialog, PromptDialog, ProtocolDialog, RewindDialog } from "./Dialogs";
 
 type Pending =
   | { mode: "rewind"; node: ScenariaNode }
@@ -30,6 +30,8 @@ export function App() {
   const [health, setHealth] = useState<number | null>(null);
   const [headCtx, setHeadCtx] = useState<{ tokens: number; historyTokens: number } | null>(null);
   const [fidelity, setFidelity] = useState<Fidelity | null>(null);
+  const [canonOpen, setCanonOpen] = useState(false);
+  const [canonInfo, setCanonInfo] = useState<{ active: number; proposed: number } | null>(null);
   const [pending, setPending] = useState<Pending>(null);
   const [diff, setDiff] = useState<{ from: string; to: string; stat: string; patch: string } | null>(null);
   const [log, setLog] = useState<ScenariaEvent[] | null>(null);
@@ -103,6 +105,10 @@ export function App() {
   useEffect(() => {
     api.analysis().then((m) => setHealth(m.health)).catch(() => setHealth(null));
     api.fidelity().then(setFidelity).catch(() => setFidelity(null));
+    api
+      .canon()
+      .then((c) => setCanonInfo({ active: c.events.filter((e) => e.status === "active").length, proposed: c.events.filter((e) => e.status === "proposed").length }))
+      .catch(() => setCanonInfo(null));
     if (headId) api.context(headId).then((c) => setHeadCtx(c)).catch(() => setHeadCtx(null));
   }, [graph?.version, headId]);
 
@@ -203,6 +209,10 @@ export function App() {
           </button>
           <button className="btn accent" onClick={() => setPromptOpen(true)} title={t.promptHintShort}>
             {t.agentPrompt}
+          </button>
+          <button className="btn" onClick={() => setCanonOpen(true)} title={t.canonHint}>
+            {t.canon}
+            {canonInfo && canonInfo.proposed > 0 ? <span className="hchip mid">{canonInfo.proposed}</span> : canonInfo ? <span className="hchip">{canonInfo.active}</span> : null}
           </button>
           <button className="btn" onClick={() => setAnalysisOpen(true)}>
             {t.analysis}
@@ -334,6 +344,19 @@ export function App() {
           onSelectNode={(id) => {
             if (graph?.nodes.some((x) => x.id === id)) setSelected(id);
             setConvos(false);
+          }}
+        />
+      )}
+      {canonOpen && (
+        <CanonDialog
+          t={t}
+          lang={lang}
+          toast={toast}
+          onClose={() => setCanonOpen(false)}
+          onChanged={load}
+          onSelectNode={(id) => {
+            if (graph?.nodes.some((x) => x.id === id)) setSelected(id);
+            setCanonOpen(false);
           }}
         />
       )}

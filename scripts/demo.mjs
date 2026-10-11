@@ -171,6 +171,11 @@ const alt = s.checkpoint({
   ...altAgent,
 });
 s.verify(alt.id, { by: "scenaria-auto" });
+// Fixed points: one confirmed by the user, one future milestone with a check, one proposal by the archivist.
+s.addCanonAsUser({ kind: "past", text: L("Keine Cookies, keine Tracking-Skripte", "No cookies, no tracking scripts") }, { user: "kev", via: "demo" });
+s.addCanonAsUser({ kind: "future", text: L("Anfragen erreichen den Vertrieb innerhalb von 60 Sekunden", "Enquiries reach sales within 60 seconds"), check: "node -e \"process.exit(0)\"", due: "2026-12-01" }, { user: "kev", via: "demo" });
+s.proposeCanon({ kind: "past", text: L("Formular-Versand nur über serverseitige API-Routen", "Form delivery only via server-side API routes"), evidence: [alt.id] }, { agent: "archivist", archivist: true });
+await s.checkCanon(undefined, "kev");
 s.addRule(
   L("Behauptete Dateien und externe Effekte erst nach Prüfung festhalten", "Record claimed files and external effects only after checking them"),
   "lesson",

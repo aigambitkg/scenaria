@@ -119,6 +119,7 @@ const READ_SAFE_TOOLS = [
   "scenaria_health",
   "scenaria_workspace",
   "scenaria_expect",
+  "scenaria_canon",
   "scenaria_start_mission",
   "scenaria_decide",
   "scenaria_choose",
