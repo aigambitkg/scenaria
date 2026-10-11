@@ -31,6 +31,8 @@ import { stems, overlap } from "./fidelity.js";
 import { nodeText } from "./recall.js";
 import { effectiveLlm, upstreams, type LlmRole } from "./settings.js";
 import { writeJsonAtomic } from "./store.js";
+import { createHash } from "node:crypto";
+import { signRecord, verifyRecord } from "./canon.js";
 
 export interface QuickForecast {
   /** 0..100: predicted context retention (combined). */
@@ -43,6 +45,10 @@ export interface QuickForecast {
   warnings: string[];
   /** Canon events the option touches (by wording; the oracle judges respect/break). */
   canonTouched: string[];
+  /** Fixed points the option touches, as readable hints (hard / with a date = future at stake). */
+  canonHints: string[];
+  /** "low": the option says too little to judge it (e.g. "yes"/"no") — use the multiverse. */
+  signal: "ok" | "low";
   /** If the option was already explored: how that branch really went. */
   explored?: { node: string; measured: number };
 }
@@ -95,6 +101,13 @@ export interface Forecast {
   recommended?: { key: string; why: string };
   warnings: string[];
   actual?: ForecastActual[];
+  /** Prompts: the variant the person used (marked later), and how the line went after the forecast. */
+  used?: string;
+  actualLine?: { measured: number; nodes: number };
+  /** Signature by Scenaria (approver key, bound to the project); computed on read: verified or not. */
+  sig?: string;
+  pub?: string;
+  verified?: boolean;
 }
 
 type Lang = "de" | "en";
@@ -144,7 +157,7 @@ function lineContext(s: Scenaria, at: string | null, opts: { excludeLast?: boole
   };
 }
 
-function quickFor(text: string, lc: LineContext): QuickForecast {
+function quickFor(text: string, lc: LineContext, signal: "ok" | "low" = "ok"): QuickForecast {
   const toks = stems(text);
   const goalSet = new Set([...lc.mainGoal, ...lc.taskGoal]);
   const goal = goalSet.size ? norm(overlap(toks, goalSet), 0.18) : null;
@@ -156,10 +169,15 @@ function quickFor(text: string, lc: LineContext): QuickForecast {
     .sort((a, b) => b.o - a.o)
     .slice(0, 3)
     .map((x) => `${x.l.node}: ${one(x.l.text, 160)}`);
-  const canonTouched = lc.canon.filter((e) => overlap(toks, stems(e.text)) >= 0.25).map((e) => e.id);
-  const penalty = Math.min(0.3, warnings.length * 0.12);
+  const touched = lc.canon.filter((e) => overlap(toks, stems(e.text)) >= 0.25);
+  const canonTouched = touched.map((e) => e.id);
+  // The future enters the quick layer through the fixed points: touching a hard or dated one is a
+  // risk the oracle must judge (the wording alone cannot say whether the option keeps or breaks it).
+  const canonHints = touched.map((e) => `${e.id}${e.hard ? " (hard" : " (soft"}${e.kind === "future" ? `, future${e.due ? `, by ${e.due}` : ""}` : ""}): ${one(e.text, 120)}`);
+  const atStake = touched.filter((e) => e.hard && (e.kind === "future" || e.due)).length;
+  const penalty = Math.min(0.4, warnings.length * 0.12 + atStake * 0.08);
   const base = goal === null ? continuity : goal * 0.5 + continuity * 0.5;
-  return { score: clamp((base * (1 - penalty)) * 100), goal: goal === null ? null : clamp(goal * 100), continuity: clamp(continuity * 100), warnings, canonTouched };
+  return { score: clamp(base * (1 - penalty) * 100), goal: goal === null ? null : clamp(goal * 100), continuity: clamp(continuity * 100), warnings, canonTouched, canonHints, signal };
 }
 
 /** Options of a decision with their quick forecast — instant, no model. */
@@ -171,8 +189,9 @@ export function quickDecision(s: Scenaria, nodeId: string): ForecastOption[] {
   const kids = s.children(d.id);
   return (d.options ?? []).map((o) => {
     const own = `${o.label} ${o.description ?? ""}`;
-    // Very short options ("Ja"/"Nein") get the question for meaning.
-    const q = quickFor(stems(own).size >= 3 ? own : `${d.question ?? d.title} ${own}`, lc);
+    // Very short options ("Ja"/"Nein") get the question for meaning — and are marked as low signal.
+    const low = stems(own).size < 3;
+    const q = quickFor(low ? `${d.question ?? d.title} ${own}` : own, lc, low ? "low" : "ok");
     // Already explored or chosen: the real branch says more than any prediction.
     const branch = kids.find((k) => k.viaOption === o.id) ?? (d.chosen === o.id ? kids.find((k) => !k.viaOption) : undefined);
     if (branch && fid[branch.id]) q.explored = { node: branch.id, measured: measuredAfter(s, branch.id, fid).measured };
@@ -250,7 +269,11 @@ export function listForecasts(s: Scenaria): Forecast[] {
     .filter((f) => /^f\d+\.json$/.test(f))
     .map((f) => {
       try {
-        return JSON.parse(readFileSync(join(d, f), "utf8")) as Forecast;
+        const x = JSON.parse(readFileSync(join(d, f), "utf8")) as Forecast;
+        // A forecast file written around Scenaria (e.g. by an agent) is shown as unverified and
+        // never counts (it cannot suppress or replace a real forecast).
+        x.verified = verifyRecord(s.store, ["forecast/v1", x.id, digest(x)], x.pub, x.sig);
+        return x;
       } catch {
         return null;
       }
@@ -259,11 +282,22 @@ export function listForecasts(s: Scenaria): Forecast[] {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
+/** Content hash of a forecast without the computed / signature fields. */
+function digest(f: Forecast): string {
+  const { sig, pub, verified, actual, actualLine, used, ...content } = f;
+  void sig, pub, verified, actual, actualLine, used;
+  return createHash("sha256").update(JSON.stringify(content)).digest("hex");
+}
+
 function save(s: Scenaria, f: Omit<Forecast, "id">): Forecast {
   mkdirSync(dir(s), { recursive: true });
   const id = `f${listForecasts(s).reduce((m, x) => Math.max(m, parseInt(x.id.slice(1), 10) || 0), 0) + 1}`;
   const out = { id, ...f } as Forecast;
+  const sg = signRecord(s.store, ["forecast/v1", id, digest(out)]);
+  out.sig = sg.sig;
+  out.pub = sg.pub;
   writeJsonAtomic(join(dir(s), `${id}.json`), out);
+  out.verified = true;
   s.store.appendEvent({ type: "analysis", nodeId: f.subject.kind === "decision" ? f.subject.node : undefined, data: { message: `forecast ${id} (${f.mode}) for ${f.subject.kind === "decision" ? f.subject.node : "a prompt"}${f.recommended ? `, recommends ${f.recommended.key}` : ""}`, id } });
   return out;
 }
@@ -279,6 +313,8 @@ export interface ForecastRequest {
   lang?: Lang;
   llm?: Partial<LlmRequest>;
   trigger?: Forecast["trigger"];
+  /** Only the person's global model settings (automatic mode). */
+  globalOnly?: boolean;
 }
 
 /** Create a forecast. Multiverse (three roles) unless `quick`; the quick layer is always included. */
@@ -314,7 +350,7 @@ export async function forecast(s: Scenaria, req: ForecastRequest): Promise<Forec
   const models: Forecast["models"] = {};
   const warnings: string[] = [];
   const ask = async (role: "archivist" | "craftsman" | "oracle", user: string) => {
-    const cfg = effectiveLlm(s, role, req.llm);
+    const cfg = effectiveLlm(s, role, req.llm, { globalOnly: req.globalOnly });
     if (!cfg) throw new Error("No model configured — choose one in Settings.");
     const out = await callLlm(cfg, ups, PROMPTS[role](lang), user);
     models[role] = out.model;
@@ -332,7 +368,8 @@ export async function forecast(s: Scenaria, req: ForecastRequest): Promise<Forec
   const lessons = lc.lessons.slice(-12).map((l) => `- ${l.node}: ${l.text}`).join("\n") || "(none)";
   const a = await ask("archivist", `${question}\nOPTIONS:\n${optionList}\n\nPAST FIXED POINTS:\n${canonText(active, "past")}\n\nRULES:\n${s.rules().map((r) => `- ${r.id}: ${r.text}`).join("\n") || "(none)"}\n\nLESSONS:\n${lessons}\n\n--- DOSSIER ---\n${dossier(s, { maxTokens: 4000 }).text}`);
   // 2. Craftsman — present only (the current line, compact).
-  const capsule = lineAt ? s.context(lineAt, { budget: 900 }).markdown : "(no history yet)";
+  // The present only: the capsule without future fixed points (those belong to the oracle).
+  const capsule = lineAt ? s.context(lineAt, { budget: 900 }).markdown.split("\n").filter((l) => !/^- k\d+ \(future/.test(l)).join("\n") : "(no history yet)";
   const archNotes = (Array.isArray(a.options) ? a.options : []).map((x: any) => `- ${one(x?.key, 10)}: ${one(x?.past, 400)}`).join("\n");
   const c = await ask("craftsman", `${goalLine}\n${question}\nOPTIONS:\n${optionList}\n\nWHAT THE PAST SAYS (archivist):\n${archNotes || "(nothing)"}\n\nCURRENT LINE:\n${capsule}`);
   // 3. Oracle — future only.
@@ -383,8 +420,27 @@ export function evaluateForecasts(s: Scenaria): { forecasts: Forecast[]; calibra
   const fid = s.fidelity().points;
   const all = listForecasts(s);
   const errors: number[] = [];
+  const nodes = s.store.listNodes();
   for (const f of all) {
-    if (f.subject.kind !== "decision" || !s.store.hasNode(f.subject.node)) continue;
+    if (!f.verified) continue;
+    if (f.subject.kind === "prompt") {
+      // The line after the prompt forecast: first node created afterwards on a line through `at`.
+      const at = f.subject.at;
+      const after = nodes.filter((n) => n.createdAt >= f.createdAt && (!at || n.parentId === at)).sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+      if (after) {
+        const m = measuredAfter(s, after.id, fid);
+        if (m.nodes) {
+          f.actualLine = m;
+          const usedOpt = f.options.find((o) => o.key === f.used);
+          if (usedOpt) {
+            f.actual = [{ option: usedOpt.key, measured: m.measured, predicted: usedOpt.score, error: Math.abs(m.measured - usedOpt.score), nodes: m.nodes }];
+            errors.push(f.actual[0].error);
+          }
+        }
+      }
+      continue;
+    }
+    if (!s.store.hasNode(f.subject.node)) continue;
     const d = s.node(f.subject.node);
     const kids = s.children(d.id);
     const actual: ForecastActual[] = [];
@@ -405,11 +461,48 @@ export function evaluateForecasts(s: Scenaria): { forecasts: Forecast[]; calibra
   };
 }
 
-/** Open decisions without a multiverse forecast yet (for the automatic mode). */
+/** Open decisions ON THE CURRENT LINE without a verified multiverse forecast (automatic mode). */
 export function openWithoutForecast(s: Scenaria): string[] {
-  const done = new Set(listForecasts(s).filter((f) => f.mode === "multiverse" && f.subject.kind === "decision").map((f) => (f.subject as { node: string }).node));
-  return s.store
-    .listNodes()
+  const done = new Set(listForecasts(s).filter((f) => f.verified && f.mode === "multiverse" && f.subject.kind === "decision").map((f) => (f.subject as { node: string }).node));
+  const head = s.store.readState().head;
+  if (!head) return [];
+  // Abandoned (rewound-away) decisions are not forecast: only the HEAD line and its open decision.
+  return s
+    .path(head)
     .filter((n) => n.type === "decision" && !n.chosen && (n.options?.length ?? 0) > 1 && !done.has(n.id))
     .map((n) => n.id);
+}
+
+/** Mark which prompt variant the person really used (for the evaluation of prompt forecasts). */
+export function markUsed(s: Scenaria, id: string, key: string): Forecast {
+  const f = listForecasts(s).find((x) => x.id === id);
+  if (!f || f.subject.kind !== "prompt") throw new Error(`${id} is not a prompt forecast`);
+  if (!f.options.some((o) => o.key === key)) throw new Error(`unknown variant ${key}`);
+  const { verified, ...raw } = f;
+  void verified;
+  writeJsonAtomic(join(dir(s), `${id}.json`), { ...raw, used: key });
+  return { ...f, used: key };
+}
+
+/** Save the quick forecast of a freshly recorded open decision (no model) so it can be evaluated later. */
+export function snapshotQuick(s: Scenaria, nodeId: string): Forecast | null {
+  try {
+    const d = s.node(nodeId);
+    if (d.type !== "decision" || d.chosen || (d.options?.length ?? 0) < 2) return null;
+    const options = quickDecision(s, nodeId);
+    const best = [...options].sort((a, b) => b.score - a.score)[0];
+    return save(s, { subject: { kind: "decision", node: d.id, question: d.question ?? d.title }, createdAt: new Date().toISOString(), mode: "quick", trigger: "auto", models: {}, options, recommended: best ? { key: best.key, why: "highest context forecast (no model)" } : undefined, warnings: [] });
+  } catch {
+    return null;
+  }
+}
+
+/** One line for agents and the CLI: the forecast per option, and whether it can tell them apart. */
+export function quickSummary(options: ForecastOption[], lang: Lang = "en"): string {
+  const parts = options.map((o) => `${o.key} ${o.score}%${o.quick.warnings.length ? " ⚠lesson" : ""}${o.quick.canonHints.length ? ` ⚑${o.quick.canonTouched.join(",")}` : ""}${o.quick.signal === "low" ? " (?)" : ""}`);
+  const scores = options.map((o) => o.score);
+  const close = Math.max(...scores) - Math.min(...scores) < 6;
+  const low = options.every((o) => o.quick.signal === "low");
+  const note = close || low ? (lang === "de" ? " — nicht unterscheidbar ohne Modell: Multiversum empfohlen" : " — not distinguishable without a model: multiverse recommended") : "";
+  return parts.join(" · ") + note;
 }

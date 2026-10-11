@@ -527,7 +527,8 @@ export async function chat(s: Scenaria, req: ChatRequest): Promise<ChatResponse>
   let decisions: Record<string, "approve" | "deny"> = Object.fromEntries(Object.entries(req.decisions ?? {}).filter(([id, v]) => waitingAtStart.has(id) && (v === "approve" || v === "deny")));
   let model = cfg.model;
   let steps = 0;
-  const ctx = () => ({ model, user: req.user, lang, llm: req.llm });
+  // A session key typed for the chat's provider is never handed to another provider's role model.
+  const ctx = () => ({ model, user: req.user, lang, llm: req.llm?.apiKey ? { ...req.llm, keyFor: req.llm.keyFor ?? cfg.provider } : req.llm });
 
   const record = () => {
     try {

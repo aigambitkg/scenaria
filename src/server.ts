@@ -25,7 +25,7 @@ import { archivistProposals } from "./core/canon-llm.js";
 import { gateMatrix, runGate } from "./core/gate.js";
 import { effectiveLlm, listModels, readSettings, upstreams, writeSettings } from "./core/settings.js";
 import { listRelays, runRelay } from "./core/relay.js";
-import { evaluateForecasts, forecast, openWithoutForecast, quickDecision, quickPrompt } from "./core/forecast.js";
+import { evaluateForecasts, forecast, listForecasts, markUsed, openWithoutForecast, quickDecision, quickPrompt } from "./core/forecast.js";
 import { chat } from "./chat.js";
 import { TARGETS, agentStatus, connectionSnippets, setupAgents, type Target } from "./setup.js";
 import { callLlm } from "./core/analysis.js";
@@ -176,19 +176,29 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
   let approvalLinkSecret = opts.token ? opts.approverToken : opts.approvalCode;
   const isApprover = (req: IncomingMessage) => tokenMatches(approvalCookie(req), approvalSecret);
   let lastVersion = s.store.version();
-  // Automatic multiverse forecasts for open decisions (the person's setting; this process is the
-  // person's dashboard). One at a time; a failure is retried after 10 minutes, never in a loop.
+  // Automatic multiverse forecasts for open decisions on the current line — only when the person
+  // switched it on in Settings, only with the model the PERSON chose (never the project file), with a
+  // daily limit. One at a time; at most two attempts per decision, then it is reported as failed.
   let forecasting: string | null = null;
-  const failedAt = new Map<string, number>();
+  const attempts = new Map<string, { n: number; at: number; error?: string }>();
   const autoForecast = () => {
     if (forecasting || opts.autoForecast === false) return;
     try {
-      if (!readSettings(s).forecast.auto || !effectiveLlm(s, "oracle")) return;
-      const next = openWithoutForecast(s).find((id) => Date.now() - (failedAt.get(id) ?? 0) > 600_000);
+      const st = readSettings(s);
+      if (!st.forecast.auto || !effectiveLlm(s, "oracle", undefined, { globalOnly: true })) return;
+      const today = new Date().toISOString().slice(0, 10);
+      const usedToday = listForecasts(s).filter((f) => f.trigger === "auto" && f.mode === "multiverse" && f.createdAt.startsWith(today)).length;
+      if (usedToday >= st.forecast.dailyLimit) return;
+      const next = openWithoutForecast(s).find((id) => {
+        const a = attempts.get(id);
+        return !a || (a.n < 2 && Date.now() - a.at > 600_000);
+      });
       if (!next) return;
       forecasting = next;
-      forecast(s, { node: next, trigger: "auto", lang: "de" })
-        .catch(() => failedAt.set(next, Date.now()))
+      const roles = (["archivist", "craftsman", "oracle"] as const).map((r) => effectiveLlm(s, r, undefined, { globalOnly: true }));
+      if (roles.some((r) => !r)) return void (forecasting = null);
+      forecast(s, { node: next, trigger: "auto", lang: st.ui.lang, globalOnly: true })
+        .catch((err) => attempts.set(next, { n: (attempts.get(next)?.n ?? 0) + 1, at: Date.now(), error: String(err?.message ?? err).slice(0, 200) }))
         .finally(() => {
           forecasting = null;
         });
@@ -399,7 +409,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         // Binding canon actions, the person's settings, the built-in chat and the relay: only with the
         // approval session (not with the API/agent token) — they act for the person or use the person's keys.
         // (The archivist and the analysis also spend the person's quota with the person's keys.)
-        const personOnly = p.startsWith("/api/canon") || p.startsWith("/api/settings") || p.startsWith("/api/agents") || p === "/api/chat" || p === "/api/relay" || p === "/api/forecast" || p === "/api/analysis/run" || p === "/api/analysis/config";
+        const personOnly = p.startsWith("/api/canon") || p.startsWith("/api/settings") || p.startsWith("/api/agents") || p === "/api/chat" || p === "/api/relay" || p.startsWith("/api/forecast") || p === "/api/analysis/run" || p === "/api/analysis/config";
         if (personOnly && req.method === "POST" && !isApprover(req)) {
           return send(res, 403, { error: "This is the person's action (approvals, settings, chat, relay, analysis with your keys): open the approval link from the terminal running Scenaria (scenaria start/ui). Agents can only propose.", code: "approval_required" });
         }
@@ -461,7 +471,14 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         if (req.method === "GET" && p === "/api/relay") return send(res, 200, listRelays(s));
 
         // ---------- forecasts (multiverse) ----------
-        if (req.method === "GET" && p === "/api/forecasts") return send(res, 200, { ...evaluateForecasts(s), running: forecasting, open: openWithoutForecast(s) });
+        if (req.method === "GET" && p === "/api/forecasts") {
+          const failed = Object.fromEntries([...attempts].filter(([, a]) => a.n >= 2).map(([id, a]) => [id, a.error ?? "failed"]));
+          return send(res, 200, { ...evaluateForecasts(s), running: forecasting, open: openWithoutForecast(s), failed, auto: readSettings(s).forecast });
+        }
+        if (req.method === "POST" && p === "/api/forecast/used") {
+          const b = await readBody(req);
+          return send(res, 200, markUsed(s, String(b?.id ?? ""), String(b?.key ?? "")));
+        }
         if (req.method === "GET" && p === "/api/forecast/quick") {
           const node = url.searchParams.get("node");
           if (node) return send(res, 200, { node, options: quickDecision(s, node) });

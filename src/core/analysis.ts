@@ -399,6 +399,8 @@ const KEY_ENV: Record<string, string> = {
 export interface LlmRequest extends AnalysisConfig {
   /** Only for this request — never stored. */
   apiKey?: string;
+  /** The provider `apiKey` belongs to: it is never handed to another provider's role model. */
+  keyFor?: string;
 }
 
 // Official endpoints of providers that use keys (local servers like Ollama/LM Studio never get one).

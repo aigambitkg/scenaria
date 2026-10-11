@@ -761,7 +761,10 @@ async function main() {
         confidence: v.confidence ? Number(v.confidence) : undefined,
         ...actor,
       });
-      return out(describe(n), n);
+      // Open decision: the forecast per option before anyone chooses (no model).
+      const { snapshotQuick, quickSummary } = await import("./core/forecast.js");
+      const f = n.chosen ? null : snapshotQuick(s, n.id);
+      return out(`${describe(n)}${f ? `\nForecast (context kept, before choosing): ${quickSummary(f.options)}  ${C.dim}(details: scenaria forecast ${n.id} --quick)${C.reset}` : ""}`, n);
     }
     case "choose": {
       const s = Scenaria.open(v.root);

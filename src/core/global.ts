@@ -30,8 +30,9 @@ export interface GlobalConfig {
    */
   trustedEndpoints?: string[];
   chat?: { confirmDestructive?: boolean; maxSteps?: number };
-  /** Forecast every open decision automatically with the multiverse (dashboard running). Default on. */
-  forecast?: { auto?: boolean };
+  /** Forecast open decisions on the current line automatically with the multiverse (dashboard running). Opt-in. */
+  forecast?: { auto?: boolean; dailyLimit?: number };
+  ui?: { lang?: "de" | "en" };
 }
 
 /**

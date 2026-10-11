@@ -204,3 +204,88 @@ test("chat: the multiverse is a chat tool", async () => {
     tc.close();
   }
 });
+
+test("review fixes: automatic multiverse is opt-in, uses only the person's model, has a daily limit and skips abandoned lines", async () => {
+  const { p, s } = project();
+  const llm = await fakeLlm(multiverseReplies);
+  const app = createApp(s, { approvalCode: "c", approvalSecret: "sess" });
+  try {
+    // 1. default: off — even with a model in the agent-writable project config
+    const cfg = s.config();
+    cfg.analysis = { provider: "fake", model: "m", baseUrl: llm.base };
+    s.store.writeConfig(cfg);
+    writeSettings({ llm: {} });
+    s.decide({ question: "Next feature?", options: [{ label: "Streak reminder", description: "push" }, { label: "NFT skins", description: "tokens" }] });
+    await new Promise((r) => setTimeout(r, 2500));
+    assert.equal(listForecasts(s).filter((f) => f.mode === "multiverse").length, 0, "no spending without the person's opt-in");
+    // 2. opted in, but only the project file has a model → still nothing
+    writeSettings({ forecast: { auto: true, dailyLimit: 1 } });
+    s.checkpoint({ title: "tick" });
+    await new Promise((r) => setTimeout(r, 2500));
+    assert.equal(llm.seen.length, 0, "never the project's model for automatic forecasts");
+    // 3. the person's model + opt-in → exactly one (daily limit 1)
+    writeSettings({ llm: { default: { provider: "fake", model: "m", baseUrl: llm.base } }, forecast: { auto: true, dailyLimit: 1 } });
+    const d2 = s.decide({ question: "Reminder channel?", options: [{ label: "Push notification", description: "mobile push" }, { label: "E-mail digest", description: "daily mail" }] });
+    for (let i = 0; i < 40 && !listForecasts(s).some((f) => f.mode === "multiverse"); i++) await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 1500));
+    const mv = listForecasts(s).filter((f) => f.mode === "multiverse");
+    assert.equal(mv.length, 1, `daily limit 1: ${mv.map((f) => f.subject.node)}`);
+    assert.ok(mv[0].verified);
+    void d2;
+  } finally {
+    app.close();
+    llm.close();
+    writeSettings({ llm: {}, forecast: { auto: false, dailyLimit: 20 } });
+  }
+  // abandoned decisions (rewound away) are not candidates
+  const { openWithoutForecast } = await import("../dist/core/forecast.js");
+  const x = project();
+  const dd = x.s.decide({ question: "Abandoned?", options: [{ label: "One way", description: "first" }, { label: "Other way", description: "second" }] });
+  x.s.rewind("n1", {});
+  assert.ok(!openWithoutForecast(x.s).includes(dd.id));
+});
+
+test("review fixes: forged forecast files are unverified and never count; prompts are evaluated after use", async () => {
+  const { p, s } = project();
+  const d = s.decide({ question: "Next?", options: [{ label: "Streak reminder", description: "push" }, { label: "NFT skins", description: "tokens" }] });
+  const { writeFileSync, mkdirSync } = await import("node:fs");
+  mkdirSync(join(p.dir, ".scenaria/forecasts"), { recursive: true });
+  writeFileSync(join(p.dir, ".scenaria/forecasts/f9.json"), JSON.stringify({ id: "f9", subject: { kind: "decision", node: d.id, question: "Next?" }, createdAt: new Date().toISOString(), mode: "multiverse", trigger: "person", models: {}, options: [], recommended: { key: "b", why: "trust me" }, warnings: [] }));
+  const forged = listForecasts(s).find((f) => f.id === "f9");
+  assert.equal(forged.verified, false);
+  const { openWithoutForecast } = await import("../dist/core/forecast.js");
+  assert.ok(openWithoutForecast(s).includes(d.id), "a forged file does not suppress the real forecast");
+  assert.doesNotMatch(callTool(s, "scenaria_forecast", { id: d.id }, ctx).text, /trust me/);
+  // prompt forecast: evaluated against the line after it, for the variant the person used
+  const f = await forecast(s, { prompt: "Continue n2: the streak reminder push for daily quests", variants: ["do stuff"], quick: true });
+  const { markUsed } = await import("../dist/core/forecast.js");
+  markUsed(s, f.id, "p");
+  s.choose(d.id, "a", "keeps the line");
+  p.write("z.txt", "1");
+  s.checkpoint({ title: "Streak reminder push for daily quests done" });
+  const ev = evaluateForecasts(s).forecasts.find((x) => x.id === f.id);
+  assert.ok(ev.verified);
+  assert.ok(ev.actualLine?.nodes >= 1, JSON.stringify(ev));
+  assert.equal(ev.actual?.[0].option, "p");
+});
+
+test("review fixes: low-signal options are flagged; fixed points at stake are shown; session keys stay with their provider", async () => {
+  const { s } = project();
+  s.addCanonAsUser({ kind: "future", text: "Quest launch in November", due: "2026-11-30" }, { user: "kev", via: "cli" });
+  const d = s.decide({ question: "Move the quest launch?", options: ["Ja", "Nein"] });
+  const q = quickDecision(s, d.id);
+  assert.ok(q.every((o) => o.quick.signal === "low"));
+  const { quickSummary } = await import("../dist/core/forecast.js");
+  assert.match(quickSummary(q, "de"), /nicht unterscheidbar ohne Modell/);
+  const d2 = s.decide({ question: "Plan?", options: [{ label: "Postpone the quest launch to February", description: "more time" }, { label: "Finish the quest launch in November", description: "on time" }] });
+  const q2 = quickDecision(s, d2.id);
+  assert.ok(q2.some((o) => o.quick.canonHints.some((h) => /k1 \(hard, future, by 2026-11-30\)/.test(h))), JSON.stringify(q2.map((o) => o.quick.canonHints)));
+  const { effectiveLlm } = await import("../dist/core/settings.js");
+  writeSettings({ llm: { default: { provider: "openai", model: "gpt" }, roles: { oracle: { provider: "anthropic", model: "claude" } } } });
+  try {
+    assert.equal(effectiveLlm(s, "oracle", { apiKey: "sk-openai", keyFor: "openai" }).apiKey, undefined, "an OpenAI session key never goes to the Anthropic oracle");
+    assert.equal(effectiveLlm(s, "archivist", { apiKey: "sk-openai", keyFor: "openai" }).apiKey, "sk-openai");
+  } finally {
+    writeSettings({ llm: {} });
+  }
+});

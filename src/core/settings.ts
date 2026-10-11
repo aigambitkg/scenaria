@@ -28,12 +28,15 @@ export function upstreams(s: Scenaria): Record<string, string> {
 }
 
 /** Which model does a function use? Role → default → the project's analysis setting. */
-export function effectiveLlm(s: Scenaria, role: LlmRole, override?: Partial<LlmRequest>): LlmRequest | null {
+export function effectiveLlm(s: Scenaria, role: LlmRole, override?: Partial<LlmRequest>, opts: { globalOnly?: boolean } = {}): LlmRequest | null {
   const g = readGlobalConfig().llm ?? {};
-  const pick: LlmChoice | undefined = g.roles?.[role] ?? g.default ?? (s.config().analysis ? { ...s.config().analysis! } : undefined);
+  // globalOnly: only what the person chose in Settings (never the project file an agent can edit).
+  const pick: LlmChoice | undefined = g.roles?.[role] ?? g.default ?? (!opts.globalOnly && s.config().analysis ? { ...s.config().analysis! } : undefined);
   if (override?.provider && override?.model) return { provider: override.provider, model: override.model, baseUrl: override.baseUrl, apiKey: override.apiKey };
   if (!pick) return null;
-  return { provider: pick.provider, model: pick.model, baseUrl: pick.baseUrl, apiKey: override?.apiKey };
+  // A session key goes only to the provider it was entered for.
+  const key = override?.apiKey && (!override.keyFor || override.keyFor === pick.provider) ? override.apiKey : undefined;
+  return { provider: pick.provider, model: pick.model, baseUrl: pick.baseUrl, apiKey: key };
 }
 
 function clean(c: any): LlmChoice | undefined {
@@ -50,7 +53,9 @@ export interface SettingsView {
   effective: Record<LlmRole, LlmChoice | null>;
   trustedEndpoints: string[];
   chat: { confirmDestructive: boolean; maxSteps: number };
-  forecast: { auto: boolean };
+  /** Automatic multiverse for open decisions: opt-in, with a daily limit. */
+  forecast: { auto: boolean; dailyLimit: number };
+  ui: { lang: "de" | "en" };
   /** Which providers have a key in the environment (names only, never values). */
   envKeys: Record<string, string[]>;
   upstreams: Record<string, string>;
@@ -74,14 +79,15 @@ export function readSettings(s: Scenaria): SettingsView {
     effective,
     trustedEndpoints: g.trustedEndpoints ?? [],
     chat: { confirmDestructive: g.chat?.confirmDestructive !== false, maxSteps: Math.min(30, Math.max(1, g.chat?.maxSteps ?? 10)) },
-    forecast: { auto: g.forecast?.auto !== false },
+    forecast: { auto: g.forecast?.auto === true, dailyLimit: Math.min(200, Math.max(1, g.forecast?.dailyLimit ?? 20)) },
+    ui: { lang: g.ui?.lang === "en" ? "en" : "de" },
     envKeys,
     upstreams: upstreams(s),
   };
 }
 
 /** A person's change (dashboard with approval session, or CLI). */
-export function writeSettings(patch: { llm?: { default?: unknown; roles?: Record<string, unknown> }; trustedEndpoints?: unknown; chat?: { confirmDestructive?: unknown; maxSteps?: unknown }; forecast?: { auto?: unknown } }) {
+export function writeSettings(patch: { llm?: { default?: unknown; roles?: Record<string, unknown> }; trustedEndpoints?: unknown; chat?: { confirmDestructive?: unknown; maxSteps?: unknown }; forecast?: { auto?: unknown; dailyLimit?: unknown }; ui?: { lang?: unknown } }) {
   const g = readGlobalConfig();
   if (patch.llm) {
     const roles: LlmSettings["roles"] = {};
@@ -100,7 +106,8 @@ export function writeSettings(patch: { llm?: { default?: unknown; roles?: Record
       maxSteps: Math.min(30, Math.max(1, Number(patch.chat.maxSteps) || 10)),
     };
   }
-  if (patch.forecast) g.forecast = { auto: patch.forecast.auto !== false };
+  if (patch.forecast) g.forecast = { auto: patch.forecast.auto === true, dailyLimit: Math.min(200, Math.max(1, Number(patch.forecast.dailyLimit) || 20)) };
+  if (patch.ui) g.ui = { lang: patch.ui.lang === "en" ? "en" : "de" };
   writeGlobalConfig(g);
   return g;
 }
