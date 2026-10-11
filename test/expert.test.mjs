@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { Scenaria } from "../dist/core/index.js";
 import { createApp } from "../dist/server.js";
@@ -82,6 +83,7 @@ test("expert lenses: the model is checked against the facts — contradictions, 
         { lens: "architecture", title: "Streak counter storage is well designed", severity: "low", evidence: [cp.id], impact: "quest table and streak counter are in one place" },
         { lens: "goal", title: "Marketing budget is too small", severity: "medium", evidence: [cp.id], impact: "no growth" },
         { lens: "architecture", title: "Made-up KPI", severity: "medium", metric: { name: "magic", value: 3 }, impact: "x" },
+        { lens: "workflow", title: "Frequent context breaks", severity: "high", evidence: [], metric: { name: "fidelityBreaks", value: factSheet(s).kpis.fidelityBreaks }, impact: "the thread is lost often" },
         { lens: "governance", title: "Fixed points missing", severity: "medium", metric: { name: "canonActive", value: 0 }, impact: "about 613 constraints are unprotected" },
       ],
       rootCauses: ["agent prompt does not ask for a rationale"],
@@ -114,6 +116,12 @@ test("expert lenses: the model is checked against the facts — contradictions, 
     // M2: evidence must be about the finding; numbers in free text must come from the facts
     assert.equal(r.findings.find((x) => x.title.startsWith("Streak counter")).verified, true);
     assert.equal(r.findings.find((x) => x.title.startsWith("Marketing")).verified, false, "an existing but unrelated id does not back a finding");
+    // R3: a right value with a statement pointing the other way is flagged
+    if (factSheet(s).kpis.fidelityBreaks === 0) {
+      const fb = r.findings.find((x) => x.title === "Frequent context breaks");
+      assert.equal(fb.contradicted, true);
+      assert.match(fb.note, /does not fit fidelityBreaks = 0/);
+    }
     const fixed = r.findings.find((x) => x.title === "Fixed points missing");
     assert.equal(fixed.verified, false);
     assert.match(fixed.note, /number\(s\) 613 not in the facts/);
@@ -244,6 +252,18 @@ test("dashboard: reading is open, running and adopting are the person's; agents 
     app.close();
     server.close();
   }
+});
+
+test("CLI: reports across projects only at the person's terminal", () => {
+  const { s } = project();
+  const run = (...a) => spawnSync(process.execPath, [join(process.cwd(), "dist", "cli.js"), "analyst", ...a, "--root", s.root], { encoding: "utf8", env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+  const all = run("--scope", "all", "--no-model");
+  assert.notEqual(all.status, 0);
+  assert.match(all.stderr + all.stdout, /interactive terminal/);
+  assert.match(run("g1").stderr + run("g1").stdout, /interactive terminal/);
+  const one = run("--no-model");
+  assert.equal(one.status, 0, one.stderr);
+  assert.match(one.stdout, /Experten-Analyse x1/);
 });
 
 test("MCP tool gives a baseline without storing anything when no report exists", () => {

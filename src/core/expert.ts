@@ -516,6 +516,17 @@ interface ExpertPart {
   validation: ExpertReport["validation"];
 }
 
+/** KPIs where high is good / where any count is bad. */
+const GOOD_HIGH = new Set(["rationaleRate", "fidelity", "decisionQuality", "health"]);
+const BAD_COUNT = new Set(["fidelityBreaks", "drifts", "linesInvalid", "canonBroken", "verifiedFailed", "openDecisions"]);
+const NEGATIVE = /\b(fehl|mangel|wenig|kaum|niedrig|gering|schwach|ohne|lack|missing|few|low|weak|poor|without|insufficient|rarely|selten)/i;
+/** A right value with a statement that points the other way (heuristic; the facts summary stays on top). */
+function implausible(m: { name: string; value: number }, text: string, severity: Finding["severity"]): boolean {
+  if (GOOD_HIGH.has(m.name)) return m.value >= 90 && NEGATIVE.test(text);
+  if (BAD_COUNT.has(m.name)) return m.value === 0 && severity !== "low";
+  return false;
+}
+
 /** Validates the model's answer against the facts. */
 export function validateExpert(d: Draft, x: any, model: string): ExpertPart {
   const de = d.lang === "de";
@@ -569,6 +580,12 @@ export function validateExpert(d: Draft, x: any, model: string): ExpertPart {
           notes.push(de ? `Widerspricht den Fakten: Modell ${one(it.metric.value, 20)}, Fakten ${real}` : `contradicts the facts: model ${one(it.metric.value, 20)}, facts ${real}`);
         }
       } else notes.push(de ? `Kennzahl „${name}“ unbekannt – verworfen` : `unknown metric "${name}" dropped`);
+    }
+    // The value can be right while the statement is not ("rationale is missing" at 100 %).
+    if (metric && !contradicted && implausible(metric, `${title} ${impact}`, asSev(it?.severity))) {
+      contradicted = true;
+      validation.contradicted++;
+      notes.push(de ? `Aussage passt nicht zum Wert ${metric.name} = ${metric.value} – prüfen` : `statement does not fit ${metric.name} = ${metric.value} — check it`);
     }
     const nums = unmatchedNumbers(impact, known);
     if (nums.length) {

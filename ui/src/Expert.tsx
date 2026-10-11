@@ -196,7 +196,9 @@ export function ReportView(props: { t: Dict; r: ExpertReport; onNode: (id: strin
 
       {r.rootCauses.length > 0 && (
         <>
-          <h4>{t.xRootCauses}</h4>
+          <h4>
+            {t.xRootCauses} <span className="muted small">— {t.xByModel}</span>
+          </h4>
           <ul>
             {r.rootCauses.map((x, i) => (
               <li key={i}>{x}</li>
@@ -206,7 +208,9 @@ export function ReportView(props: { t: Dict; r: ExpertReport; onNode: (id: strin
       )}
       {r.strengths.length > 0 && (
         <>
-          <h4>{t.xStrengths}</h4>
+          <h4>
+            {t.xStrengths} <span className="muted small">— {t.xByModel}</span>
+          </h4>
           <ul>
             {r.strengths.map((x, i) => (
               <li key={i}>{x}</li>

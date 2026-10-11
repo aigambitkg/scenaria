@@ -578,8 +578,10 @@ async function main() {
     }
     case "analyst": {
       const s = Scenaria.open(v.root);
-      const { expertAnalysis, listReports, getReport, adoptRecommendation } = await import("./core/expert.js");
+      const { expertAnalysis, listReports, listPersonalReports, getReport, adoptRecommendation } = await import("./core/expert.js");
       const personTerminal = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+      // Reports across projects contain other projects' data: the person's, at their terminal.
+      if ((p[0]?.startsWith("g") || v.scope === "all") && !personTerminal) throw new Error("Reports across all projects are yours (they contain other projects' data): run this in an interactive terminal or in the dashboard.");
       if (p[0]) {
         const r = getReport(s, p[0]);
         if (v.adopt !== undefined) {
@@ -595,7 +597,7 @@ async function main() {
         return out(r.markdown, r);
       }
       if (!v.scope && !v.head && !v["no-model"] && !v.llm) {
-        const rs = listReports(s);
+        const rs = [...listReports(s), ...(personTerminal ? listPersonalReports(s) : [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
         return out(rs.length ? rs.map((r) => `${r.id}  ${r.createdAt.slice(0, 16).replace("T", " ")}  ${r.scope.kind.padEnd(7)} ${(r.model ?? "rule-based").padEnd(24)} maturity ${r.maturity.score}/100 · ${r.findings.length} findings · ${r.recommendations.length} recommendations`).join("\n") + `\n${C.dim}Show: scenaria analyst <id> · new: scenaria analyst --scope project|line|all [--no-model]${C.reset}` : `No expert reports yet. Run: scenaria analyst --scope project  (or --no-model for the rule-based report)`, rs);
       }
       // With a model it spends the person's quota with their keys: a person at a terminal.
