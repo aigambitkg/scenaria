@@ -29,7 +29,7 @@ import { autoBudget, evaluateForecasts, forecast, markUsed, openWithoutForecast,
 import { chat } from "./chat.js";
 import { TARGETS, agentStatus, connectionSnippets, setupAgents, type Target } from "./setup.js";
 import { callLlm } from "./core/analysis.js";
-import { adoptRecommendation, expertAnalysis, factSheet, getReport, listReports } from "./core/expert.js";
+import { adoptRecommendation, expertAnalysis, factSheet, getReport, listPersonalReports, listReports } from "./core/expert.js";
 import { listProjects, registerProject } from "./core/projects.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
@@ -582,11 +582,17 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         }
         // ---------- expert analyst (report to optimise with) ----------
         if (req.method === "GET" && p === "/api/expert") {
-          return send(res, 200, { reports: listReports(s).map((r) => ({ id: r.id, createdAt: r.createdAt, scope: r.scope, model: r.model, maturity: r.maturity, findings: r.findings.length, recommendations: r.recommendations.length, projects: r.facts.map((f) => f.project) })), facts: factSheet(s), projects: listProjectsSafe(s) });
+          // Reports across projects and the list of projects are the person's (other projects' data):
+          // only with the approval session, never in team mode.
+          const person = isApprover(req) && !token;
+          const row = (r: ReturnType<typeof listReports>[number]) => ({ id: r.id, createdAt: r.createdAt, scope: r.scope, model: r.model, maturity: r.maturity, findings: r.findings.length, recommendations: r.recommendations.length, projects: r.facts.map((f) => f.project), verified: r.verified });
+          return send(res, 200, { reports: [...listReports(s), ...(person ? listPersonalReports(s) : [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(row), facts: factSheet(s), projects: person ? listProjectsSafe(s).map((x) => ({ name: x.name, lastSeen: x.lastSeen, current: x.root === s.root })) : [], person });
         }
         if (req.method === "GET" && p === "/api/expert/report") {
+          const id = String(url.searchParams.get("id") ?? "");
+          if (id.startsWith("g") && !(isApprover(req) && !token)) return send(res, 403, { error: "Reports across projects are the person's.", code: "approval_required" });
           try {
-            return send(res, 200, getReport(s, String(url.searchParams.get("id") ?? "")));
+            return send(res, 200, getReport(s, id));
           } catch (err: any) {
             return send(res, 404, { error: err?.message ?? String(err) });
           }

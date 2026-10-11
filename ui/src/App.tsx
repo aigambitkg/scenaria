@@ -502,6 +502,10 @@ export function App() {
           lang={lang}
           keys={keys}
           toast={toast}
+          onOpenCanon={() => {
+            setAnalysisOpen(false);
+            setCanonOpen(true);
+          }}
           onClose={() => setAnalysisOpen(false)}
           onSelectNode={(id) => {
             if (graph?.nodes.some((x) => x.id === id)) setSelected(id);

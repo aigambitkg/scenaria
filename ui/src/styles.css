@@ -639,3 +639,13 @@ table.gate tr.current td:first-child { box-shadow: inset 4px 0 0 var(--marker-so
 .x-panel select { max-width: 100%; }
 .x-scope label.check { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; width: auto; margin: 0; }
 .x-scope label.check input { margin: 0; width: auto; }
+.x-contra { opacity: 0.72; }
+.x-model { border-left: 3px solid var(--rule); padding-left: 10px; }
+@media (max-width: 640px) {
+  .modal, .modal.wide { width: 100%; max-width: 100vw; }
+  .modal-body { padding: 12px; }
+  .fc-tabs { flex-wrap: wrap; }
+  .x-head { flex-direction: column; }
+  .llm-form { grid-template-columns: 1fr !important; }
+  table.log { display: block; overflow-x: auto; }
+}

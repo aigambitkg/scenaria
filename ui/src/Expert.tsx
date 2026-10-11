@@ -55,14 +55,16 @@ function Evidence({ ids, onNode }: { ids: string[]; onNode: (id: string) => void
 
 function FindingRow({ t, f, onNode, multi }: { t: Dict; f: Finding; onNode: (id: string) => void; multi: boolean }) {
   return (
-    <li className={sevClass(f.severity)}>
+    <li className={`${sevClass(f.severity)}${f.contradicted ? " x-contra" : ""}`}>
       <strong>{f.title}</strong> {multi && f.project && <span className="chip">{f.project}</span>}
       {f.metric && (
         <span className="chip" title={f.metric.name}>
           {t.xKpi[f.metric.name] ?? f.metric.name} = {f.metric.value}
         </span>
       )}
-      {f.verified ? (
+      {f.contradicted ? (
+        <span className="chip v-failed">✘ {t.xContradicts}</span>
+      ) : f.verified ? (
         <span className="chip v-passed" title={t.xVerifiedHint}>
           ✓
         </span>
@@ -76,7 +78,7 @@ function FindingRow({ t, f, onNode, multi }: { t: Dict; f: Finding; onNode: (id:
   );
 }
 
-export function ReportView(props: { t: Dict; r: ExpertReport; onNode: (id: string) => void; onAdopt: (index: number) => Promise<void>; toast: (m: string) => void }) {
+export function ReportView(props: { t: Dict; r: ExpertReport; onNode: (id: string) => void; onAdopt: (index: number) => Promise<void>; toast: (m: string) => void; onEditGoal?: () => void; onOpenCanon?: () => void }) {
   const { t, r } = props;
   const multi = r.facts.length > 1;
   const [adopting, setAdopting] = useState<number | null>(null);
@@ -92,6 +94,7 @@ export function ReportView(props: { t: Dict; r: ExpertReport; onNode: (id: strin
             <strong>{r.maturity.level}</strong> · {r.model ?? t.xRuleBased} · {new Date(r.createdAt).toLocaleString()} · {r.facts.map((f) => f.project).join(", ")}
           </p>
           {r.maturity.reasoning && <p className="muted small">{r.maturity.reasoning}</p>}
+          {r.maturity.model !== undefined && <p className="muted small">{t.xMaturityRuleModel(r.maturity.rule, r.maturity.model)}</p>}
         </div>
         <div className="x-export">
           <button className="btn" onClick={async () => props.toast((await copy(r.markdown)) ? t.copiedShort : r.markdown.slice(0, 80))}>
@@ -103,20 +106,32 @@ export function ReportView(props: { t: Dict; r: ExpertReport; onNode: (id: strin
         </div>
       </div>
 
+      {r.verified === false && <p className="qnote q-warn">⚠ {t.xUnconfirmed}</p>}
       <h4>{t.xSummary}</h4>
       <p>{r.summary}</p>
+      {r.modelSummary && (
+        <div className="x-model">
+          <h4>
+            {t.xModelView} <span className="muted small">— {t.xModelViewHint}</span>
+          </h4>
+          <p>{r.modelSummary}</p>
+          {r.unmatchedNumbers?.length ? <p className="small"><span className="chip v-warning">{t.xNumbersUnmatched(r.unmatchedNumbers.join(", "))}</span></p> : null}
+        </div>
+      )}
 
       <h4>{t.xRecommendations}</h4>
       <ol className="x-recs">
         {r.recommendations.map((x, i) => {
           const done = r.adopted?.includes(i);
+          const canAdopt = r.verified !== false && x.kind !== "task" && !x.contradicted;
           return (
-            <li key={i}>
+            <li key={i} className={x.contradicted ? "x-contra" : ""}>
               <span className={`chip prio-${x.priority}`}>{x.priority}</span> <strong>{x.title}</strong>{" "}
+              <span className="chip">{x.kind === "task" ? t.xTask : t.xRule}</span>{" "}
               <span className="muted small">
                 {t.xLens[x.lens]} · {t.xEffort} {x.effort}
               </span>
-              {!x.verified && <span className="chip v-warning">{t.xUnverified}</span>}
+              {x.contradicted ? <span className="chip v-failed">✘ {t.xContradicts}</span> : !x.verified && <span className="chip v-warning">{t.xUnverified}</span>}
               <div>{x.action}</div>
               {(x.metric || x.expected) && (
                 <div className="muted small">
@@ -126,24 +141,36 @@ export function ReportView(props: { t: Dict; r: ExpertReport; onNode: (id: strin
               )}
               <Evidence ids={x.evidence} onNode={props.onNode} />
               <div>
+                {x.kind === "task" && x.do === "setGoal" && props.onEditGoal && (
+                  <button className="btn link" onClick={props.onEditGoal}>
+                    → {t.xDoSetGoal}
+                  </button>
+                )}
+                {x.kind === "task" && x.do === "canon" && props.onOpenCanon && (
+                  <button className="btn link" onClick={props.onOpenCanon}>
+                    → {t.xDoCanon}
+                  </button>
+                )}
                 {done ? (
                   <span className="chip v-passed">✓ {t.xAdopted}</span>
                 ) : (
-                  <button
-                    className="btn link"
-                    title={t.xAdoptHint}
-                    disabled={adopting !== null}
-                    onClick={async () => {
-                      setAdopting(i);
-                      try {
-                        await props.onAdopt(i);
-                      } finally {
-                        setAdopting(null);
-                      }
-                    }}
-                  >
-                    {adopting === i ? "…" : `＋ ${t.xAdopt}`}
-                  </button>
+                  canAdopt && (
+                    <button
+                      className="btn link"
+                      title={t.xAdoptHint}
+                      disabled={adopting !== null}
+                      onClick={async () => {
+                        setAdopting(i);
+                        try {
+                          await props.onAdopt(i);
+                        } finally {
+                          setAdopting(null);
+                        }
+                      }}
+                    >
+                      {adopting === i ? "…" : `＋ ${t.xAdopt}`}
+                    </button>
+                  )
                 )}
               </div>
             </li>
@@ -187,12 +214,12 @@ export function ReportView(props: { t: Dict; r: ExpertReport; onNode: (id: strin
           </ul>
         </>
       )}
-      {r.model && <p className="muted small">{t.xValidation(r.validation.corrected, r.validation.dropped, r.validation.unverified)}</p>}
+      {r.model && <p className="muted small">{t.xValidation(r.validation.contradicted ?? 0, r.validation.dropped, r.validation.numbers ?? 0, r.validation.unverified)}</p>}
     </div>
   );
 }
 
-export function ExpertPanel(props: { t: Dict; lang: "de" | "en"; keys: SessionKeys; toast: (m: string) => void; onSelectNode: (id: string) => void; onRulesChanged: () => void }) {
+export function ExpertPanel(props: { t: Dict; lang: "de" | "en"; keys: SessionKeys; toast: (m: string) => void; onSelectNode: (id: string) => void; onRulesChanged: () => void; onEditGoal?: () => void; onOpenCanon?: () => void }) {
   const { t } = props;
   const [page, setPage] = useState<ExpertPage | null>(null);
   const [report, setReport] = useState<ExpertReport | null>(null);
@@ -265,7 +292,7 @@ export function ExpertPanel(props: { t: Dict; lang: "de" | "en"; keys: SessionKe
         <div className="x-scope" role="radiogroup">
           {(["project", "line", "all"] as const).map((s) => (
             <label key={s} className="check">
-              <input type="radio" name="x-scope" checked={scope === s} onChange={() => setScope(s)} />
+              <input type="radio" name="x-scope" checked={scope === s} disabled={s === "all" && page !== null && !page.person} onChange={() => setScope(s)} />
               <span>{s === "project" ? t.xScopeProject : s === "line" ? t.xScopeLine : t.xScopeAll}</span>
             </label>
           ))}
@@ -279,7 +306,8 @@ export function ExpertPanel(props: { t: Dict; lang: "de" | "en"; keys: SessionKe
             ))}
           </select>
         )}
-        {scope === "all" && page && <p className="muted small">{t.xAllCount(page.projects.length)}</p>}
+        {scope === "all" && page && <p className="muted small">{t.xAllCount(page.projects.length)}: {page.projects.map((x) => x.name).join(", ")}</p>}
+        {page && !page.person && <p className="muted small">{t.xAllPersonOnly}</p>}
         <p className="muted small">{model ? `${t.xModelUsed}: ${model.provider}/${model.model}` : t.xNoModel}</p>
         <div className="row">
           <button className="btn primary" disabled={busy || !approval || !model || (scope === "line" && !head)} onClick={() => run(false)}>
@@ -316,6 +344,8 @@ export function ExpertPanel(props: { t: Dict; lang: "de" | "en"; keys: SessionKe
             t={t}
             r={report}
             toast={props.toast}
+            onEditGoal={props.onEditGoal}
+            onOpenCanon={props.onOpenCanon}
             onNode={props.onSelectNode}
             onAdopt={async (i) => {
               try {

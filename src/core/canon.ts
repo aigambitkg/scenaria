@@ -554,6 +554,15 @@ export function signRecord(store: Store, parts: unknown[]): { pid: string; pub: 
   return { pid, pub: k.pub, sig: edSign(null, Buffer.from(JSON.stringify([pid, ...parts])), k.priv).toString("base64") };
 }
 
+/** Sign a record that belongs to the person, not to one project (e.g. a report across all projects). */
+export function signPersonal(parts: unknown[]): { pub: string; sig: string } {
+  const k = loadOwnKey(true)!;
+  return { pub: k.pub, sig: edSign(null, Buffer.from(JSON.stringify(["personal", ...parts])), k.priv).toString("base64") };
+}
+export function verifyPersonal(parts: unknown[], pub?: string, sig?: string): boolean {
+  return Boolean(pub && verifySig(pub, sig, JSON.stringify(["personal", ...parts])) && trustedIds().has(keyIdOf(pub)));
+}
+
 /** Valid signature from a key this machine trusts, over this project's payload? */
 export function verifyRecord(store: Store, parts: unknown[], pub?: string, sig?: string): boolean {
   const pid = projectId(store, false);

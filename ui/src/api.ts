@@ -15,9 +15,11 @@ import type { ExpertReport, FactSheet, Finding, Recommendation } from "../../src
 import type { KnownProject } from "../../src/core/projects";
 export type { ExpertReport, FactSheet, Finding, Recommendation, KnownProject };
 export interface ExpertPage {
-  reports: { id: string; createdAt: string; scope: ExpertReport["scope"]; model: string | null; maturity: ExpertReport["maturity"]; findings: number; recommendations: number; projects: string[] }[];
+  reports: { id: string; createdAt: string; scope: ExpertReport["scope"]; model: string | null; maturity: ExpertReport["maturity"]; findings: number; recommendations: number; projects: string[]; verified?: boolean }[];
   facts: FactSheet;
-  projects: KnownProject[];
+  /** Only for the person (approval session, not team mode). */
+  projects: { name: string; lastSeen: string; current: boolean }[];
+  person: boolean;
 }
 export interface ForecastsPage {
   forecasts: Forecast[];

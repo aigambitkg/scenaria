@@ -109,7 +109,7 @@ const PERSON_TOOLS = [
   {
     name: "scenaria_expert_analysis",
     description:
-      "Ask the person to run the ANALYST: a professional, fact-based expert report (architecture, goal alignment, agent workflow & context engineering, governance) with prioritised recommendations to optimise with — for the whole project, one line of work, or all their Scenaria projects. Uses the configured analyst model (they confirm with a click); noModel gives the rule-based report.",
+      "Ask the person to run the ANALYST — the full expert report (scenaria_analyze is only the lighter pattern/rule finder): a professional, fact-based expert report (architecture, goal alignment, agent workflow & context engineering, governance) with prioritised recommendations to optimise with — for the whole project, one line of work, or all their Scenaria projects. Uses the configured analyst model (they confirm with a click); noModel gives the rule-based report.",
     parameters: {
       type: "object",
       properties: {
@@ -473,10 +473,11 @@ async function personAction(s: Scenaria, call: ChatToolCall, ctx: { model: strin
         content: [
           `Expert analysis ${r.id} (${r.scope.kind}, ${r.model ?? "rule-based"}) — maturity ${r.maturity.score}/100 (${r.maturity.level})`,
           r.summary,
-          ...r.findings.slice(0, 6).map((f) => `! [${f.severity}/${f.lens}] ${f.title}${f.verified ? "" : " (unverified)"}${f.evidence.length ? ` — ${f.evidence.join(", ")}` : ""}`),
-          ...r.recommendations.slice(0, 5).map((x) => `→ ${x.priority} ${x.title}: ${x.action}`),
+          r.modelSummary ? `Model's assessment: ${r.modelSummary}` : "",
+          ...r.findings.slice(0, 6).map((f) => `! [${f.severity}/${f.lens}] ${f.title}${f.contradicted ? " (CONTRADICTS the facts)" : f.verified ? "" : " (unverified)"}${f.evidence.length ? ` — ${f.evidence.join(", ")}` : ""}`),
+          ...r.recommendations.filter((x) => !x.contradicted).slice(0, 5).map((x) => `→ ${x.priority} ${x.title}: ${x.action}${x.kind === "task" ? " (task)" : ""}`),
           "Full report: dashboard → Analyse → Experten-Analyse.",
-        ].join("\n"),
+        ].filter(Boolean).join("\n"),
         data: { id: r.id, maturity: r.maturity, findings: r.findings.length, recommendations: r.recommendations.length },
       };
     }

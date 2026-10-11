@@ -17,12 +17,14 @@ import { join } from "node:path";
 import { Scenaria } from "./engine.js";
 import type { ScenariaNode } from "./types.js";
 import { callLlm, dossier, projectMetrics, type LlmRequest } from "./analysis.js";
-import { canonState } from "./canon.js";
+import { canonState, signPersonal, signRecord, verifyPersonal, verifyRecord } from "./canon.js";
+import { overlap, stems } from "./fidelity.js";
+import { createHash } from "node:crypto";
 import { evaluateForecasts } from "./forecast.js";
 import { gateLines } from "./gate.js";
 import { stringPayload } from "./workspace.js";
 import { effectiveLlm, upstreams } from "./settings.js";
-import { listProjects } from "./projects.js";
+import { listProjects, personalDir } from "./projects.js";
 import { writeJsonAtomic } from "./store.js";
 
 export type Lens = "architecture" | "goal" | "workflow" | "governance";
@@ -96,6 +98,8 @@ export interface Finding {
   source: "rule" | "expert";
   project?: string;
   verified: boolean;
+  /** The model quoted a KPI value the facts contradict: shown, but never counted as backed. */
+  contradicted?: boolean;
   note?: string;
 }
 
@@ -110,6 +114,12 @@ export interface Recommendation {
   evidence: string[];
   source: "rule" | "expert";
   verified: boolean;
+  /** rule: a standing practice (can become a project rule) · task: do it once (no rule). */
+  kind: "rule" | "task";
+  /** For tasks the dashboard can open directly. */
+  do?: "setGoal" | "canon" | "forecasts";
+  /** Rests on a KPI the facts contradict — cannot be adopted. */
+  contradicted?: boolean;
 }
 
 export interface ExpertReport {
@@ -119,15 +129,27 @@ export interface ExpertReport {
   lang: Lang;
   model: string | null;
   facts: FactSheet[];
+  /** Always the facts (computed, never the model's words). */
   summary: string;
-  maturity: { score: number; level: string; reasoning: string };
+  /** The model's assessment, shown separately and labelled as such. */
+  modelSummary?: string;
+  /** score = rule-based score, moved by the model at most ±15; rule and model shown as well. */
+  maturity: { score: number; level: string; reasoning: string; rule: number; model?: number };
   findings: Finding[];
   recommendations: Recommendation[];
   strengths: string[];
   rootCauses: string[];
-  validation: { dropped: number; corrected: number; unverified: number };
+  validation: { dropped: number; corrected: number; unverified: number; numbers: number; contradicted: number };
+  /** Numbers in the model's summary that the facts do not contain. */
+  unmatchedNumbers?: number[];
   markdown: string;
-  /** Indexes of recommendations the person adopted as project rules. */
+  /** "project": in .scenaria/reports · "personal": across projects, in the person's config folder. */
+  storage: "project" | "personal";
+  sig?: string;
+  pub?: string;
+  /** Computed: signed by Scenaria on the person's request (a file written around it is not). */
+  verified?: boolean;
+  /** Computed from the project's real rules: indexes of recommendations adopted as rules. */
   adopted?: number[];
 }
 
@@ -187,7 +209,7 @@ export function factSheet(s: Scenaria, scope: FactSheet["scope"] = { kind: "proj
     rewinds: onScope ? nodes.filter((n) => (n.lessons ?? []).length).length : m.counts.rewinds,
     verifiedPassed: nodes.filter((n) => n.verification?.status === "passed").length,
     verifiedFailed: nodes.filter((n) => n.verification?.status === "failed").length,
-    rationaleRate: pct(decisions.filter((d) => d.rationale).length, decisions.filter((d) => d.chosen).length),
+    rationaleRate: Math.min(100, pct(decisions.filter((d) => d.chosen && d.rationale).length, decisions.filter((d) => d.chosen).length)),
     decisionQuality: clamp((quality || 0) * 100),
     fidelity: fidVals.length ? Math.round(fidVals.reduce((a, b) => a + b, 0) / fidVals.length) : 0,
     fidelityBreaks: breaks.length,
@@ -227,14 +249,14 @@ function ruleFindings(f: FactSheet, lang: Lang): { findings: Finding[]; recommen
   const k = f.kpis;
   const out: Finding[] = [];
   const recs: Recommendation[] = [];
-  const add = (x: Omit<Finding, "source" | "verified" | "project">, r?: Omit<Recommendation, "source" | "verified" | "lens" | "evidence">) => {
+  const add = (x: Omit<Finding, "source" | "verified" | "project">, r?: Omit<Recommendation, "source" | "verified" | "lens" | "evidence" | "kind"> & { kind?: Recommendation["kind"] }) => {
     out.push({ ...x, source: "rule", verified: true, project: f.project });
-    if (r) recs.push({ ...r, lens: x.lens, evidence: x.evidence, source: "rule", verified: true });
+    if (r) recs.push({ kind: "rule", ...r, lens: x.lens, evidence: x.evidence, source: "rule", verified: true });
   };
   if (!k.goalSet)
     add(
       { lens: "goal", title: de ? "Kein Hauptziel gesetzt" : "No main goal set", severity: "high", evidence: [], metric: { name: "goalSet", value: 0 }, impact: de ? "Kontext-Treue und Prognosen messen gegen das Hauptziel – ohne es sind sie ungenau." : "Context fidelity and forecasts measure against the main goal — without it they are imprecise." },
-      { title: de ? "Hauptziel festlegen" : "Set the main goal", action: de ? "Im Dashboard oben „Hauptziel festlegen“ oder scenaria goal \"…\"." : "Dashboard → \"Set main goal\" or scenaria goal \"…\".", priority: "P1", effort: "S", metric: "goalSet", expected: de ? "Prognosen und Treue werden aussagekräftig." : "Forecasts and fidelity become meaningful." },
+      { title: de ? "Hauptziel festlegen" : "Set the main goal", action: de ? "Im Dashboard oben „Hauptziel festlegen“ oder scenaria goal \"…\"." : "Dashboard → \"Set main goal\" or scenaria goal \"…\".", priority: "P1", effort: "S", kind: "task", do: "setGoal", metric: "goalSet", expected: de ? "Prognosen und Treue werden aussagekräftig." : "Forecasts and fidelity become meaningful." },
     );
   if (k.decisions >= 3 && k.rationaleRate < 70) {
     const missing = f.issues.filter((i) => /rationale/.test(i.code)).map((i) => i.node).filter((x): x is string => Boolean(x)).slice(0, 6);
@@ -253,7 +275,7 @@ function ruleFindings(f: FactSheet, lang: Lang): { findings: Finding[]; recommen
   if (k.canonActive === 0 && k.decisions >= 5)
     add(
       { lens: "governance", title: de ? "Keine Fixpunkte (Kanon)" : "No fixed points (canon)", severity: "medium", evidence: [], metric: { name: "canonActive", value: 0 }, impact: de ? "Nichts schützt harte Vorgaben vor dem nächsten Agenten." : "Nothing protects hard constraints from the next agent." },
-      { title: de ? "Fixpunkte festlegen" : "Define fixed points", action: de ? "Kanon → Archivar fragen und die Vorschläge prüfen/freigeben." : "Canon → ask the archivist and review/approve proposals.", priority: "P2", effort: "S", metric: "canonActive", expected: "≥ 3" },
+      { title: de ? "Fixpunkte festlegen" : "Define fixed points", action: de ? "Kanon → Archivar fragen und die Vorschläge prüfen/freigeben." : "Canon → ask the archivist and review/approve proposals.", priority: "P2", effort: "S", kind: "task", do: "canon", metric: "canonActive", expected: "≥ 3" },
     );
   if (k.canonBroken > 0) add({ lens: "governance", title: de ? `${k.canonBroken} gebrochene Fixpunkte` : `${k.canonBroken} broken fixed points`, severity: "high", evidence: f.issues.filter((i) => i.code === "canon_broken").map((i) => i.node).filter((x): x is string => Boolean(x)), metric: { name: "canonBroken", value: k.canonBroken }, impact: de ? "Linien mit gebrochenem harten Kanon sind ungültig." : "Lines with broken hard canon are invalid." });
   if (k.linesInvalid > 0) add({ lens: "architecture", title: de ? `${k.linesInvalid} ungültige Arbeitslinien` : `${k.linesInvalid} invalid lines of work`, severity: "high", evidence: f.lines.filter((l) => l.verdict === "invalid").map((l) => l.head), metric: { name: "linesInvalid", value: k.linesInvalid }, impact: de ? "Diese Linien überstehen die Fixpunkte nicht." : "These lines do not survive the fixed points." });
@@ -277,9 +299,9 @@ Work through four expert lenses:
 RULES — fact-based only:
 - Use ONLY the FACT SHEET and DOSSIER. Every finding must cite evidence ids from the fact sheet (n12, k3, r2, s1, f4) and, when it quotes a number, name the KPI exactly as in the fact sheet with its exact value.
 - No generic advice without evidence. If data is thin, say so and lower the maturity score.
-- Recommendations: concrete action, priority P1–P3, effort S/M/L, the KPI it should move and the expected effect.
+- Recommendations: concrete action, priority P1–P3, effort S/M/L, the KPI it should move and the expected effect; kind "rule" for a standing practice agents should follow from now on, "task" for something to do once.
 Answer ONLY with JSON:
-{"summary": "5-8 sentences", "maturity": {"score": 0-100, "level": "initial|managed|defined|measured|optimizing", "reasoning": "…"}, "findings": [{"lens": "architecture|goal|workflow|governance", "title": "…", "severity": "high|medium|low", "evidence": ["n12"], "metric": {"name": "<kpi>", "value": 0}, "impact": "…", "project": "<name, only for several projects>"}], "rootCauses": ["…"], "recommendations": [{"title": "…", "action": "…", "lens": "…", "priority": "P1|P2|P3", "effort": "S|M|L", "metric": "<kpi>", "expected": "…", "evidence": ["n12"]}], "strengths": ["…"]}
+{"summary": "5-8 sentences", "maturity": {"score": 0-100, "level": "initial|managed|defined|measured|optimizing", "reasoning": "…"}, "findings": [{"lens": "architecture|goal|workflow|governance", "title": "…", "severity": "high|medium|low", "evidence": ["n12"], "metric": {"name": "<kpi>", "value": 0}, "impact": "…", "project": "<name, only for several projects>"}], "rootCauses": ["…"], "recommendations": [{"title": "…", "action": "…", "lens": "…", "priority": "P1|P2|P3", "effort": "S|M|L", "metric": "<kpi>", "expected": "…", "evidence": ["n12"], "kind": "rule|task", "project": "<name, only for several projects>"}], "strengths": ["…"]}
 Write all text values in ${lang === "de" ? "German" : "English"}.`;
 }
 
@@ -298,21 +320,31 @@ function json(text: string): any {
 const asLens = (x: unknown): Lens => (LENSES.includes(String(x) as Lens) ? (String(x) as Lens) : "workflow");
 const asSev = (x: unknown): Finding["severity"] => (x === "high" || x === "low" ? x : "medium");
 
-// ------------------------------------------------------------------ report
+// ------------------------------------------------------------------ storage & integrity
 
-function dir(s: Scenaria) {
-  return s.store.path("reports");
+const projectDir = (s: Scenaria) => s.store.path("reports");
+const personalReports = () => join(personalDir(), "reports");
+
+/** Content hash without the signature and computed fields. */
+function digest(r: ExpertReport): string {
+  const { sig, pub, verified, adopted, ...content } = r;
+  void sig, pub, verified, adopted;
+  return createHash("sha256").update(JSON.stringify(content)).digest("hex");
 }
+const norm = (x: string) => x.replace(/\s+/g, " ").trim().slice(0, 400);
+const ruleText = (r: Recommendation) => norm(`${r.title}: ${r.action}`);
 
-export function listReports(s: Scenaria): ExpertReport[] {
-  const d = dir(s);
+function readDir(d: string, prefix: "x" | "g"): ExpertReport[] {
   if (!existsSync(d)) return [];
+  const re = new RegExp(`^${prefix}\\d+\\.json$`);
   return readdirSync(d)
-    .filter((f) => /^x\d+\.json$/.test(f))
+    .filter((f) => re.test(f))
     .map((f) => {
       try {
         const r = JSON.parse(readFileSync(join(d, f), "utf8"));
-        return r && typeof r.id === "string" && Array.isArray(r.findings) ? (r as ExpertReport) : null;
+        if (!r || typeof r !== "object" || `${r.id}.json` !== f || typeof r.createdAt !== "string" || !Array.isArray(r.findings) || !Array.isArray(r.recommendations) || !Array.isArray(r.facts) || !r.facts.length || !r.maturity) return null;
+        r.validation = { dropped: 0, corrected: 0, unverified: 0, numbers: 0, contradicted: 0, ...(r.validation ?? {}) };
+        return r as ExpertReport;
       } catch {
         return null;
       }
@@ -320,6 +352,43 @@ export function listReports(s: Scenaria): ExpertReport[] {
     .filter((r): r is ExpertReport => r !== null)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
+
+function withState(s: Scenaria, r: ExpertReport): ExpertReport {
+  // A report written around Scenaria (e.g. by an agent) is shown as unconfirmed and never adoptable.
+  r.verified = r.storage === "personal" ? verifyPersonal(["expert-report/v1", r.id, digest(r)], r.pub, r.sig) : verifyRecord(s.store, ["expert-report/v1", r.id, digest(r)], r.pub, r.sig);
+  // "adopted" comes from the project's real rules, never from the file.
+  const rules = new Set(s.rules().map((x) => norm(x.text)));
+  r.adopted = r.recommendations.map((x, i) => (rules.has(ruleText(x)) ? i : -1)).filter((i) => i >= 0);
+  return r;
+}
+
+/** This project's reports (newest first). */
+export function listReports(s: Scenaria): ExpertReport[] {
+  return readDir(projectDir(s), "x").map((r) => withState(s, { ...r, storage: "project" }));
+}
+/** Reports across all projects — the person's, kept outside every project. */
+export function listPersonalReports(s: Scenaria): ExpertReport[] {
+  return readDir(personalReports(), "g").map((r) => withState(s, { ...r, storage: "personal" }));
+}
+
+export function getReport(s: Scenaria, id: string): ExpertReport {
+  const r = /^x\d+$/.test(id) ? listReports(s).find((x) => x.id === id) : /^g\d+$/.test(id) ? listPersonalReports(s).find((x) => x.id === id) : undefined;
+  if (!r) throw new Error(`Unknown report ${id}`);
+  return r;
+}
+
+/** The person adopts a recommendation as a project rule (agents get it in their context from then on). */
+export function adoptRecommendation(s: Scenaria, id: string, index: number) {
+  const r = getReport(s, id);
+  const rec = r.recommendations[index];
+  if (!rec) throw new Error(`Report ${id} has no recommendation #${index}`);
+  if (!r.verified) throw new Error("This report is not confirmed (not created by Scenaria on your request) — it cannot become a rule.");
+  if (rec.kind === "task") throw new Error("This is a one-off task, not a standing rule.");
+  if (rec.contradicted) throw new Error("This recommendation rests on a figure the facts contradict.");
+  return s.addRule(ruleText(rec), "analysis", rec.evidence);
+}
+
+// ------------------------------------------------------------------ the analysis
 
 export interface ExpertRequest {
   scope?: "project" | "line" | "all";
@@ -337,6 +406,8 @@ interface Draft {
   lang: Lang;
   scopeKind: "project" | "line" | "all";
   facts: FactSheet[];
+  /** Per fact sheet: what each evidence id is about (for the relevance check; never stored). */
+  texts: Map<string, string>[];
   base: { findings: Finding[]; recommendations: Recommendation[] }[];
   det: number;
   summary: string;
@@ -348,126 +419,195 @@ function maturityOf(k: Kpis) {
 }
 const levelOf = (x: number) => (x >= 80 ? "measured" : x >= 60 ? "defined" : x >= 40 ? "managed" : "initial");
 
+function evidenceTexts(s: Scenaria, f: FactSheet): Map<string, string> {
+  const m = new Map<string, string>();
+  const ids = new Set(f.evidence);
+  for (const n of s.store.listNodes()) if (ids.has(n.id)) m.set(n.id, [n.title, n.question, n.goal, n.summary, n.rationale, n.context, ...(n.lessons ?? []).map((l: any) => (typeof l === "string" ? l : l?.text))].filter(Boolean).join(" "));
+  for (const e of canonState(s.store).events) if (ids.has(e.id)) m.set(e.id, e.text);
+  for (const r of s.rules()) if (ids.has(r.id)) m.set(r.id, r.text);
+  for (const l of f.lines) m.set(l.scenario, `${l.title} ${l.reasons.join(" ")}`);
+  // Ids the facts themselves flag (issues, breaks, invalid lines) are relevant by definition.
+  for (const i of f.issues) if (i.node) m.set(i.node, `${m.get(i.node) ?? ""} ${i.message} §flag`);
+  for (const l of f.lines) for (const b of l.breaks) m.set(b, `${m.get(b) ?? ""} §flag`);
+  for (const l of f.lines.filter((x) => x.verdict === "invalid")) m.set(l.head, `${m.get(l.head) ?? ""} §flag`);
+  return m;
+}
+
 /** Facts + rule-based findings + deterministic maturity (no model, nothing written). */
 function draft(s: Scenaria, req: ExpertRequest): Draft {
   const lang: Lang = req.lang === "en" ? "en" : "de";
   const de = lang === "de";
   const scopeKind = req.scope ?? "project";
-  let facts: FactSheet[];
+  const sheets: { s: Scenaria; f: FactSheet }[] = [];
   if (scopeKind === "all") {
-    facts = [factSheet(s)];
+    sheets.push({ s, f: factSheet(s) });
     const seen = new Set([s.root]);
     for (const p of listProjects()) {
-      if (facts.length >= 12) break;
-      let other: Scenaria;
+      if (sheets.length >= 12) break;
       try {
-        other = Scenaria.open(p.root);
+        const other = Scenaria.open(p.root);
+        if (seen.has(other.root)) continue;
+        seen.add(other.root);
+        sheets.push({ s: other, f: factSheet(other) });
       } catch {
-        continue; // a project that cannot be opened is skipped
-      }
-      if (seen.has(other.root)) continue;
-      seen.add(other.root);
-      try {
-        facts.push(factSheet(other));
-      } catch {
-        /* skip */
+        /* a project that cannot be opened is skipped */
       }
     }
   } else if (scopeKind === "line") {
     const head = req.head ?? s.store.readState().head;
     if (!head) throw new Error(de ? "Noch keine Arbeitslinie zum Analysieren." : "No line to analyse yet.");
     s.node(head); // unknown id → clear error
-    facts = [factSheet(s, { kind: "line", head })];
-  } else facts = [factSheet(s)];
-
+    sheets.push({ s, f: factSheet(s, { kind: "line", head }) });
+  } else sheets.push({ s, f: factSheet(s) });
+  const facts = sheets.map((x) => x.f);
   const base = facts.map((f) => ruleFindings(f, lang));
-  const scores = facts.map((f) => maturityOf(f.kpis));
-  const det = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
+  const det = Math.round(facts.map((f) => maturityOf(f.kpis)).reduce((a, b) => a + b, 0) / facts.length);
   const brief = (f: FactSheet) => {
     const k = f.kpis;
     return de
-      ? `${f.project}: ${k.nodes} Schritte, ${k.decisions} Entscheidungen (${k.rationaleRate} % begründet), Kontext-Treue Ø ${k.fidelity} %, ${k.fidelityBreaks} Abbrüche, ${k.lines} Arbeitslinien (${k.linesValid} gültig, ${k.linesInvalid} ungültig), ${k.canonActive} Fixpunkte.`
-      : `${f.project}: ${k.nodes} steps, ${k.decisions} decisions (${k.rationaleRate}% with rationale), context fidelity avg ${k.fidelity}%, ${k.fidelityBreaks} breaks, ${k.lines} lines (${k.linesValid} valid, ${k.linesInvalid} invalid), ${k.canonActive} fixed points.`;
+      ? `${f.project}: ${k.nodes} Schritte, ${k.decisions} Entscheidungen (${k.rationaleRate} % der gewählten begründet), Kontext-Treue Ø ${k.fidelity} %, ${k.fidelityBreaks} Abbrüche, ${k.lines} Arbeitslinien (${k.linesValid} gültig, ${k.linesInvalid} ungültig), ${k.canonActive} Fixpunkte${k.goalSet ? "" : ", kein Hauptziel"}.`
+      : `${f.project}: ${k.nodes} steps, ${k.decisions} decisions (${k.rationaleRate}% of the chosen with rationale), context fidelity avg ${k.fidelity}%, ${k.fidelityBreaks} breaks, ${k.lines} lines (${k.linesValid} valid, ${k.linesInvalid} invalid), ${k.canonActive} fixed points${k.goalSet ? "" : ", no main goal"}.`;
   };
-  const summary = (facts.length > 1 ? (de ? `${facts.length} Projekte. ` : `${facts.length} projects. `) : "") + facts.map(brief).join(" ");
   return {
     lang,
     scopeKind,
     facts,
+    texts: sheets.map((x) => evidenceTexts(x.s, x.f)),
     base,
     det,
-    summary,
-    maturity: { score: det, level: levelOf(det), reasoning: de ? "Regelbasiert aus Hauptziel, Begründungen, Kontext-Treue, Fixpunkten, Prüfungen und Prognosen." : "Rule-based from main goal, rationales, context fidelity, fixed points, verification and forecasts." },
+    summary: (facts.length > 1 ? (de ? `${facts.length} Projekte. ` : `${facts.length} projects. `) : "") + facts.map(brief).join(" "),
+    maturity: { score: det, level: levelOf(det), rule: det, reasoning: de ? "Regelbasiert aus Hauptziel, Begründungen, Kontext-Treue, Fixpunkten, Prüfungen und Prognosen." : "Rule-based from main goal, rationales, context fidelity, fixed points, verification and forecasts." },
   };
+}
+
+/** Numbers a fact sheet contains (KPIs, lines, agents) — free text may only quote these. */
+function factNumbers(facts: FactSheet[]): number[] {
+  const out = new Set<number>();
+  for (const f of facts) {
+    for (const v of Object.values(f.kpis)) out.add(v);
+    for (const l of f.lines) [l.steps, l.decisions, l.fidelity, l.breaks.length].forEach((v) => out.add(v));
+    for (const a of f.agents) [a.decisions, a.quality, a.failed, a.revised, a.withoutRationale].forEach((v) => out.add(v));
+    out.add(f.lines.length);
+    out.add(f.agents.length);
+  }
+  out.add(facts.length);
+  return [...out];
+}
+/** Numbers in a model text that are not in the facts (±1; years and standard numbers ignored). */
+export function unmatchedNumbers(text: string, known: number[]): number[] {
+  const out: number[] = [];
+  for (const m of text.matchAll(/(?<![\w./-])(\d{1,4})(?:[.,]\d+)?(?![\w./-]|[.,]\d)/g)) {
+    const n = Number(m[1]);
+    if (n >= 1900 && n <= 2100) continue;
+    if (!known.some((k) => Math.abs(k - n) <= 1)) out.push(n);
+  }
+  return [...new Set(out)];
 }
 
 interface ExpertPart {
   model: string;
   findings: Finding[];
   recommendations: Recommendation[];
-  summary: string;
-  maturity?: ExpertReport["maturity"];
+  modelSummary: string;
+  unmatched: number[];
+  modelMaturity?: { score: number; level: string; reasoning: string };
   strengths: string[];
   rootCauses: string[];
   validation: ExpertReport["validation"];
 }
 
-/** Validates the model's answer against the facts: evidence must exist, quoted KPIs must match. */
+/** Validates the model's answer against the facts. */
 export function validateExpert(d: Draft, x: any, model: string): ExpertPart {
   const de = d.lang === "de";
-  const validation = { dropped: 0, corrected: 0, unverified: 0 };
-  const evidence = new Set(d.facts.flatMap((f) => f.evidence));
-  const kpiOf = (name: string, project?: string) => {
-    const f = (project && d.facts.find((ff) => ff.project === project)) || d.facts[0];
-    const v = (f.kpis as unknown as Record<string, number>)[name];
-    return Object.prototype.hasOwnProperty.call(f.kpis, name) && typeof v === "number" ? v : undefined;
+  const all = d.facts.length > 1;
+  const validation = { dropped: 0, corrected: 0, unverified: 0, numbers: 0, contradicted: 0 };
+  const known = factNumbers(d.facts);
+  /** The fact sheet a finding talks about; in a cross-project report it must name a known project. */
+  const sheetOf = (project?: string) => {
+    if (project) {
+      const i = d.facts.findIndex((f) => f.project === project);
+      if (i >= 0) return i;
+    }
+    return all ? -1 : 0;
   };
+  const kpiOf = (i: number, name: string) => (i >= 0 && Object.prototype.hasOwnProperty.call(d.facts[i].kpis, name) ? (d.facts[i].kpis as unknown as Record<string, number>)[name] : undefined);
+  const evidenceOf = (i: number, ids: string[], about: string) => {
+    if (i < 0) return { valid: [] as string[], relevant: false };
+    const texts = d.texts[i];
+    const valid = ids.filter((e) => d.facts[i].evidence.includes(e));
+    const want = stems(about);
+    const relevant = valid.some((e) => {
+      const tx = texts.get(e) ?? "";
+      return tx.includes("§flag") || overlap(want, stems(tx)) > 0;
+    });
+    return { valid, relevant };
+  };
+  const contradictedKpis = new Set<string>();
   const findings: Finding[] = [];
   for (const it of Array.isArray(x?.findings) ? x.findings.slice(0, 20) : []) {
     const title = one(it?.title, 160);
     if (!title) continue;
-    const ev = strs(it?.evidence, 10, 12);
-    const valid = ev.filter((e) => evidence.has(e));
-    if (ev.length > valid.length) validation.dropped += ev.length - valid.length;
-    let metric: Finding["metric"];
-    let note: string | undefined;
+    const impact = one(it?.impact, 500);
     const project = it?.project ? one(it.project, 80) : undefined;
+    const i = sheetOf(project);
+    const ids = strs(it?.evidence, 10, 12);
+    const { valid, relevant } = evidenceOf(i, ids, `${title} ${impact}`);
+    validation.dropped += ids.length - valid.length;
+    const notes: string[] = [];
+    let metric: Finding["metric"];
+    let contradicted = false;
     if (it?.metric && typeof it.metric === "object") {
       const name = one(it.metric.name, 40);
-      const real = kpiOf(name, project);
+      const real = kpiOf(i, name);
       if (real !== undefined) {
-        if (Number(it.metric.value) !== real) {
-          validation.corrected++;
-          note = de ? `Wert korrigiert (Modell: ${one(it.metric.value, 20)}, Fakten: ${real})` : `value corrected (model: ${one(it.metric.value, 20)}, facts: ${real})`;
-        }
         metric = { name, value: real };
-      } else note = de ? `unbekannte Kennzahl „${name}“ verworfen` : `unknown metric "${name}" dropped`;
+        if (Number(it.metric.value) !== real) {
+          contradicted = true;
+          contradictedKpis.add(`${i}:${name}`);
+          validation.contradicted++;
+          validation.corrected++;
+          notes.push(de ? `Widerspricht den Fakten: Modell ${one(it.metric.value, 20)}, Fakten ${real}` : `contradicts the facts: model ${one(it.metric.value, 20)}, facts ${real}`);
+        }
+      } else notes.push(de ? `Kennzahl „${name}“ unbekannt – verworfen` : `unknown metric "${name}" dropped`);
     }
-    const verified = valid.length > 0 || Boolean(metric);
+    const nums = unmatchedNumbers(impact, known);
+    if (nums.length) {
+      validation.numbers += nums.length;
+      notes.push(de ? `Zahl(en) ${nums.join(", ")} nicht in den Fakten` : `number(s) ${nums.join(", ")} not in the facts`);
+    }
+    if (all && i < 0) notes.push(de ? "kein bekanntes Projekt genannt" : "no known project named");
+    const verified = !contradicted && !nums.length && (relevant || Boolean(metric));
     if (!verified) validation.unverified++;
-    findings.push({ lens: asLens(it?.lens), title, severity: asSev(it?.severity), evidence: valid, metric, impact: one(it?.impact, 500), source: "expert", verified, project: project && d.facts.some((f) => f.project === project) ? project : d.facts[0].project, note });
+    findings.push({ lens: asLens(it?.lens), title, severity: asSev(it?.severity), evidence: valid, metric, impact, source: "expert", verified, contradicted: contradicted || undefined, project: i >= 0 ? d.facts[i].project : project, note: notes.join(" · ") || undefined });
   }
   const recommendations: Recommendation[] = [];
   for (const r of Array.isArray(x?.recommendations) ? x.recommendations.slice(0, 12) : []) {
     const title = one(r?.title, 160);
     if (!title) continue;
-    const raw = strs(r?.evidence, 10, 12);
-    const ev = raw.filter((e) => evidence.has(e));
-    if (raw.length > ev.length) validation.dropped += raw.length - ev.length;
+    const action = one(r?.action, 600);
+    const i = sheetOf(r?.project ? one(r.project, 80) : undefined);
+    const ids = strs(r?.evidence, 10, 12);
+    const { valid, relevant } = evidenceOf(i < 0 ? 0 : i, ids, `${title} ${action}`);
+    validation.dropped += ids.length - valid.length;
     const metric = one(r?.metric, 40);
-    const known = metric ? kpiOf(metric) !== undefined : false;
-    const verified = ev.length > 0 || known;
+    const known2 = metric ? kpiOf(i < 0 ? 0 : i, metric) !== undefined : false;
+    const contradicted = Boolean(metric) && contradictedKpis.has(`${i < 0 ? 0 : i}:${metric}`);
+    const verified = !contradicted && (relevant || known2);
     if (!verified) validation.unverified++;
-    recommendations.push({ title, action: one(r?.action, 600), lens: asLens(r?.lens), priority: ["P1", "P2", "P3"].includes(r?.priority) ? r.priority : "P2", effort: ["S", "M", "L"].includes(r?.effort) ? r.effort : "M", metric: known ? metric : undefined, expected: one(r?.expected, 300), evidence: ev, source: "expert", verified });
+    recommendations.push({ title, action, lens: asLens(r?.lens), priority: ["P1", "P2", "P3"].includes(r?.priority) ? r.priority : "P2", effort: ["S", "M", "L"].includes(r?.effort) ? r.effort : "M", metric: known2 ? metric : undefined, expected: one(r?.expected, 300), evidence: valid, source: "expert", verified, kind: r?.kind === "task" ? "task" : "rule", contradicted: contradicted || undefined });
   }
+  const modelSummary = one(x?.summary, 2000);
+  const unmatched = unmatchedNumbers(modelSummary, known);
+  validation.numbers += unmatched.length;
   const m = x?.maturity && typeof x.maturity === "object" ? x.maturity : null;
-  const score = m && Number.isFinite(Number(m.score)) ? clamp(Number(m.score)) : d.det;
+  const ms = m && Number.isFinite(Number(m.score)) ? clamp(Number(m.score)) : undefined;
   return {
     model,
     findings,
     recommendations,
-    summary: one(x?.summary, 2000),
-    maturity: m ? { score, level: ["initial", "managed", "defined", "measured", "optimizing"].includes(String(m.level)) ? String(m.level) : levelOf(score), reasoning: one(m.reasoning, 600) } : undefined,
+    modelSummary,
+    unmatched,
+    modelMaturity: ms === undefined ? undefined : { score: ms, level: one(m.level, 20), reasoning: one(m.reasoning, 600) },
     strengths: strs(x?.strengths, 8, 300),
     rootCauses: strs(x?.rootCauses, 8, 300),
     validation,
@@ -475,48 +615,66 @@ export function validateExpert(d: Draft, x: any, model: string): ExpertPart {
 }
 
 function finish(s: Scenaria, req: ExpertRequest, d: Draft, e: ExpertPart | null): ExpertReport {
+  const de = d.lang === "de";
   const findings = [...(e?.findings ?? []), ...d.base.flatMap((b) => b.findings)];
   const recommendations = [...(e?.recommendations ?? []), ...d.base.flatMap((b) => b.recommendations)];
   const sev = { high: 0, medium: 1, low: 2 };
   findings.sort((a, b) => Number(b.verified) - Number(a.verified) || sev[a.severity] - sev[b.severity]);
-  recommendations.sort((a, b) => a.priority.localeCompare(b.priority) || Number(b.verified) - Number(a.verified));
+  recommendations.sort((a, b) => Number(Boolean(a.contradicted)) - Number(Boolean(b.contradicted)) || a.priority.localeCompare(b.priority) || Number(b.verified) - Number(a.verified));
   const scope: ExpertReport["scope"] = d.scopeKind === "all" ? { kind: "all" } : d.scopeKind === "line" ? { kind: "line", head: (d.facts[0].scope as { head: string }).head } : { kind: "project" };
+  // The model can move the rule-based maturity by at most ±15 points.
+  let maturity = d.maturity;
+  if (e?.modelMaturity) {
+    const score = Math.max(d.det - 15, Math.min(d.det + 15, e.modelMaturity.score));
+    maturity = { score, level: levelOf(score), rule: d.det, model: e.modelMaturity.score, reasoning: e.modelMaturity.reasoning || d.maturity.reasoning };
+    if (score !== e.modelMaturity.score) maturity.reasoning += de ? ` (Modell: ${e.modelMaturity.score}, auf ±15 um den regelbasierten Wert ${d.det} begrenzt)` : ` (model: ${e.modelMaturity.score}, limited to ±15 around the rule-based ${d.det})`;
+  }
+  const personal = d.scopeKind === "all";
   const report: ExpertReport = {
-    id: "x0",
+    id: personal ? "g0" : "x0",
     createdAt: new Date().toISOString(),
     scope,
     lang: d.lang,
     model: e?.model ?? null,
-    facts: d.facts,
-    summary: e?.summary || d.summary,
-    maturity: e?.maturity ?? d.maturity,
+    // Other projects' folders are never written into a report.
+    facts: d.facts.map((f, i) => (i === 0 ? f : { ...f, root: "" })),
+    summary: d.summary,
+    modelSummary: e?.modelSummary || undefined,
+    maturity,
     findings,
     recommendations,
     strengths: e?.strengths ?? [],
     rootCauses: e?.rootCauses ?? [],
-    validation: e?.validation ?? { dropped: 0, corrected: 0, unverified: 0 },
+    validation: e?.validation ?? { dropped: 0, corrected: 0, unverified: 0, numbers: 0, contradicted: 0 },
+    unmatchedNumbers: e?.unmatched.length ? e.unmatched : undefined,
     markdown: "",
+    storage: personal ? "personal" : "project",
   };
   if (req.persist === false) {
     report.markdown = renderReport(report);
     return report;
   }
-  // Reserve the id exclusively (two runs at once never overwrite each other).
-  mkdirSync(dir(s), { recursive: true });
-  let n = listReports(s).reduce((m, r) => Math.max(m, parseInt(r.id.slice(1), 10) || 0), 0) + 1;
+  // Reports across projects live with the person (outside every project), single-project ones in it.
+  const d0 = personal ? personalReports() : projectDir(s);
+  const prefix = personal ? "g" : "x";
+  mkdirSync(d0, { recursive: true });
+  let n = readdirSync(d0).reduce((m, x) => Math.max(m, parseInt(x.match(new RegExp(`^${prefix}(\\d+)\\.json$`))?.[1] ?? "0", 10)), 0) + 1;
   for (;; n++) {
     try {
-      closeSync(openSync(join(dir(s), `x${n}.json`), "wx"));
+      closeSync(openSync(join(d0, `${prefix}${n}.json`), "wx"));
       break;
     } catch (err: any) {
-      if (err?.code !== "EEXIST") throw err;
+      if (err?.code !== "EEXIST" || n > 100000) throw err;
     }
   }
-  report.id = `x${n}`;
+  report.id = `${prefix}${n}`;
   report.markdown = renderReport(report);
-  writeJsonAtomic(join(dir(s), `${report.id}.json`), report);
-  s.store.appendEvent({ type: "analysis", data: { message: `expert analysis ${report.id} (${scope.kind}${report.model ? `, ${report.model}` : ", rule-based"}): ${findings.length} findings, ${recommendations.length} recommendations`, id: report.id } });
-  return report;
+  const sg = personal ? signPersonal(["expert-report/v1", report.id, digest(report)]) : signRecord(s.store, ["expert-report/v1", report.id, digest(report)]);
+  report.sig = sg.sig;
+  report.pub = sg.pub;
+  writeJsonAtomic(join(d0, `${report.id}.json`), report);
+  if (!personal) s.store.appendEvent({ type: "analysis", data: { message: `expert analysis ${report.id} (${scope.kind}${report.model ? `, ${report.model}` : ", rule-based"}): ${findings.length} findings, ${recommendations.length} recommendations`, id: report.id } });
+  return withState(s, report);
 }
 
 /** Rule-based report, synchronous (no model). persist:false → nothing is written. */
@@ -536,24 +694,6 @@ export async function expertAnalysis(s: Scenaria, req: ExpertRequest = {}): Prom
   return finish(s, req, d, validateExpert(d, json(out.text), out.model));
 }
 
-export function getReport(s: Scenaria, id: string): ExpertReport {
-  if (!/^x\d+$/.test(id)) throw new Error(`Unknown report ${id}`);
-  const r = listReports(s).find((x) => x.id === id);
-  if (!r) throw new Error(`Unknown report ${id}`);
-  return r;
-}
-
-/** The person adopts a recommendation as a project rule (agents get it in their context from then on). */
-export function adoptRecommendation(s: Scenaria, id: string, index: number) {
-  const r = getReport(s, id);
-  const rec = r.recommendations[index];
-  if (!rec) throw new Error(`Report ${id} has no recommendation #${index}`);
-  const rule = s.addRule(`${rec.title}: ${rec.action}`.slice(0, 400), "analysis", rec.evidence);
-  r.adopted = [...new Set([...(r.adopted ?? []), index])];
-  writeJsonAtomic(join(dir(s), `${r.id}.json`), r);
-  return rule;
-}
-
 // ------------------------------------------------------------------ markdown (export)
 
 const LENS_NAMES: Record<Lang, Record<Lens, string>> = {
@@ -566,15 +706,19 @@ export function renderReport(r: ExpertReport): string {
   const L = LENS_NAMES[r.lang];
   const k = r.facts[0].kpis;
   const scope = r.scope.kind === "all" ? (de ? "alle Projekte" : "all projects") : r.scope.kind === "line" ? `${de ? "Linie bis" : "line up to"} ${r.scope.head}` : de ? "ganzes Projekt" : "whole project";
+  const tag = (verified: boolean, contradicted?: boolean) => (contradicted ? (de ? " _(widerspricht den Fakten)_" : " _(contradicts the facts)_") : verified ? "" : de ? " _(unbelegt)_" : " _(unverified)_");
   const lines: string[] = [
     `# ${de ? "Experten-Analyse" : "Expert analysis"} ${r.id} — ${r.facts.map((f) => f.project).join(", ")}`,
     "",
     `${de ? "Umfang" : "Scope"}: ${scope} · ${new Date(r.createdAt).toLocaleString(de ? "de-DE" : "en-GB")} · ${r.model ?? (de ? "regelbasiert (ohne Modell)" : "rule-based (no model)")}`,
     "",
-    `## ${de ? "Zusammenfassung" : "Summary"}`,
+    `## ${de ? "Fakten" : "Facts"}`,
     r.summary,
     "",
-    `**${de ? "Reifegrad" : "Maturity"}: ${r.maturity.score}/100 (${r.maturity.level})** — ${r.maturity.reasoning}`,
+    `**${de ? "Reifegrad" : "Maturity"}: ${r.maturity.score}/100 (${r.maturity.level})** — ${r.maturity.reasoning}${r.maturity.model !== undefined ? ` · ${de ? "regelbasiert" : "rule-based"} ${r.maturity.rule}, ${de ? "Modell" : "model"} ${r.maturity.model}` : ""}`,
+  ];
+  if (r.modelSummary) lines.push("", `## ${de ? "Einschätzung des Modells" : "The model's assessment"}`, r.modelSummary + (r.unmatchedNumbers?.length ? ` _(${de ? "Zahlen nicht in den Fakten" : "numbers not in the facts"}: ${r.unmatchedNumbers.join(", ")})_` : ""));
+  lines.push(
     "",
     `## ${de ? "Kennzahlen" : "Key figures"}`,
     `| ${de ? "Kennzahl" : "KPI"} | ${r.facts.map((f) => f.project).join(" | ")} |`,
@@ -582,21 +726,21 @@ export function renderReport(r: ExpertReport): string {
     ...Object.keys(k).map((key) => `| ${key} | ${r.facts.map((f) => (f.kpis as unknown as Record<string, number>)[key]).join(" | ")} |`),
     "",
     `## ${de ? "Arbeitslinien" : "Lines of work"}`,
-    ...r.facts.flatMap((f) => f.lines.map((l) => `- ${r.facts.length > 1 ? `[${f.project}] ` : ""}${l.head} (${l.scenario}${l.current ? ", aktuell" : ""}): ${l.title} — ${l.steps} ${de ? "Schritte" : "steps"}, ${de ? "Treue" : "fidelity"} ${l.fidelity}%, ${l.verdict}${l.breaks.length ? `, ${de ? "Abbrüche" : "breaks"} ${l.breaks.join(", ")}` : ""}`)),
+    ...r.facts.flatMap((f) => f.lines.map((l) => `- ${r.facts.length > 1 ? `[${f.project}] ` : ""}${l.head} (${l.scenario}${l.current ? (de ? ", aktuell" : ", current") : ""}): ${l.title} — ${l.steps} ${de ? "Schritte" : "steps"}, ${de ? "Treue" : "fidelity"} ${l.fidelity}%, ${l.verdict}${l.breaks.length ? `, ${de ? "Abbrüche" : "breaks"} ${l.breaks.join(", ")}` : ""}`)),
     "",
-    `## ${de ? "Befunde" : "Findings"}`,
-  ];
+    `## ${de ? "Empfehlungen" : "Recommendations"}`,
+  );
+  for (const x of r.recommendations) lines.push(`- **${x.priority} · ${x.title}** (${x.kind === "task" ? (de ? "Aufgabe" : "task") : de ? "Regel" : "rule"}, ${L[x.lens]}, ${de ? "Aufwand" : "effort"} ${x.effort}) — ${x.action}${x.metric ? ` → ${x.metric}: ${x.expected}` : x.expected ? ` → ${x.expected}` : ""}${x.evidence.length ? ` · ${x.evidence.join(", ")}` : ""}${tag(x.verified, x.contradicted)}`);
+  lines.push("", `## ${de ? "Befunde" : "Findings"}`);
   for (const lens of LENSES) {
     const fs = r.findings.filter((f) => f.lens === lens);
     if (!fs.length) continue;
     lines.push(`### ${L[lens]}`);
-    for (const f of fs) lines.push(`- **[${f.severity}] ${f.title}**${f.verified ? "" : de ? " _(unbelegt)_" : " _(unverified)_"} — ${f.impact}${f.metric ? ` (${f.metric.name} = ${f.metric.value})` : ""}${f.evidence.length ? ` · ${de ? "Belege" : "evidence"}: ${f.evidence.join(", ")}` : ""}${f.note ? ` · ${f.note}` : ""}`);
+    for (const f of fs) lines.push(`- **[${f.severity}] ${f.title}**${r.facts.length > 1 && f.project ? ` [${f.project}]` : ""}${tag(f.verified, f.contradicted)} — ${f.impact}${f.metric ? ` (${f.metric.name} = ${f.metric.value})` : ""}${f.evidence.length ? ` · ${de ? "Belege" : "evidence"}: ${f.evidence.join(", ")}` : ""}${f.note ? ` · ${f.note}` : ""}`);
   }
-  if (r.rootCauses.length) lines.push("", `## ${de ? "Ursachen" : "Root causes"}`, ...r.rootCauses.map((x) => `- ${x}`));
-  lines.push("", `## ${de ? "Empfehlungen" : "Recommendations"}`);
-  for (const x of r.recommendations) lines.push(`- **${x.priority} · ${x.title}** (${L[x.lens]}, ${de ? "Aufwand" : "effort"} ${x.effort}) — ${x.action}${x.metric ? ` → ${x.metric}: ${x.expected}` : x.expected ? ` → ${x.expected}` : ""}${x.evidence.length ? ` · ${x.evidence.join(", ")}` : ""}${x.verified ? "" : de ? " _(unbelegt)_" : " _(unverified)_"}`);
-  if (r.strengths.length) lines.push("", `## ${de ? "Stärken" : "Strengths"}`, ...r.strengths.map((x) => `- ${x}`));
-  lines.push("", `_${de ? "Prüfung" : "Validation"}: ${r.validation.corrected} ${de ? "Werte korrigiert" : "values corrected"}, ${r.validation.dropped} ${de ? "Belege verworfen" : "evidence dropped"}, ${r.validation.unverified} ${de ? "unbelegt" : "unverified"}._`);
+  if (r.rootCauses.length) lines.push("", `## ${de ? "Ursachen (Modell)" : "Root causes (model)"}`, ...r.rootCauses.map((x) => `- ${x}`));
+  if (r.strengths.length) lines.push("", `## ${de ? "Stärken (Modell)" : "Strengths (model)"}`, ...r.strengths.map((x) => `- ${x}`));
+  if (r.model) lines.push("", `_${de ? "Prüfung" : "Validation"}: ${r.validation.contradicted} ${de ? "Widersprüche zu den Fakten" : "contradictions with the facts"}, ${r.validation.dropped} ${de ? "ungültige Verweise entfernt" : "invalid references removed"}, ${r.validation.numbers} ${de ? "Zahlen nicht in den Fakten" : "numbers not in the facts"}, ${r.validation.unverified} ${de ? "unbelegt" : "unverified"}._`);
   return lines.join("\n");
 }
 

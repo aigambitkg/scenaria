@@ -356,7 +356,7 @@ function sevClass(s?: string) {
 }
 
 /** Health check (no LLM) + pattern analysis with any LLM + project rules. */
-export function AnalysisDialog(props: { t: Dict; lang: "de" | "en"; keys: SessionKeys; initialTab?: "overview" | "expert"; toast: (m: string) => void; onClose: () => void; onSelectNode: (id: string) => void; onEditGoal: () => void }) {
+export function AnalysisDialog(props: { t: Dict; lang: "de" | "en"; keys: SessionKeys; initialTab?: "overview" | "expert"; onOpenCanon?: () => void; toast: (m: string) => void; onClose: () => void; onSelectNode: (id: string) => void; onEditGoal: () => void }) {
   const { t } = props;
   const [tab, setTab] = useState<"overview" | "expert">(props.initialTab ?? "overview");
   const [m, setM] = useState<Metrics | null>(null);
@@ -412,8 +412,9 @@ export function AnalysisDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessio
             </button>
           ))}
         </div>
-        {tab === "expert" && <ExpertPanel t={t} lang={props.lang} keys={props.keys} toast={props.toast} onSelectNode={props.onSelectNode} onRulesChanged={() => reload().catch(() => {})} />}
+        {tab === "expert" && <ExpertPanel t={t} lang={props.lang} keys={props.keys} toast={props.toast} onSelectNode={props.onSelectNode} onRulesChanged={() => reload().catch(() => {})} onEditGoal={props.onEditGoal} onOpenCanon={props.onOpenCanon} />}
         {tab === "overview" && (<>
+        <p className="hint">{t.xOverviewHint}</p>
         {err && <p className="error">{err}</p>}
         {m && (
           <section className="a-sec health">

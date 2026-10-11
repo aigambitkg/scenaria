@@ -240,7 +240,7 @@ remembered when the dashboard, the MCP server or `scenaria init` opens them).
    facts is corrected (and noted); unknown KPIs are dropped; findings without valid evidence are marked
    "unverified" and sorted last.
 
-Reports live in `.scenaria/reports/x<n>.json` (ids reserved exclusively) with a Markdown export.
+Single-project reports live in `.scenaria/reports/x<n>.json`; reports across projects in the person's config folder (`~/.config/scenaria/reports/g<n>.json`, readable only with the approval session; other projects' folders are not written). Every report is signed (Ed25519, like forecasts); a file written around Scenaria is shown as unconfirmed and nothing can be adopted from it. "Adopted" is derived from the real project rules. The summary is always the facts; the model's text is shown separately, its maturity can move the rule-based score by at most ±15, a quoted KPI the facts contradict marks the finding (and recommendations on that KPI) as contradicted, evidence must be about the finding, and numbers in the model's text that are not in the facts are flagged. Recommendations are "rule" (can be adopted) or "task" (do once). The project registry is its own file (`projects.json`).
 Running (`POST /api/expert`) and adopting a recommendation as a project rule (`POST /api/expert/adopt`)
 are the person's (approval session / interactive terminal / chat card); reading is open.
 CLI: `scenaria analyst [--scope project|line|all] [--head n12] [--no-model]`, `scenaria analyst x3
