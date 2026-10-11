@@ -21,7 +21,9 @@ w("README.md", L("# Kontaktformular\n", "# Contact form\n"));
 w(".gitignore", "node_modules/\n");
 
 const s = Scenaria.init(dir);
-const agent = { agent: "claude-code", source: "mcp" };
+// Mixed vendors on purpose: Scenaria is model-agnostic.
+const agent = { agent: "claude-code", model: "claude-opus-5-5", user: "kev", source: "mcp" };
+const altAgent = { agent: "cursor", model: "gpt-5", user: "kev", source: "mcp" };
 
 s.startMission({
   title: L("Kontaktformular mit Mailversand", "Contact form with email delivery"),
@@ -99,7 +101,7 @@ const good = s.checkpoint({
   openQuestions: [L("Wer pflegt den n8n-Workflow beim Kunden?", "Who maintains the n8n workflow at the client?")],
   ...agent,
 });
-s.verify(good.id, { status: "passed", notes: L("Dateien und Webhook-Aufruf geprüft", "Files and webhook call checked"), by: "scenaria-verifier" });
+s.verify(good.id, { status: "passed", notes: L("Dateien und Webhook-Aufruf geprüft", "Files and webhook call checked"), by: "gemini-cli (verifier)" });
 
 // The agent hallucinates: claims a captcha module and a sent test mail.
 w("src/pages/kontakt.astro", "<form method=post action=/api/contact data-captcha>…</form>\n");
@@ -119,7 +121,7 @@ s.verify(bad.id, {
     "`src/lib/captcha.ts` existiert nicht, Zustellung der Testmail ist nicht belegt.",
     "`src/lib/captcha.ts` does not exist, the test email delivery is not evidenced.",
   ),
-  by: "scenaria-verifier",
+  by: "gemini-cli (verifier)",
 });
 
 // Back to the last good node, with a lesson.
@@ -132,7 +134,7 @@ s.rewind(good.id, {
 const decisionId = s.store.listNodes().find((n) => n.type === "decision" && n.options?.some((o) => o.label === "Resend API")).id;
 const fork = s.fork(decisionId, "Resend API", {
   lesson: L("Kunde möchte keinen eigenen n8n-Betrieb übernehmen", "Client does not want to operate n8n themselves"),
-  ...agent,
+  ...altAgent,
 });
 w("src/pages/kontakt.astro", "<form method=post action=/api/contact>…</form>\n");
 w("src/pages/api/contact.ts", "import { Resend } from 'resend'; export const POST = async () => new Response('ok');\n");
@@ -140,7 +142,7 @@ const alt = s.checkpoint({
   title: L("Versand über Resend", "Delivery via Resend"),
   outputs: [L("API-Route `src/pages/api/contact.ts`", "API route `src/pages/api/contact.ts`"), L("Formular `src/pages/kontakt.astro`", "Form `src/pages/kontakt.astro`")],
   facts: [L("Resend-Schlüssel nur serverseitig", "Resend key server-side only")],
-  ...agent,
+  ...altAgent,
 });
 s.verify(alt.id, { by: "scenaria-auto" });
 s.writeProtocol();

@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import type { Snapshot } from "./types.js";
 
 /**
@@ -120,6 +121,24 @@ export class ShadowRepo {
       const p = l.split("\t")[1];
       this.warnings.add(`nested repository "${p}": only its commit pointer is saved, uncommitted changes inside it are not`);
     }
+  }
+
+  /**
+   * Cheap fingerprint of the working tree (paths + size + mtime of tracked and
+   * non-ignored files). Used by watch mode; writes no git objects.
+   */
+  fingerprint(): string {
+    const out = this.git(["ls-files", "-z", "-co", "--exclude-standard", ...this.pathspec()]);
+    const h = createHash("sha1");
+    for (const f of out.split("\0").filter(Boolean).sort()) {
+      try {
+        const st = lstatSync(join(this.root, f));
+        h.update(`${f}\0${st.size}\0${st.mtimeMs}\n`);
+      } catch {
+        h.update(`${f}\0gone\n`);
+      }
+    }
+    return h.digest("hex");
   }
 
   /** Stage the whole working tree and return its tree hash. */

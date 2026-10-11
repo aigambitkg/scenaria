@@ -14,7 +14,7 @@ export type NodeType =
 
 export type VerificationStatus = "unverified" | "passed" | "warning" | "failed";
 
-export type Source = "mcp" | "cli" | "hook" | "ui" | "api";
+export type Source = "mcp" | "cli" | "hook" | "ui" | "api" | "watch";
 
 export interface DecisionOption {
   id: string; // "a", "b", "c" ...
@@ -53,7 +53,12 @@ export interface ScenariaNode {
   viaOption?: string;
   title: string;
   createdAt: string;
+  /** Which agent/tool produced the node (e.g. "claude-code", "cursor", "n8n"). */
   agent?: string;
+  /** Which model produced it (e.g. "gpt-5", "claude-opus-5-5", "llama3.3"). */
+  model?: string;
+  /** Human/user account responsible for the run (audit). */
+  user?: string;
   source: Source;
   snapshot?: Snapshot | null;
 

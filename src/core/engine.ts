@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { userInfo } from "node:os";
 import { composeContext, estimateTokens, optionLabel } from "./context.js";
 import { renderNodeNote, renderProtocol } from "./protocol.js";
 import { ShadowRepo } from "./snapshot.js";
@@ -17,7 +18,28 @@ import { autoChecks, commandCheck, worst } from "./verify.js";
 
 export interface Actor {
   agent?: string;
+  model?: string;
+  user?: string;
   source?: Source;
+}
+
+function defaultUser(): string | undefined {
+  if (process.env.SCENARIA_USER) return process.env.SCENARIA_USER;
+  try {
+    return userInfo().username || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Attribution fields for a new node. */
+function attrib(a: Actor) {
+  return {
+    agent: a.agent ?? process.env.SCENARIA_AGENT ?? undefined,
+    model: a.model ?? process.env.SCENARIA_MODEL ?? undefined,
+    user: a.user ?? defaultUser(),
+    source: a.source ?? "api",
+  } as const;
 }
 
 export interface MissionInput extends Actor {
@@ -299,8 +321,7 @@ export class Scenaria {
       goal: input.goal?.trim() || undefined,
       brief: input.brief?.trim() || undefined,
       createdAt: new Date().toISOString(),
-      agent: input.agent,
-      source: input.source ?? "api",
+      ...attrib(input),
       tags: clean(input.tags),
     };
     node.snapshot = this.takeSnapshot(id, node.title, null);
@@ -351,8 +372,7 @@ export class Scenaria {
         assumptions: clean(input.assumptions),
         confidence: typeof input.confidence === "number" ? Math.max(0, Math.min(1, input.confidence)) : undefined,
         createdAt: new Date().toISOString(),
-        agent: input.agent,
-        source: input.source ?? "api",
+        ...attrib(input),
         tags: clean(input.tags),
         meta: input.meta,
       };
@@ -411,8 +431,7 @@ export class Scenaria {
       openQuestions: clean(input.openQuestions),
       irreversible: clean(input.irreversible),
       createdAt: new Date().toISOString(),
-      agent: input.agent,
-      source: input.source ?? "api",
+      ...attrib(input),
       tags: clean(input.tags),
       meta: input.meta,
     };
@@ -455,6 +474,8 @@ export class Scenaria {
           onlyIfChanged: overwrites.length === 0,
           forceAdd: overwrites,
           agent: opts.agent,
+          model: opts.model,
+          user: opts.user,
           source: opts.source,
         });
       }
@@ -516,8 +537,7 @@ export class Scenaria {
         outputs: opt.description ? [opt.description] : undefined,
         lessons: opts.lesson?.trim() ? [opts.lesson.trim()] : undefined,
         createdAt: new Date().toISOString(),
-        agent: opts.agent,
-        source: opts.source ?? "api",
+        ...attrib(opts),
         snapshot: decision.snapshot ? { ...decision.snapshot } : null,
       };
       if (node.snapshot && this.repo) this.repo.git(["update-ref", `refs/scenaria/${id}`, node.snapshot.commit]);
@@ -568,6 +588,38 @@ export class Scenaria {
       this.store.appendEvent({ type: "update", nodeId: id, data: { fields: Object.keys(patch) } });
       return node;
     });
+  }
+
+  /**
+   * Checkpoint the working tree if it differs from HEAD (used by `scenaria watch`).
+   * The title lists the changed files, so the map stays readable without an agent summary.
+   */
+  autoCheckpoint(actor: Actor = {}): ScenariaNode | null {
+    if (!this.repo) return null;
+    return this.store.withLock(() => {
+      const head = this.head();
+      const snap = head ? this.nearestSnapshot(head) : null;
+      const tree = this.repo!.currentTree();
+      if (snap && tree === snap.tree) return null;
+      const changed = snap ? this.repo!.changedFiles(snap.commit, tree) : [];
+      const names = changed.map((c) => c.replace(/^[+~-] /, ""));
+      const shown = names.slice(0, 3).join(", ");
+      const title = names.length ? `Auto-save: ${shown}${names.length > 3 ? ` (+${names.length - 3})` : ""}` : "Auto-save";
+      return this.checkpointUnlocked({ title, onlyIfChanged: true, source: "watch", ...actor, agent: actor.agent ?? "watch" });
+    });
+  }
+
+  /** Full machine-readable export (graph + events) for audits, BI or governance tooling. */
+  exportJson() {
+    return {
+      format: "scenaria-export",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      project: this.config().projectName,
+      state: this.store.readState(),
+      nodes: this.store.listNodes(),
+      events: this.store.readEvents(),
+    };
   }
 
   // ------------------------------------------------------------------ context & diff

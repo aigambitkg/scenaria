@@ -127,6 +127,8 @@ export function NodePanel(props: {
               {t.agent} {n.agent}
             </span>
           )}
+          {n.model && <span title={t.model}>{n.model}</span>}
+          {n.user && <span title={t.userLabel}>{n.user}</span>}
           <span>{n.snapshot ? `${n.snapshot.files} ${n.snapshot.files === 1 ? t.file : t.files}` : t.noSnapshot}</span>
         </p>
       </header>

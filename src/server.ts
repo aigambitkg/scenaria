@@ -3,7 +3,28 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash, timingSafeEqual } from "node:crypto";
 import type { Scenaria } from "./core/engine.js";
+import { callTool, toolSchemas, type SchemaFormat, type ToolContext } from "./tools.js";
+
+export const VERSION = "0.2.0";
+
+function header(req: IncomingMessage, name: string): string | undefined {
+  const v = req.headers[name];
+  return typeof v === "string" && v.trim() ? v.trim().slice(0, 200) : undefined;
+}
+
+/** OpenAI-style tool calls deliver arguments as a JSON string. */
+function parseArgs(a: unknown): unknown {
+  if (typeof a === "string") {
+    try {
+      return JSON.parse(a);
+    } catch {
+      throw new Error("arguments is not valid JSON");
+    }
+  }
+  return a;
+}
 
 const here = dirname(fileURLToPath(import.meta.url));
 const UI_DIR = join(here, "ui");
@@ -52,7 +73,35 @@ export function isLoopbackHost(host: string | undefined): boolean {
   return LOOPBACK.has(name.toLowerCase());
 }
 
-export function createApp(s: Scenaria) {
+export interface AppOptions {
+  /** Shared secret for team/server mode. Required when listening on a non-loopback host. */
+  token?: string;
+}
+
+function tokenMatches(given: string | undefined, token: string): boolean {
+  if (!given) return false;
+  // Compare fixed-length digests: constant time and no length leak.
+  const a = createHash("sha256").update(given).digest();
+  const b = createHash("sha256").update(token).digest();
+  return timingSafeEqual(a, b);
+}
+
+function cookieToken(req: IncomingMessage): string | undefined {
+  const m = (req.headers.cookie ?? "").match(/(?:^|;\s*)scenaria_token=([^;]+)/);
+  if (!m) return undefined;
+  try {
+    return decodeURIComponent(m[1]);
+  } catch {
+    return undefined; // malformed cookie must never crash the server
+  }
+}
+
+function bearer(req: IncomingMessage): string | undefined {
+  const h = req.headers.authorization ?? "";
+  return h.toLowerCase().startsWith("bearer ") ? h.slice(7).trim() : undefined;
+}
+
+export function createApp(s: Scenaria, opts: AppOptions = {}) {
   const clients = new Set<ServerResponse>();
   let lastVersion = s.store.version();
   const timer = setInterval(() => {
@@ -65,16 +114,84 @@ export function createApp(s: Scenaria) {
   timer.unref();
 
   const handler = async (req: IncomingMessage, res: ServerResponse) => {
-    const url = new URL(req.url ?? "/", "http://localhost");
-    const p = url.pathname;
-    // DNS-rebinding protection: only answer to loopback host names.
-    if (!isLoopbackHost(req.headers.host)) return send(res, 421, { error: "unexpected Host header" });
-    if (req.method === "POST" && req.headers.origin && !isLoopbackHost(safeHost(req.headers.origin))) {
-      return send(res, 403, { error: "cross-origin request rejected" });
+    try {
+      await handle(req, res);
+    } catch (err: any) {
+      // Last line of defense: a single bad request must never take the server down.
+      try {
+        if (!res.headersSent) send(res, 400, { error: err?.message ?? String(err) });
+        else res.end();
+      } catch {}
     }
+  };
+
+  const handle = async (req: IncomingMessage, res: ServerResponse) => {
+    let url: URL;
+    try {
+      url = new URL(req.url ?? "/", "http://localhost");
+    } catch {
+      return send(res, 400, { error: "invalid URL" });
+    }
+    const p = url.pathname;
+    const token = opts.token;
+    let viaBearer = false;
+    if (!token) {
+      // Local mode — DNS-rebinding protection: only answer to loopback host names.
+      if (!isLoopbackHost(req.headers.host)) return send(res, 421, { error: "unexpected Host header" });
+      if (req.method === "POST" && req.headers.origin && !isLoopbackHost(safeHost(req.headers.origin))) {
+        return send(res, 403, { error: "cross-origin request rejected" });
+      }
+    } else {
+      // Team/server mode — every request needs the token (Bearer header or cookie).
+      if (!p.startsWith("/api/") && tokenMatches(url.searchParams.get("token") ?? undefined, token)) {
+        res.writeHead(302, {
+          location: "/",
+          // Lax so the first click from Slack/email works; CSRF stays blocked by X-Scenaria + Origin checks.
+          "set-cookie": `scenaria_token=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/`,
+        });
+        return res.end();
+      }
+      viaBearer = tokenMatches(bearer(req), token);
+      if (!viaBearer && !tokenMatches(cookieToken(req), token)) {
+        return p.startsWith("/api/")
+          ? send(res, 401, { error: "missing or invalid token (Authorization: Bearer <token>)" })
+          : send(res, 401, "Scenaria team server: open this page with ?token=<your token>", "text/plain; charset=utf-8");
+      }
+      if (req.method === "POST" && req.headers.origin && safeHost(req.headers.origin) !== req.headers.host) {
+        return send(res, 403, { error: "cross-origin request rejected" });
+      }
+    }
+    const ctx: ToolContext = {
+      agent: header(req, "x-scenaria-agent") ?? "http-client",
+      model: header(req, "x-scenaria-model"),
+      user: header(req, "x-scenaria-user"),
+      source: "api",
+    };
     try {
       if (p.startsWith("/api/")) {
-        if (req.method === "POST" && req.headers["x-scenaria"] !== "1") return send(res, 403, { error: "missing X-Scenaria header" });
+        if (req.method === "POST" && !viaBearer && req.headers["x-scenaria"] !== "1") return send(res, 403, { error: "missing X-Scenaria header" });
+
+        // ---------- vendor-neutral v1 API (any LLM / framework) ----------
+        if (req.method === "GET" && p === "/api/v1/health") return send(res, 200, { ok: true, name: "scenaria", version: VERSION, project: s.config().projectName });
+        if (req.method === "GET" && p === "/api/v1/tools") {
+          try {
+            return send(res, 200, toolSchemas((url.searchParams.get("format") ?? "json") as SchemaFormat));
+          } catch (err: any) {
+            return send(res, 400, { error: err?.message ?? String(err) });
+          }
+        }
+        const tm = p.match(/^\/api\/v1\/tools\/([\w-]+)$/);
+        if (req.method === "POST" && tm) {
+          const body = await readBody(req);
+          const args = body && typeof body === "object" && "arguments" in body ? parseArgs(body.arguments) : body;
+          try {
+            const r = callTool(s, tm[1], args, ctx);
+            return send(res, 200, { ok: true, text: r.text, data: r.data });
+          } catch (err: any) {
+            return send(res, 400, { ok: false, error: err?.message ?? String(err) });
+          }
+        }
+        if (req.method === "GET" && p === "/api/v1/export") return send(res, 200, s.exportJson());
 
         if (req.method === "GET" && p === "/api/graph") {
           const g = s.graph();
@@ -100,7 +217,7 @@ export function createApp(s: Scenaria) {
 
         if (req.method === "POST" && p === "/api/rewind") {
           const b = await readBody(req);
-          const r = s.rewind(String(b.id), { lesson: b.lesson, restoreFiles: b.restoreFiles !== false, agent: "dashboard", source: "ui" });
+          const r = s.rewind(String(b.id), { lesson: b.lesson, restoreFiles: b.restoreFiles !== false, agent: "dashboard", user: ctx.user, source: "ui" });
           return send(res, 200, r);
         }
         if (req.method === "POST" && p === "/api/fork") {
@@ -150,8 +267,15 @@ function openBrowser(url: string) {
   }
 }
 
-export async function startServer(s: Scenaria, opts: { port?: number; open?: boolean; host?: string } = {}) {
-  const app = createApp(s);
+export async function startServer(
+  s: Scenaria,
+  opts: { port?: number; open?: boolean; host?: string; token?: string; showToken?: boolean } = {},
+) {
+  const host0 = opts.host ?? "127.0.0.1";
+  if (!isLoopbackHost(host0) && !opts.token) {
+    throw new Error("Listening on a non-loopback host requires a token (--token or SCENARIA_TOKEN).");
+  }
+  const app = createApp(s, { token: opts.token });
   const server = createServer(app.handler);
   const host = opts.host ?? "127.0.0.1";
   let port = opts.port ?? 4477;
@@ -168,7 +292,17 @@ export async function startServer(s: Scenaria, opts: { port?: number; open?: boo
     tryListen(0);
   });
   const url = `http://${host === "0.0.0.0" ? "localhost" : host}:${port}`;
-  process.stdout.write(`Scenaria dashboard → ${url}  (project: ${s.root})\nCtrl+C to stop.\n`);
-  if (opts.open) openBrowser(url);
+  const uiUrl = opts.token ? (opts.showToken ? `${url}/?token=${encodeURIComponent(opts.token)}` : `${url}/?token=<your token>`) : url;
+  process.stdout.write(
+    [
+      `Scenaria ${VERSION} → ${uiUrl}`,
+      `  project: ${s.root}`,
+      `  API:     ${url}/api/v1/tools  (schemas: ?format=openai|anthropic|gemini|json)`,
+      opts.token ? `  auth:    Authorization: Bearer <token>` : `  mode:    local only (127.0.0.1)`,
+      "Ctrl+C to stop.",
+      "",
+    ].join("\n"),
+  );
+  if (opts.open) openBrowser(uiUrl);
   return { server, url, close: () => { app.close(); server.close(); } };
 }

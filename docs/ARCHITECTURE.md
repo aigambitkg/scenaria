@@ -7,14 +7,18 @@ Every decision point of an agent run leaves a **restorable, verifiable state**. 
 ## Components
 
 ```text
-            ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
- agents ──▶ │  MCP server  │   │ Claude hooks │   │     CLI      │ ◀── humans, scripts
-            └──────┬───────┘   └──────┬───────┘   └──────┬───────┘
-                   └────────────┬─────┴──────────────────┘
-                                ▼
+ any MCP client ─┐   Claude hooks ─┐   shell agents ─┐   any LLM API / n8n / Python ─┐   watcher ─┐
+   (Claude Code,  │   (auto capture) │   scenaria call  │   HTTP /api/v1/tools/<name>   │  scenaria  │
+   Cursor, VS Code,│                  │                  │   + schemas (?format=openai…) │   watch    │
+   Gemini, Codex…) │                  │                  │                                │            │
+                   ▼                  ▼                  ▼                                ▼            ▼
+             ┌──────────────────────────────────────────────────────────────────────────────────────┐
+             │  tools.ts — ONE vendor-neutral tool registry (13 tools, zod schemas, validation)      │
+             └───────────────────────────────────────────┬──────────────────────────────────────────┘
+                                                         ▼
                      ┌─────────────────────┐        ┌──────────────────┐
-                     │   core / engine     │ ◀────▶ │ dashboard server │ ◀── browser (React Flow)
-                     │ decide · checkpoint │        │  REST + SSE      │
+                     │   core / engine     │ ◀────▶ │ server (ui/serve)│ ◀── browser (React Flow)
+                     │ decide · checkpoint │        │ REST + SSE, token│
                      │ rewind · fork ·     │        └──────────────────┘
                      │ verify · context    │
                      └───┬─────────────┬───┘
@@ -26,18 +30,31 @@ Every decision point of an agent run leaves a **restorable, verifiable state**. 
 
 | Module | File | Role |
 |---|---|---|
-| Types | `src/core/types.ts` | Data model (nodes, options, snapshots, verification) |
+| Types | `src/core/types.ts` | Data model (nodes, options, snapshots, verification, attribution) |
 | Store | `src/core/store.ts` | JSON files, append-only event log, cross-process lock |
 | Snapshots | `src/core/snapshot.ts` | Private shadow git repository |
 | Engine | `src/core/engine.ts` | All operations; the only writer |
 | Context | `src/core/context.ts` | Resume capsule, token estimate |
 | Verify | `src/core/verify.ts` | Deterministic checks |
 | Protocol | `src/core/protocol.ts` | Knowledge-base notes, audit protocol |
-| MCP | `src/mcp.ts` | 12 tools over stdio |
-| Hooks | `src/hooks.ts` | Claude Code capture, never blocking |
-| Setup | `src/setup.ts` | Idempotent wiring of `.mcp.json`, `.claude/settings.json`, `CLAUDE.md` |
-| Server | `src/server.ts` | Localhost API + live events for the dashboard |
+| **Tools** | `src/tools.ts` | Vendor-neutral tool registry + schema export (OpenAI, Anthropic, Gemini, JSON, MCP) |
+| MCP | `src/mcp.ts` | Registers the registry over stdio |
+| Hooks | `src/hooks.ts` | Claude Code automatic capture, never blocking |
+| Setup | `src/setup.ts` | Idempotent wiring for Claude, Cursor, VS Code, Gemini CLI, Codex, Windsurf, AGENTS.md |
+| Server | `src/server.ts` | Dashboard API, `/api/v1` tool API, local or token-protected team mode |
+| Python client | `clients/python/scenaria_client.py` | stdlib-only client for any Python agent stack |
 | UI | `ui/` | Vite + React + React Flow, prebuilt into `dist/ui` |
+
+## Vendor neutrality
+
+- **One registry, many transports.** Each tool is defined once with a zod input schema and a handler that returns `{text, data}`, where `text` is meant for an LLM and `data` for programs. MCP, HTTP (`POST /api/v1/tools/<name>`), the CLI (`scenaria call`) and custom code all validate and run through `callTool()`.
+- **Schema export** (`scenaria tools --format …`, `GET /api/v1/tools?format=…`):
+  - `openai` (Chat Completions), `openai-responses`, `anthropic` (`input_schema`), `mcp` and `json`.
+  - `gemini`: converted to the OpenAPI subset Gemini accepts (no type arrays, `anyOf` or `additionalProperties`; argument-less tools have no parameters).
+- **OpenAI-style arguments.** The HTTP API accepts `{"arguments": "<json string>"}`, so tool calls can be forwarded unchanged.
+- **Attribution.** `agent`, `model` and `user` are stored on every node. They come from `SCENARIA_AGENT` / `SCENARIA_MODEL` / `SCENARIA_USER` (MCP), the `x-scenaria-agent|model|user` headers (HTTP) or `--agent/--model/--user` (CLI). `user` defaults to the OS account.
+- **Capture without tools.** `scenaria watch` polls the shadow index (incremental `git add`, cheap). After a quiet period it writes an auto-checkpoint titled with the changed files. This works for any agent that writes files.
+- **Rules files.** `AGENTS.md` is the cross-vendor convention; `CLAUDE.md` and `GEMINI.md` get the same block. The Claude block additionally mentions hook-based auto capture.
 
 ## Data model
 
@@ -103,7 +120,8 @@ A human or a verifier agent can then set a verdict, which overrides the automati
 - Every write runs under `.scenaria/lock` (O_EXCL file holding `pid:token`). A lock is only reclaimed if its process is gone (or after 10 minutes), and only its owner removes it. The slow `verifyCommand` runs outside the lock. An orphaned git index lock (hook killed mid-operation) is cleared after 2 minutes.
 - Hook session state (`session.json`) is read-modify-written under the same lock, so parallel hooks don't lose entries.
 - Node and state files are written atomically (tmp + rename).
-- The dashboard binds to `127.0.0.1` only, answers only to loopback `Host` headers (DNS-rebinding protection), rejects POSTs from foreign origins and requires the header `X-Scenaria: 1` on every POST.
+- **Local mode** (`scenaria ui`, `scenaria serve` without a token): binds to `127.0.0.1` and answers only to loopback `Host` headers (DNS-rebinding protection). It rejects POSTs from foreign origins and requires `X-Scenaria: 1` on every POST.
+- **Team mode** (`scenaria serve --host 0.0.0.0 --token …`): every request needs the token, either as `Authorization: Bearer` (API clients) or as an HttpOnly, SameSite=Lax cookie set by opening `/?token=…` (browser). Cookie-authenticated POSTs still need `X-Scenaria: 1`, and tokens are compared in constant time. A non-loopback host without a token is refused, and the CLI generates a token if none is given.
 - Hooks always exit 0 and print nothing, except the SessionStart context. They act only in initialized projects.
 
 ## Design of the dashboard

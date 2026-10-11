@@ -7,5 +7,5 @@ This project records its decision tree with Scenaria, so every decision point ca
 - After each meaningful step → `scenaria_checkpoint` with 2–6 short, factual output bullets; name files in backticks. List external side effects (sent mails, pushes, API writes) under `irreversible`.
 - Mistake, hallucination or dead end → `scenaria_last_good` or `scenaria_tree`, then `scenaria_rewind` with a one-line lesson. Continue only from the returned resume context, not from the abandoned attempt.
 - Another option of an earlier decision → `scenaria_fork`.
-- Clarifying questions and plan approvals are captured automatically; do not record them twice.
-- Never record facts you have not verified.
+{{AUTO_CAPTURE}}- Never record facts you have not verified.
+- No MCP support? The same tools are available as `scenaria call <tool> '<json>'` (shell) or `POST /api/v1/tools/<tool>` (HTTP).

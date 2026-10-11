@@ -1,7 +1,7 @@
 {
   "name": "scenaria",
-  "version": "0.1.0",
-  "description": "Quicksave & checkpoints for AI agents: a decision tree you can rewind, fork and verify — via MCP, CLI, Claude Code hooks and a visual scenario map.",
+  "version": "0.2.0",
+  "description": "Quicksave & checkpoints for AI agents — any LLM, any framework. A decision tree you can rewind, fork and verify via MCP, HTTP, CLI, function calling and a visual scenario map.",
   "type": "module",
   "bin": {
     "scenaria": "dist/cli.js"
@@ -11,6 +11,8 @@
   "files": [
     "dist",
     "templates",
+    "clients",
+    "examples",
     "README.md",
     "README.de.md",
     "LICENSE"
@@ -33,6 +35,12 @@
     "rewind",
     "decision-tree",
     "claude-code",
+    "openai",
+    "gemini",
+    "ollama",
+    "function-calling",
+    "llm",
+    "ai-governance",
     "agent-observability",
     "context-engineering"
   ],
