@@ -504,8 +504,14 @@ export function ChatPanel(props: { t: Dict; lang: "de" | "en"; keys: SessionKeys
       })
       .catch(() => setModel(null));
   }, []);
-  useEffect(() => saveChat({ sessionId, messages }), [sessionId, messages]);
-  useEffect(() => end.current?.scrollIntoView({ block: "end" }), [messages, pending, busy]);
+  useEffect(() => {
+    saveChat({ sessionId, messages });
+  }, [sessionId, messages]);
+  // Block body on purpose: newer Chrome returns a Promise from scrollIntoView, and an effect must
+  // return nothing or a cleanup function (React would call the Promise → "is not a function").
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: "end" });
+  }, [messages, pending, busy]);
 
   const llm = () => (model && props.keys[model.provider] ? { apiKey: props.keys[model.provider] } : undefined);
 

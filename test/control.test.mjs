@@ -369,3 +369,15 @@ test("chat: the person's own actions wait for a click, with a summary written by
     writeSettings({ chat: { confirmDestructive: true, maxSteps: 10 } });
   }
 });
+
+test("UI: effects never return a value (newer Chrome returns Promises from scroll methods → crash)", async () => {
+  const { readdirSync } = await import("node:fs");
+  const dir = new URL("../ui/src/", import.meta.url);
+  const bad = [];
+  for (const f of readdirSync(dir).filter((x) => /\.tsx?$/.test(x))) {
+    const src = readFileSync(new URL(f, dir), "utf8");
+    // useEffect(() => expr, …) returns expr's value to React as a "cleanup"
+    for (const m of src.matchAll(/use(?:Layout)?Effect\(\(\)\s*=>(?!\s*\{)/g)) bad.push(`${f}:${src.slice(0, m.index).split("\n").length}`);
+  }
+  assert.deepEqual(bad, [], `use a block body: ${bad.join(", ")}`);
+});
