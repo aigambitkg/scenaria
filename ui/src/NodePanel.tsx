@@ -1,3 +1,4 @@
+import { DecisionForecast } from "./Forecasts";
 import { useEffect, useState } from "react";
 import { api, type ConversationMessage, type Fidelity, type ScenariaNode } from "./api";
 import { FidelityChart } from "./Fidelity";
@@ -99,6 +100,7 @@ export function NodePanel(props: {
   fidelity: Fidelity | null;
   onSelect: (id: string) => void;
   onChoose?: (id: string, option: string, rationale: string) => Promise<void>;
+  onForecast?: (id: string) => void;
 }) {
   const { placed, allNodes, t } = props;
   const [choosing, setChoosing] = useState<{ id: string; why: string } | null>(null);
@@ -256,6 +258,10 @@ export function NodePanel(props: {
             <h3>{t.brief}</h3>
             <p className="pre">{n.brief}</p>
           </section>
+        )}
+
+        {n.type === "decision" && (n.options?.length ?? 0) > 1 && props.onForecast && (
+          <DecisionForecast t={t} node={n} graphVersion={props.graphVersion} onOpen={() => props.onForecast!(n.id)} />
         )}
 
         {n.type === "decision" && (

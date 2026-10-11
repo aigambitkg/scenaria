@@ -300,6 +300,7 @@ export function SettingsDialog(props: { t: Dict; keys: SessionKeys; onKey: (prov
   const [roles, setRoles] = useState<Partial<Record<LlmRole, LlmChoice>>>({});
   const [trusted, setTrusted] = useState("");
   const [chat, setChat] = useState({ confirmDestructive: true, maxSteps: 10 });
+  const [fc, setFc] = useState({ auto: false, dailyLimit: 20 });
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -310,6 +311,7 @@ export function SettingsDialog(props: { t: Dict; keys: SessionKeys; onKey: (prov
     setRoles(p.llm.roles ?? {});
     setTrusted(p.trustedEndpoints.join("\n"));
     setChat(p.chat);
+    setFc({ auto: p.forecast.auto, dailyLimit: p.forecast.dailyLimit });
   };
   useEffect(() => {
     load().catch((e) => setErr(errText(e)));
@@ -329,6 +331,7 @@ export function SettingsDialog(props: { t: Dict; keys: SessionKeys; onKey: (prov
       await api.saveSettings({
         llm: { default: clean(def), roles: rolePatch },
         chat,
+        forecast: fc,
         ...(page?.teamMode ? {} : { trustedEndpoints: trusted.split("\n").map((x) => x.trim()).filter(Boolean) }),
       });
       await load();
@@ -386,6 +389,19 @@ export function SettingsDialog(props: { t: Dict; keys: SessionKeys; onKey: (prov
               <label className="check">
                 <span>{t.maxSteps}</span>
                 <input className="num" type="number" min={1} max={30} value={chat.maxSteps} onChange={(e) => setChat({ ...chat, maxSteps: Number(e.target.value) || 10 })} />
+              </label>
+            </section>
+
+            <section className="a-sec">
+              <h3>{t.fcTitle}</h3>
+              <p className="hint">{t.fcSettingsHint}</p>
+              <label className="check">
+                <input type="checkbox" checked={fc.auto} onChange={(e) => setFc({ ...fc, auto: e.target.checked })} />
+                <span>{t.fcAutoLabel}</span>
+              </label>
+              <label className="check">
+                <span>{t.fcDailyLimit}</span>
+                <input className="num" type="number" min={1} max={200} value={fc.dailyLimit} onChange={(e) => setFc({ ...fc, dailyLimit: Number(e.target.value) || 20 })} />
               </label>
             </section>
 

@@ -8,6 +8,7 @@ import { NodePanel } from "./NodePanel";
 import { AnalysisDialog, CanonDialog, ConversationsDialog, DiffDialog, PromptDialog, ProtocolDialog, RewindDialog } from "./Dialogs";
 import { ChatPanel, RelayDialog, SettingsDialog, type SessionKeys } from "./Control";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { ForecastsDialog } from "./Forecasts";
 
 type Pending =
   | { mode: "rewind"; node: ScenariaNode }
@@ -40,6 +41,8 @@ export function App() {
   const [convos, setConvos] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [relayOpen, setRelayOpen] = useState(false);
+  /** Forecasts page: false = closed, null = open without focus, "n12" = focused on a decision. */
+  const [forecastFocus, setForecastFocus] = useState<string | null | false>(false);
   const [side, setSide] = useState<"node" | "chat">("node");
   /** API keys typed into Settings: memory only (never stored, gone when the tab closes). */
   const [keys, setKeys] = useState<SessionKeys>({});
@@ -154,7 +157,10 @@ export function App() {
   const switchLang = (l: Lang) => {
     setLang(l);
     saveLang(l);
+    // Background work (automatic forecasts) writes in the person's language (needs the approval session).
+    api.saveSettings({ ui: { lang: l } }).catch(() => {});
   };
+  const openDecisions = useMemo(() => (graph?.nodes ?? []).filter((n) => n.type === "decision" && !n.chosen && (n.options?.length ?? 0) > 1).length, [graph]);
 
   const confirmPending = async (lesson: string, restoreFiles: boolean) => {
     if (!pending) return;
@@ -222,6 +228,10 @@ export function App() {
           </button>
           <button className={`btn ${side === "chat" ? "primary" : ""}`} onClick={() => setSide(side === "chat" ? "node" : "chat")} title={t.chatHint}>
             {t.chat}
+          </button>
+          <button className="btn" onClick={() => setForecastFocus(null)} title={t.fcIntro}>
+            {t.fcButton}
+            {openDecisions > 0 && <span className="hchip mid">{openDecisions}</span>}
           </button>
           <button className="btn accent" onClick={() => setPromptOpen(true)} title={t.promptHintShort}>
             {t.agentPrompt}
@@ -330,6 +340,7 @@ export function App() {
             toast(`${n.id}: ${t.verification[n.verification?.status ?? "unverified"]}`);
             await load();
           }}
+          onForecast={(id) => setForecastFocus(id)}
           onChoose={async (id, option, rationale) => {
             await api.choose(id, option, rationale);
             toast(`${id} ✓`);
@@ -379,6 +390,7 @@ export function App() {
         onReset={() => {
           setSettingsOpen(false);
           setRelayOpen(false);
+          setForecastFocus(false);
           setCanonOpen(false);
           setAnalysisOpen(false);
           setPromptOpen(false);
@@ -430,6 +442,25 @@ export function App() {
           onSelectNode={(id) => {
             if (graph?.nodes.some((x) => x.id === id)) setSelected(id);
             setCanonOpen(false);
+          }}
+        />
+      )}
+      {forecastFocus !== false && (
+        <ForecastsDialog
+          t={t}
+          lang={lang}
+          keys={keys}
+          nodes={graph?.nodes ?? []}
+          headId={headId}
+          focus={forecastFocus}
+          toast={toast}
+          onClose={() => setForecastFocus(false)}
+          onChanged={load}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onNode={(id) => {
+            if (graph?.nodes.some((x) => x.id === id)) setSelected(id);
+            setForecastFocus(false);
+            setSide("node");
           }}
         />
       )}

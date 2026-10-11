@@ -9,6 +9,16 @@ import type { AgentStatus } from "../../src/setup";
 import type { ChatMessage, ChatResponse, ChatToolCall } from "../../src/chat";
 import type { RelayReport } from "../../src/core/relay";
 import type { gateMatrix } from "../../src/core/gate";
+import type { Forecast, ForecastOption, QuickForecast } from "../../src/core/forecast";
+export type { Forecast, ForecastOption, QuickForecast };
+export interface ForecastsPage {
+  forecasts: Forecast[];
+  calibration: { evaluated: number; meanError: number | null; hits: number };
+  running: string | null;
+  open: string[];
+  failed: Record<string, string>;
+  auto: { auto: boolean; dailyLimit: number; usedToday: number };
+}
 
 export type { SettingsView, LlmRole, LlmChoice, AgentStatus, ChatMessage, ChatResponse, ChatToolCall, RelayReport };
 export type GateMatrix = ReturnType<typeof gateMatrix>;
@@ -107,7 +117,12 @@ export const api = {
   deleteRule: (id: string) => req<{ ok: boolean }>("/api/rules/delete", { id }),
   // v0.7
   settings: () => req<SettingsPage>("/api/settings"),
-  saveSettings: (patch: { llm?: { default?: LlmChoice; roles?: Partial<Record<LlmRole, LlmChoice>> }; trustedEndpoints?: string[]; chat?: { confirmDestructive: boolean; maxSteps: number } }) => req<SettingsView>("/api/settings", patch),
+  saveSettings: (patch: { llm?: { default?: LlmChoice; roles?: Partial<Record<LlmRole, LlmChoice>> }; trustedEndpoints?: string[]; chat?: { confirmDestructive: boolean; maxSteps: number }; forecast?: { auto: boolean; dailyLimit: number }; ui?: { lang: string } }) => req<SettingsView>("/api/settings", patch),
+  forecasts: () => req<ForecastsPage>("/api/forecasts"),
+  quickDecision: (node: string) => req<{ node: string; options: ForecastOption[] }>(`/api/forecast/quick?node=${encodeURIComponent(node)}`),
+  quickPrompt: (text: string) => req<{ prompt: string; quick: QuickForecast }>(`/api/forecast/quick?prompt=${encodeURIComponent(text)}`),
+  runForecast: (b: { node?: string; prompt?: string; variants?: string[]; quick?: boolean; lang: string; llm?: Partial<LlmCall> }) => req<Forecast>("/api/forecast", b),
+  markUsed: (id: string, key: string) => req<Forecast>("/api/forecast/used", { id, key }),
   models: (b: { provider: string; baseUrl?: string; apiKey?: string }) => req<{ models: string[] }>("/api/settings/models", b),
   testLlm: (b: LlmCall) => req<{ ok: boolean; model: string; reply: string; ms: number }>("/api/settings/test", b),
   connectAgents: (targets: string[]) => req<{ changes: string[]; notes: string[]; agents: AgentStatus[] }>("/api/agents/connect", { targets }),
