@@ -3,6 +3,7 @@ import { api, type AnalysisRecord, type CanonEvent, type CanonSuggestion, type C
 import { MessageList } from "./NodePanel";
 import type { Dict } from "./i18n";
 import { NodeId } from "./Map";
+import { GateSection } from "./Control";
 
 export function Modal(props: { title: ReactNode; onClose: () => void; children: ReactNode; wide?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -879,6 +880,7 @@ export function CanonDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: stri
             {verdict.reasons.length > 0 && <p className="small">{verdict.reasons.join(" · ")}</p>}
           </section>
         )}
+        <GateSection t={t} locked={locked} toast={props.toast} onNode={props.onSelectNode} onChanged={() => reload().catch(() => {})} reloadKey={events} />
         {tampered.length > 0 && (
           <section className="a-sec">
             <h3>⛔ {t.canonTamperedTitle}</h3>

@@ -430,3 +430,68 @@ export function parseTargets(spec: string): Target[] {
   }
   return [...new Set(items)] as Target[];
 }
+
+// ------------------------------------------------------------------ status (dashboard → Settings)
+
+export interface AgentStatus {
+  target: Target;
+  label: string;
+  /** Installed on this machine (best guess). */
+  detected: boolean;
+  /** This project is wired for it (MCP entry present). */
+  connected: boolean;
+  /** Where the entry lives / what to do by hand. */
+  where: string;
+}
+
+const LABELS: Record<Target, string> = {
+  claude: "Claude Code",
+  cursor: "Cursor",
+  vscode: "VS Code / GitHub Copilot",
+  gemini: "Gemini CLI",
+  codex: "Codex",
+  windsurf: "Windsurf",
+  generic: "Other agents (AGENTS.md, HTTP, CLI)",
+};
+
+/** Which agents are installed, and which ones this project is wired for. */
+export function agentStatus(root: string, home = homedir()): AgentStatus[] {
+  const detected = new Set(detectAgents(home));
+  const jsonHas = (rel: string, key: string) => {
+    try {
+      const d = JSON.parse(readFileSync(join(root, rel), "utf8"));
+      return Boolean(d?.[key]?.scenaria);
+    } catch {
+      return false;
+    }
+  };
+  const textHas = (file: string, re: RegExp) => {
+    try {
+      return re.test(readFileSync(file, "utf8"));
+    } catch {
+      return false;
+    }
+  };
+  const windsurfGlobal = join(home, ".codeium", "windsurf", "mcp_config.json");
+  const rows: [Target, boolean, string][] = [
+    ["claude", jsonHas(".mcp.json", "mcpServers"), ".mcp.json + .claude/settings.json"],
+    ["cursor", jsonHas(".cursor/mcp.json", "mcpServers"), ".cursor/mcp.json"],
+    ["vscode", jsonHas(".vscode/mcp.json", "servers"), ".vscode/mcp.json"],
+    ["gemini", jsonHas(".gemini/settings.json", "mcpServers"), ".gemini/settings.json"],
+    ["codex", textHas(join(root, ".codex", "config.toml"), /\[mcp_servers\.scenaria\]/) || textHas(join(home, ".codex", "config.toml"), /\[mcp_servers\.scenaria\]/), ".codex/config.toml"],
+    ["windsurf", textHas(windsurfGlobal, /"scenaria"/), "~/.codeium/windsurf/mcp_config.json (global, by hand)"],
+    ["generic", textHas(join(root, "AGENTS.md"), /scenaria/i), "AGENTS.md"],
+  ];
+  return rows.map(([target, connected, where]) => ({ target, label: LABELS[target], detected: target === "generic" || detected.has(target), connected, where }));
+}
+
+/** Copy-paste snippets for connecting any agent by hand. */
+export function connectionSnippets(root: string, baseUrl?: string) {
+  const mcp = { mcpServers: { scenaria: { command: SELF[0], args: [...SELF.slice(1), "mcp"], env: { SCENARIA_ROOT: root, SCENARIA_AGENT: "<agent name>" } } } };
+  return {
+    mcpCommand: `${CLI_DISPLAY} mcp`,
+    mcpJson: JSON.stringify(mcp, null, 2),
+    http: baseUrl ? { tools: `${baseUrl}/api/v1/tools?format=openai`, call: `${baseUrl}/api/v1/tools/<tool>` } : null,
+    proxy: baseUrl ? { openai: `${baseUrl}/proxy/openai`, anthropic: `${baseUrl}/proxy/anthropic`, ollama: `${baseUrl}/proxy/ollama` } : null,
+  };
+}

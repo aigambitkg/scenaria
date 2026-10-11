@@ -3,11 +3,33 @@ import { homedir } from "node:os";
 import { dirname, join, parse, resolve } from "node:path";
 
 /** User-level settings written by `scenaria setup --global` (~/.config/scenaria/config.json). */
+export interface LlmChoice {
+  provider: string;
+  model: string;
+  baseUrl?: string;
+}
+
+/** The person's model settings (dashboard → Settings). Never contains API keys. */
+export interface LlmSettings {
+  /** Default model for chat, analysis, archivist and relay. */
+  default?: LlmChoice;
+  /** Optional model per function. */
+  roles?: Partial<Record<"chat" | "analysis" | "archivist" | "craftsman" | "oracle", LlmChoice>>;
+}
+
 export interface GlobalConfig {
   /** Initialize Scenaria automatically the first time an agent works in a project. */
   autoInit: boolean;
   setupAt?: string;
   targets?: string[];
+  llm?: LlmSettings;
+  /**
+   * Base URLs a person allowed to receive API keys from environment variables (besides each
+   * provider's official endpoint). Kept here, outside every project, so a repository cannot
+   * redirect your keys.
+   */
+  trustedEndpoints?: string[];
+  chat?: { confirmDestructive?: boolean; maxSteps?: number };
 }
 
 /**

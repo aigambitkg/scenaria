@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import type { Snapshot } from "./types.js";
@@ -222,6 +222,20 @@ export class ShadowRepo {
       input: paths.join("\0"),
       allowFail: true,
     });
+  }
+
+  /**
+   * Write the files of `commit` into an empty directory elsewhere (the project and the shadow index
+   * stay untouched). Used to run canon checks on other lines of work.
+   */
+  exportTo(commit: string, dir: string) {
+    if (!this.hasObject(commit)) throw new Error(`Snapshot ${commit.slice(0, 10)} not found in shadow repo`);
+    const env = { ...this.env(), GIT_WORK_TREE: dir, GIT_INDEX_FILE: join(dir, ".scenaria-export-index") };
+    for (const args of [["read-tree", commit], ["checkout-index", "-a", "-f"]]) {
+      const r = spawnSync("git", ["-c", "core.autocrlf=false", ...args], { cwd: dir, env, encoding: "utf8" });
+      if (r.status !== 0) throw new Error(`git ${args[0]} failed: ${(r.stderr || "").trim()}`);
+    }
+    rmSync(join(dir, ".scenaria-export-index"), { force: true });
   }
 
   /** Restore the working tree to `commit` (files added since are removed, deleted files return). */

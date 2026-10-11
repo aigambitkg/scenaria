@@ -4,8 +4,8 @@
  * they land as "proposed" and wait for a person's approval.
  */
 import type { Scenaria } from "./engine.js";
-import { DEFAULT_PROXY } from "./engine.js";
 import { callLlm, dossier, type LlmRequest } from "./analysis.js";
+import { effectiveLlm, upstreams as upstreamsOf } from "./settings.js";
 import { renderCanon, type CanonEvent } from "./canon.js";
 
 function prompt(lang: "de" | "en") {
@@ -18,9 +18,10 @@ Write the text values in ${lang === "de" ? "German" : "English"}.`;
 }
 
 export async function archivistProposals(s: Scenaria, req: Partial<LlmRequest> & { lang?: "de" | "en" } = {}): Promise<{ proposed: CanonEvent[]; skipped: number; model: string }> {
-  const cfg = { ...(s.config().analysis ?? {}), ...Object.fromEntries(Object.entries(req).filter(([, v]) => v !== undefined && v !== "")) } as LlmRequest & { lang?: "de" | "en" };
-  const upstreams = { ...DEFAULT_PROXY.upstreams, ...(s.config().proxy?.upstreams ?? {}) } as Record<string, string>;
-  const lang = cfg.lang === "de" ? "de" : "en";
+  const cfg = effectiveLlm(s, "archivist", req);
+  if (!cfg) throw new Error("No model configured — choose one in Settings (or pass provider and model).");
+  const upstreams = upstreamsOf(s);
+  const lang = req.lang === "de" ? "de" : "en";
   const existing = renderCanon(s.canon(), 40).join("\n") || "(none)";
   const d = dossier(s, { maxTokens: 6000 });
   const out = await callLlm(cfg, upstreams, prompt(lang), `EXISTING CANON:\n${existing}\n\n--- DOSSIER ---\n${d.text}`);

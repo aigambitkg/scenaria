@@ -22,9 +22,15 @@ import { applyBlocks } from "./core/blocks.js";
 import { recall } from "./core/recall.js";
 import { SECTIONS, checkExpectations, resolveRefs, stringPayload, workspace, type Section } from "./core/workspace.js";
 import { archivistProposals } from "./core/canon-llm.js";
+import { gateMatrix, runGate } from "./core/gate.js";
+import { listModels, readSettings, upstreams, writeSettings } from "./core/settings.js";
+import { listRelays, runRelay } from "./core/relay.js";
+import { chat } from "./chat.js";
+import { TARGETS, agentStatus, connectionSnippets, setupAgents, type Target } from "./setup.js";
+import { callLlm } from "./core/analysis.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
-export const VERSION = "0.6.0";
+export const VERSION = "0.7.0";
 
 const KEY_ENVS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "AZURE_OPENAI_API_KEY"];
 
@@ -82,12 +88,12 @@ function openPath(path: string) {
   } catch {}
 }
 
-async function readBody(req: IncomingMessage): Promise<any> {
+async function readBody(req: IncomingMessage, limit = 1_000_000): Promise<any> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const c of req) {
     size += (c as Buffer).length;
-    if (size > 1_000_000) throw new Error("Body too large");
+    if (size > limit) throw new Error("Body too large");
     chunks.push(c as Buffer);
   }
   const raw = Buffer.concat(chunks).toString("utf8");
@@ -252,7 +258,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
       }
       if (approvalLinkSecret && tokenMatches(url.searchParams.get("approve") ?? undefined, approvalLinkSecret)) {
         if (!opts.token) approvalLinkSecret = undefined; // single use
-        res.writeHead(302, { location: "/", "set-cookie": `scenaria_approval=${encodeURIComponent(approvalSecret)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200` });
+        res.writeHead(302, { location: "/", "set-cookie": `scenaria_approval=${encodeURIComponent(approvalSecret)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000` });
         return res.end();
       }
       return send(
@@ -370,13 +376,77 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           const st = s.canonState();
           return send(res, 200, { events: st.events, error: st.error, missing: st.missing, suggestions: st.error ? [] : s.suggestCanon(), approval: isApprover(req) });
         }
-        // Binding canon actions: only with the approval session (not with the API/agent token).
-        if (p.startsWith("/api/canon") && req.method === "POST" && p !== "/api/canon/archivist" && !isApprover(req)) {
+        // Binding canon actions, the person's settings, the built-in chat and the relay: only with the
+        // approval session (not with the API/agent token) — they act for the person or use the person's keys.
+        const personOnly = (p.startsWith("/api/canon") && p !== "/api/canon/archivist") || p.startsWith("/api/settings") || p.startsWith("/api/agents") || p === "/api/chat" || p === "/api/relay";
+        if (personOnly && req.method === "POST" && !isApprover(req)) {
           return send(res, 403, { error: "Approvals need the approval link from the terminal running Scenaria (scenaria start/ui). Agents can only propose.", code: "approval_required" });
         }
         // The approver is the person at this machine (local) — client-supplied names are only a claim in team mode.
         const approver = token ? `${ctx.user ?? "approver"} (team approver link)` : `${defaultUserName()} (local approval link)`;
         if (req.method === "GET" && p === "/api/v1/string") return send(res, 200, stringPayload(s, url.searchParams.get("at") ?? undefined));
+
+        // ---------- settings: models, keys (never stored), agents ----------
+        if (req.method === "GET" && p === "/api/settings") {
+          const host = req.headers.host ? `http://${req.headers.host}` : undefined;
+          return send(res, 200, { ...readSettings(s), agents: agentStatus(s.root), snippets: connectionSnippets(s.root, host), approval: isApprover(req), teamMode: Boolean(token), version: VERSION });
+        }
+        if (req.method === "POST" && p === "/api/settings") {
+          const b = await readBody(req);
+          if (token && (b?.trustedEndpoints || JSON.stringify(b?.llm ?? {}).includes("baseUrl"))) return send(res, 400, { error: "custom base URLs and trusted endpoints are disabled in team mode (use proxy.upstreams in config.json on the server)" });
+          writeSettings(b ?? {});
+          s.store.appendEvent({ type: "update", data: { message: `settings changed by ${approver} (models/agents)` } });
+          return send(res, 200, readSettings(s));
+        }
+        if (req.method === "POST" && p === "/api/settings/models") {
+          const b = await readBody(req);
+          if (token && b?.baseUrl) return send(res, 400, { error: "custom base URLs are disabled in team mode" });
+          try {
+            return send(res, 200, { models: await listModels(s, { provider: String(b?.provider ?? ""), baseUrl: b?.baseUrl, apiKey: b?.apiKey }) });
+          } catch (err: any) {
+            return send(res, 502, { error: err?.message ?? String(err) });
+          }
+        }
+        if (req.method === "POST" && p === "/api/settings/test") {
+          const b = await readBody(req);
+          if (token && b?.baseUrl) return send(res, 400, { error: "custom base URLs are disabled in team mode" });
+          try {
+            const t0 = Date.now();
+            const out = await callLlm({ provider: String(b?.provider ?? ""), model: String(b?.model ?? ""), baseUrl: b?.baseUrl, apiKey: b?.apiKey }, upstreams(s), "Answer with the single word OK.", "Connection test", 60_000);
+            return send(res, 200, { ok: true, model: out.model, reply: out.text.slice(0, 80), ms: Date.now() - t0 });
+          } catch (err: any) {
+            return send(res, 502, { ok: false, error: err?.message ?? String(err) });
+          }
+        }
+        if (req.method === "POST" && p === "/api/agents/connect") {
+          const b = await readBody(req);
+          const targets = (Array.isArray(b?.targets) ? b.targets.map(String) : []).filter((t: string) => (TARGETS as readonly string[]).includes(t)) as Target[];
+          if (!targets.length) return send(res, 400, { error: `targets must be some of ${TARGETS.join(", ")}` });
+          const r = setupAgents(s.root, targets, { rulesFiles: b?.rulesFiles !== false });
+          s.store.appendEvent({ type: "update", data: { message: `agents connected by ${approver}: ${targets.join(", ")}` } });
+          return send(res, 200, { ...r, agents: agentStatus(s.root) });
+        }
+
+        // ---------- built-in chat & relay (the person's own surface) ----------
+        if (req.method === "POST" && p === "/api/chat") {
+          const b = await readBody(req, 4_000_000);
+          if (token && b?.llm?.baseUrl) return send(res, 400, { error: "custom base URLs are disabled in team mode" });
+          try {
+            return send(res, 200, await chat(s, { sessionId: String(b?.sessionId ?? ""), messages: b?.messages, decisions: b?.decisions, llm: b?.llm, lang: b?.lang === "en" ? "en" : "de", user: token ? ctx.user : defaultUserName() }));
+          } catch (err: any) {
+            return send(res, 502, { error: err?.message ?? String(err) });
+          }
+        }
+        if (req.method === "GET" && p === "/api/relay") return send(res, 200, listRelays(s));
+        if (req.method === "POST" && p === "/api/relay") {
+          const b = await readBody(req);
+          if (token && b?.llm?.baseUrl) return send(res, 400, { error: "custom base URLs are disabled in team mode" });
+          try {
+            return send(res, 200, await runRelay(s, { question: String(b?.question ?? ""), options: Array.isArray(b?.options) ? b.options.map(String) : undefined, createDecision: b?.createDecision === true, lang: b?.lang === "en" ? "en" : "de", llm: b?.llm, actor: { user: token ? ctx.user : defaultUserName(), agent: "relay" } }));
+          } catch (err: any) {
+            return send(res, 502, { error: err?.message ?? String(err) });
+          }
+        }
         if (req.method === "POST" && p === "/api/canon") {
           // The dashboard is a person's surface: adding here makes the event binding (audited as "dashboard").
           const b = await readBody(req);
@@ -387,6 +457,13 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           if (!["approve", "reject", "retire", "confirm"].includes(b?.action)) return send(res, 400, { error: "action must be approve, reject, retire or confirm" });
           const adoptCheck = typeof b?.adoptCheck === "string" ? b.adoptCheck : b?.adoptCheck === true;
           return send(res, 200, s.decideCanon(String(b?.id ?? ""), b.action, { user: approver, via: "dashboard", reason: b?.reason, adoptCheck }));
+        }
+        if (req.method === "GET" && p === "/api/canon/gate") return send(res, 200, gateMatrix(s));
+        if (req.method === "POST" && p === "/api/canon/gate") {
+          const b = await readBody(req);
+          const strs = (x: unknown) => (Array.isArray(x) ? x.map(String).slice(0, 40) : undefined);
+          await runGate(s, { lines: strs(b?.lines), ids: strs(b?.ids), by: approver });
+          return send(res, 200, gateMatrix(s));
         }
         if (req.method === "POST" && p === "/api/canon/check") {
           const b = await readBody(req);

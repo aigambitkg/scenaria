@@ -20,6 +20,7 @@ import { tokenize } from "./recall.js";
 import { writeJsonAtomic } from "./store.js";
 import type { ScenariaNode } from "./types.js";
 import { canonState, readCanon } from "./canon.js";
+import { gateEvidence } from "./gate.js";
 
 export const SECTIONS = ["goals", "canon", "decisions", "facts", "questions", "rules", "lessons", "risks"] as const;
 export type Section = (typeof SECTIONS)[number];
@@ -411,7 +412,15 @@ export function stringPayload(s: Scenaria, at?: string): StringPayload {
   const notes: string[] = [];
   const onLine = new Set(path.map((n) => n.id));
   // A check result counts for this line only if it ran on a node of this line with a clean tree.
-  const checkOf = (k: (typeof canon)[number]) => (k.lastCheck && k.lastCheck.node && onLine.has(k.lastCheck.node) && k.lastCheck.clean ? k.lastCheck.status : undefined);
+  // Gate results (checks run on this line's snapshots) count too; the deeper evidence on the line wins.
+  const pos = new Map(path.map((n, i) => [n.id, i]));
+  const gate = gateEvidence(s, path.map((n) => n.id));
+  const checkOf = (k: (typeof canon)[number]) => {
+    const own = k.lastCheck && k.lastCheck.node && onLine.has(k.lastCheck.node) && k.lastCheck.clean ? k.lastCheck : undefined;
+    const g = gate.get(k.id);
+    if (own && g) return pos.get(own.node!)! >= pos.get(g.node)! ? own.status : g.status;
+    return own?.status ?? g?.status;
+  };
   const broken = new Set(path.flatMap((n) => n.breaksCanon ?? []));
   for (const k of canon) {
     if (!broken.has(k.id)) continue;

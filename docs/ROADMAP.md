@@ -64,10 +64,18 @@
 - [x] Canon in capsule, prompts, reminder, board, expectations, health check and fidelity chart; dashboard dialog
 - [x] Signed approvals (Ed25519, trusted approver keys outside the project), one-time approval link, explicit adoption of check commands
 
-## Next: canon stages 2–3
+## Done in 0.7 (control from one place, canon stages 2–3)
 
-- [ ] Canon gate per string: run future checks in a worktree of each branch's snapshot, "surviving strings" view
-- [ ] Relay protocol (archivist → craftsman → oracle) for high-impact decisions, role prompts for any LLM, parallel branches
+- [x] Settings page: one model for everything or one per function, model list, connection test, trusted endpoints, agents via MCP with one click
+- [x] Built-in chat that operates Scenaria with all tools (any provider, tool calling), confirmation for rewind/fork, recorded as a conversation
+- [x] Canon gate per line of work ("surviving strings"), signed and anchored results
+- [x] Relay archivist → craftsman → oracle with isolated contexts and deterministic orchestrator, open decision for the person
+- [x] Env API keys only to official or trusted endpoints
+
+## Next
+
+- [ ] Streaming chat answers; chat history browser
+- [ ] Relay with parallel branches (craftsman options explored as forks, gate on each)
 - [ ] Approver keys in the OS keychain / hardware keys (passkey, YubiKey) so a local process cannot read them
 
 ## Next: capture everywhere

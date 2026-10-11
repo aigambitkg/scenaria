@@ -6,6 +6,7 @@ import { layoutTree, taskOf } from "./layout";
 import { NodeId, ScenarioMap } from "./Map";
 import { NodePanel } from "./NodePanel";
 import { AnalysisDialog, CanonDialog, ConversationsDialog, DiffDialog, PromptDialog, ProtocolDialog, RewindDialog } from "./Dialogs";
+import { ChatPanel, RelayDialog, SettingsDialog, type SessionKeys } from "./Control";
 
 type Pending =
   | { mode: "rewind"; node: ScenariaNode }
@@ -36,6 +37,11 @@ export function App() {
   const [diff, setDiff] = useState<{ from: string; to: string; stat: string; patch: string } | null>(null);
   const [log, setLog] = useState<ScenariaEvent[] | null>(null);
   const [convos, setConvos] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [relayOpen, setRelayOpen] = useState(false);
+  const [side, setSide] = useState<"node" | "chat">("node");
+  /** API keys typed into Settings: memory only (never stored, gone when the tab closes). */
+  const [keys, setKeys] = useState<SessionKeys>({});
   const [toasts, setToasts] = useState<{ id: number; msg: string }[]>([]);
   const toastId = useRef(0);
   const t = dict[lang];
@@ -207,6 +213,9 @@ export function App() {
           >
             {t.saveNow}
           </button>
+          <button className={`btn ${side === "chat" ? "primary" : ""}`} onClick={() => setSide(side === "chat" ? "node" : "chat")} title={t.chatHint}>
+            {t.chat}
+          </button>
           <button className="btn accent" onClick={() => setPromptOpen(true)} title={t.promptHintShort}>
             {t.agentPrompt}
           </button>
@@ -223,6 +232,9 @@ export function App() {
           </button>
           <button className="btn" onClick={async () => setLog((await api.log()).events)}>
             {t.protocol}
+          </button>
+          <button className="btn icon gear" onClick={() => setSettingsOpen(true)} title={t.settings} aria-label={t.settings}>
+            ⚙
           </button>
           <div className="lang" role="group" aria-label="Language">
             <button className={lang === "de" ? "on" : ""} onClick={() => switchLang("de")}>
@@ -249,6 +261,29 @@ export function App() {
             </div>
           ) : null}
         </section>
+        <div className="side">
+          <div className="side-tabs" role="tablist">
+            <button role="tab" aria-selected={side === "node"} className={side === "node" ? "on" : ""} onClick={() => setSide("node")}>
+              {t.chatNode}
+            </button>
+            <button role="tab" aria-selected={side === "chat"} className={side === "chat" ? "on" : ""} onClick={() => setSide("chat")}>
+              {t.chat}
+            </button>
+          </div>
+          {side === "chat" ? (
+            <ChatPanel
+              t={t}
+              lang={lang}
+              keys={keys}
+              toast={toast}
+              onNode={(id) => {
+                if (graph?.nodes.some((x) => x.id === id)) setSelected(id);
+              }}
+              onChanged={load}
+              onOpenSettings={() => setSettingsOpen(true)}
+              onOpenRelay={() => setRelayOpen(true)}
+            />
+          ) : (
         <NodePanel
           placed={placed}
           allNodes={graph?.nodes ?? []}
@@ -279,7 +314,14 @@ export function App() {
             toast(`${n.id}: ${t.verification[n.verification?.status ?? "unverified"]}`);
             await load();
           }}
+          onChoose={async (id, option, rationale) => {
+            await api.choose(id, option, rationale);
+            toast(`${id} ✓`);
+            await load();
+          }}
         />
+          )}
+        </div>
       </main>
 
       <footer className="statusbar">
@@ -357,6 +399,22 @@ export function App() {
           onSelectNode={(id) => {
             if (graph?.nodes.some((x) => x.id === id)) setSelected(id);
             setCanonOpen(false);
+          }}
+        />
+      )}
+      {settingsOpen && <SettingsDialog t={t} keys={keys} onKey={(p, k) => setKeys((o) => ({ ...o, [p]: k }))} toast={toast} onClose={() => setSettingsOpen(false)} onSaved={load} />}
+      {relayOpen && (
+        <RelayDialog
+          t={t}
+          lang={lang}
+          keys={keys}
+          toast={toast}
+          onClose={() => setRelayOpen(false)}
+          onChanged={load}
+          onNode={(id) => {
+            if (graph?.nodes.some((x) => x.id === id)) setSelected(id);
+            setRelayOpen(false);
+            setSide("node");
           }}
         />
       )}

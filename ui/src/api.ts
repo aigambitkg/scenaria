@@ -3,6 +3,28 @@ import type { AnalysisRecord, Metrics } from "../../src/core/analysis";
 import type { FidelityPoint } from "../../src/core/fidelity";
 import type { CanonEvent, CanonSuggestion } from "../../src/core/canon";
 import type { StringPayload } from "../../src/core/workspace";
+import type { SettingsView, LlmRole } from "../../src/core/settings";
+import type { LlmChoice } from "../../src/core/global";
+import type { AgentStatus } from "../../src/setup";
+import type { ChatMessage, ChatResponse, ChatToolCall } from "../../src/chat";
+import type { RelayReport } from "../../src/core/relay";
+import type { gateMatrix } from "../../src/core/gate";
+
+export type { SettingsView, LlmRole, LlmChoice, AgentStatus, ChatMessage, ChatResponse, ChatToolCall, RelayReport };
+export type GateMatrix = ReturnType<typeof gateMatrix>;
+export interface SettingsPage extends SettingsView {
+  agents: AgentStatus[];
+  snippets: { mcpCommand: string; mcpJson: string; http: { tools: string; call: string } | null; proxy: Record<string, string> | null };
+  approval: boolean;
+  teamMode: boolean;
+  version: string;
+}
+export interface LlmCall {
+  provider: string;
+  model: string;
+  baseUrl?: string;
+  apiKey?: string;
+}
 
 export type { CanonEvent, CanonSuggestion, StringPayload };
 
@@ -81,4 +103,16 @@ export const api = {
   rules: () => req<ProjectRule[]>("/api/rules"),
   addRule: (text: string) => req<ProjectRule>("/api/rules", { text }),
   deleteRule: (id: string) => req<{ ok: boolean }>("/api/rules/delete", { id }),
+  // v0.7
+  settings: () => req<SettingsPage>("/api/settings"),
+  saveSettings: (patch: { llm?: { default?: LlmChoice; roles?: Partial<Record<LlmRole, LlmChoice>> }; trustedEndpoints?: string[]; chat?: { confirmDestructive: boolean; maxSteps: number } }) => req<SettingsView>("/api/settings", patch),
+  models: (b: { provider: string; baseUrl?: string; apiKey?: string }) => req<{ models: string[] }>("/api/settings/models", b),
+  testLlm: (b: LlmCall) => req<{ ok: boolean; model: string; reply: string; ms: number }>("/api/settings/test", b),
+  connectAgents: (targets: string[]) => req<{ changes: string[]; notes: string[]; agents: AgentStatus[] }>("/api/agents/connect", { targets }),
+  chat: (b: { sessionId: string; messages: ChatMessage[]; decisions?: Record<string, "approve" | "deny">; llm?: Partial<LlmCall>; lang: string }) => req<ChatResponse>("/api/chat", b),
+  relay: (b: { question: string; options?: string[]; createDecision: boolean; lang: string; llm?: Partial<LlmCall> }) => req<RelayReport>("/api/relay", b),
+  relays: () => req<RelayReport[]>("/api/relay"),
+  gate: () => req<GateMatrix>("/api/canon/gate"),
+  runGate: (lines?: string[]) => req<GateMatrix>("/api/canon/gate", { lines }),
+  choose: (id: string, option: string, rationale: string) => req<ScenariaNode>("/api/choose", { id, option, rationale }),
 };

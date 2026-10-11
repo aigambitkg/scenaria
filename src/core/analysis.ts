@@ -14,10 +14,13 @@ import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Scenaria } from "./engine.js";
 import { DEFAULT_PROXY } from "./engine.js";
+import { readGlobalConfig } from "./global.js";
+import { effectiveLlm, upstreams as upstreamsOf } from "./settings.js";
 import { estimateTokens, optionLabel, taskNodes, taskRollup } from "./context.js";
 import { writeJsonAtomic } from "./store.js";
 import type { AnalysisConfig, ProjectRule, ScenariaNode } from "./types.js";
 import type { CanonEvent } from "./canon.js";
+import { gateResults } from "./gate.js";
 
 export type Severity = "high" | "medium" | "low";
 
@@ -113,7 +116,7 @@ function emptyStat(): AgentStat {
 export function metrics(
   nodes: ScenariaNode[],
   head: string | null,
-  opts: { rewinds?: number; integrity?: Map<string, "ok" | "tampered" | "unsealed">; ledgerBrokenAt?: number | null; ledgerMissing?: boolean; canon?: CanonEvent[]; canonError?: string | null; canonMissing?: string[] } = {},
+  opts: { rewinds?: number; integrity?: Map<string, "ok" | "tampered" | "unsealed">; ledgerBrokenAt?: number | null; ledgerMissing?: boolean; canon?: CanonEvent[]; canonError?: string | null; canonMissing?: string[]; gateTampered?: string[] } = {},
 ): Metrics {
   const issues: Issue[] = [];
   // Canon: fixed points broken, checks failed, deadlines passed, proposals waiting.
@@ -136,6 +139,7 @@ export function metrics(
     for (const k of canon.filter((x) => x.status === "tampered")) issues.push({ code: "canon_tampered", severity: "high", message: `Canon ${k.id} was changed outside Scenaria (approval signature invalid) — not binding until you re-approve it: "${short(k.text)}"`, subject: `${k.id}: ${short(k.text, 70)}` });
     for (const k of canon.filter((x) => x.status === "untrusted")) issues.push({ code: "canon_untrusted", severity: "high", message: `Canon ${k.id} is signed by an approver key that is not trusted on this machine (${k.keyId ?? "?"}, says "${k.decidedBy ?? "?"}") — not binding. Re-approve it, or trust that teammate's key: scenaria canon trust <public key>.`, subject: `${k.id}: ${short(k.text, 70)}` });
     for (const k of act.filter((x) => x.checkTampered)) issues.push({ code: "canon_check_tampered", severity: "high", message: `The last check result of canon ${k.id} was changed outside Scenaria (signature invalid) — ignored. Run the check again: "${short(k.text)}"`, subject: `${k.id}: ${short(k.text, 70)}` });
+    if (opts.gateTampered?.length) issues.push({ code: "canon_gate_tampered", severity: "high", message: `Gate results changed outside Scenaria (signature invalid or older than seen): ${opts.gateTampered.slice(0, 6).join(", ")} — ignored. Run the gate again.`, value: opts.gateTampered.length });
     for (const id of opts.canonMissing ?? []) issues.push({ code: "canon_missing", severity: "high", message: `Approved canon ${id} is missing from canon.json — it was deleted outside Scenaria. Restore it (e.g. git checkout .scenaria/canon.json).`, subject: id });
     if (opts.canonError) issues.push({ code: "canon_unreadable", severity: "high", message: opts.canonError });
     const proposed = canon.filter((k) => k.status === "proposed").length;
@@ -264,7 +268,7 @@ export function metrics(
   let health = 100;
   if (!root?.goal) health -= 20;
   health -= Math.min(40, issues.filter((i) => i.code === "tampered" || i.code === "ledger_broken" || i.code === "ledger_missing").length * 20);
-  health -= Math.min(30, issues.filter((i) => ["canon_broken", "canon_check_failed", "canon_tampered", "canon_untrusted", "canon_missing", "canon_check_tampered", "canon_unreadable"].includes(i.code) && i.severity === "high").length * 15);
+  health -= Math.min(30, issues.filter((i) => ["canon_broken", "canon_check_failed", "canon_tampered", "canon_untrusted", "canon_missing", "canon_check_tampered", "canon_gate_tampered", "canon_unreadable"].includes(i.code) && i.severity === "high").length * 15);
   health -= Math.min(25, Math.round((1 - decisionQualityAvg) * 40));
   health -= Math.min(30, issues.filter((i) => i.code === "built_on_failure").length * 15);
   health -= Math.min(10, counts.openDecisions * 2);
@@ -296,7 +300,7 @@ export function projectMetrics(s: Scenaria): Metrics {
   const integ = s.integrity();
   return metrics(s.store.listNodes(), s.store.readState().head, { rewinds, integrity: integ.state, ledgerBrokenAt: integ.ledgerBrokenAt, ledgerMissing: integ.ledgerMissing, ...(() => {
     const cs = s.canonState();
-    return { canon: cs.events, canonError: cs.error, canonMissing: cs.missing };
+    return { canon: cs.events, canonError: cs.error, canonMissing: cs.missing, gateTampered: gateResults(s).tampered };
   })() });
 }
 
@@ -397,16 +401,35 @@ export interface LlmRequest extends AnalysisConfig {
   apiKey?: string;
 }
 
+const OFFICIAL: Record<string, string> = { ...DEFAULT_PROXY.upstreams, anthropic: "https://api.anthropic.com" };
+const norm = (u: string) => u.trim().replace(/\/+$/, "").toLowerCase();
+
+/**
+ * May a key from an environment variable go to this base URL? Only to the provider's official
+ * endpoint or to endpoints the person trusted in their global settings — never to a URL that came
+ * with a request or from a project file (an agent could otherwise redirect your key to itself).
+ */
+export function envKeyAllowed(provider: string, base: string): boolean {
+  if (OFFICIAL[provider] && norm(OFFICIAL[provider]) === norm(base)) return true;
+  return (readGlobalConfig().trustedEndpoints ?? []).some((u) => norm(u) === norm(base));
+}
+
 export function resolveLlm(cfg: LlmRequest, upstreams: Record<string, string>) {
   const provider = (cfg.provider || "").trim().toLowerCase();
   if (!provider) throw new Error("No analysis provider configured (e.g. ollama, openai, anthropic).");
   if (!cfg.model?.trim()) throw new Error("No model configured for the analysis (e.g. llama3.3, gpt-5-mini, claude-sonnet-5-5).");
   const base = (cfg.baseUrl?.trim() || upstreams[provider] || (provider === "anthropic" ? "https://api.anthropic.com" : "")).replace(/\/+$/, "");
   if (!base) throw new Error(`Unknown provider "${provider}" — set a base URL (OpenAI-compatible, e.g. http://127.0.0.1:11434/v1).`);
-  const envName = cfg.apiKeyEnv?.trim() || KEY_ENV[provider] || (provider === "gemini" ? "GOOGLE_API_KEY" : "");
-  const key = cfg.apiKey?.trim() || (envName ? process.env[envName] : undefined) || (provider === "gemini" ? process.env.GOOGLE_API_KEY : undefined);
+  // Only variables that are API keys (no AWS_SECRET…, GITHUB_TOKEN … via a config file).
+  const custom = cfg.apiKeyEnv?.trim();
+  const envName = (custom && /^[A-Z0-9_]*API_KEY$/.test(custom) ? custom : "") || KEY_ENV[provider] || (provider === "gemini" ? "GOOGLE_API_KEY" : "");
+  const envKey = envKeyAllowed(provider, base) ? (envName ? process.env[envName] : undefined) || (provider === "gemini" ? process.env.GOOGLE_API_KEY : undefined) : undefined;
+  const key = cfg.apiKey?.trim() || envKey;
   const local = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?\//.test(base + "/");
-  if (!key && !local) throw new Error(`No API key for ${provider}: set ${envName || "an API key env var"} where Scenaria runs, or enter a key for this run (it is not stored).`);
+  if (!key && !local) {
+    if (envName && process.env[envName] && !envKeyAllowed(provider, base)) throw new Error(`${envName} is only sent to the official ${provider} endpoint or to endpoints you trust in Settings — not to ${base}. Enter a key for this run, or trust the endpoint.`);
+    throw new Error(`No API key for ${provider}: set ${envName || "an API key env var"} where Scenaria runs, or enter a key for this run (it is not stored).`);
+  }
   return { provider, model: cfg.model.trim(), base, key, kind: provider === "anthropic" || /anthropic\.com/.test(base) ? ("anthropic" as const) : ("openai" as const) };
 }
 
@@ -555,10 +578,11 @@ export function acceptRule(s: Scenaria, analysisId: string, index: number): Proj
 
 /** Full LLM analysis run: dossier → any configured LLM → stored insights. */
 export async function runAnalysis(s: Scenaria, req: Partial<LlmRequest> & { lang?: "de" | "en"; maxTokens?: number } = {}): Promise<AnalysisRecord> {
-  const cfg = { ...(s.config().analysis ?? {}), ...Object.fromEntries(Object.entries(req).filter(([, v]) => v !== undefined && v !== "")) } as LlmRequest & { lang?: "de" | "en"; maxTokens?: number };
-  const upstreams = { ...DEFAULT_PROXY.upstreams, ...(s.config().proxy?.upstreams ?? {}) } as Record<string, string>;
-  const lang = cfg.lang === "de" ? "de" : "en";
-  const d = dossier(s, { maxTokens: cfg.maxTokens });
+  const cfg = effectiveLlm(s, "analysis", req);
+  if (!cfg) throw new Error("No model configured — choose one in Settings (or pass provider and model).");
+  const upstreams = upstreamsOf(s);
+  const lang = req.lang === "de" ? "de" : "en";
+  const d = dossier(s, { maxTokens: req.maxTokens });
   const out = await callLlm(cfg, upstreams, analysisPrompt(lang), d.text);
   const { insights, parsed } = parseInsights(out.text);
   return saveAnalysis(s, { provider: cfg.provider, model: out.model, lang, health: projectMetrics(s).health, dossierTokens: d.tokens, insights, parsed });

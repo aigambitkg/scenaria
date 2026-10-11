@@ -98,8 +98,10 @@ export function NodePanel(props: {
   onUpdate: (id: string, patch: Record<string, string>) => Promise<void>;
   fidelity: Fidelity | null;
   onSelect: (id: string) => void;
+  onChoose?: (id: string, option: string, rationale: string) => Promise<void>;
 }) {
   const { placed, allNodes, t } = props;
+  const [choosing, setChoosing] = useState<{ id: string; why: string } | null>(null);
   const [ctx, setCtx] = useState<{ tokens: number; markdown: string; historyTokens?: number } | null>(null);
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
@@ -274,7 +276,29 @@ export function NodePanel(props: {
                       {!isChosen && explored && <span className="tag">{t.explored}</span>}
                     </div>
                     {o.description && <p className="opt-desc">{o.description}</p>}
-                    {!isChosen && !explored && (
+                    {!n.chosen && props.onChoose && (
+                      choosing?.id === o.id ? (
+                        <form
+                          className="choose-form"
+                          onSubmit={async (e) => {
+                            e.preventDefault();
+                            if (!choosing.why.trim()) return;
+                            await props.onChoose!(n.id, o.id, choosing.why.trim());
+                            setChoosing(null);
+                          }}
+                        >
+                          <input autoFocus value={choosing.why} placeholder={t.chooseRationale} onChange={(e) => setChoosing({ id: o.id, why: e.target.value })} />
+                          <button className="btn primary" type="submit" disabled={!choosing.why.trim()}>
+                            {t.chooseConfirm}
+                          </button>
+                        </form>
+                      ) : (
+                        <button className="btn link" onClick={() => setChoosing({ id: o.id, why: "" })}>
+                          {t.chooseOption}
+                        </button>
+                      )
+                    )}
+                    {n.chosen && !isChosen && !explored && (
                       <button className="btn link" onClick={() => props.onFork(n, o.id, o.label)}>
                         {t.exploreOption}
                       </button>

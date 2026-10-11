@@ -114,6 +114,18 @@ How canon events are enforced:
 - future checks with their status;
 - a verdict: *valid*, *not yet proven* or *invalid*.
 
+**The gate — surviving strings:** `scenaria canon gate` (or *Canon → Lines of work*) runs the adopted check commands on the snapshot of **every** line of work, each in a temporary copy (your working tree stays untouched; `node_modules` & co. are linked). The table shows which lines survive every hard fixed point. Results are signed like approvals; edited or restored results are ignored and reported.
+
+**The relay — archivist → craftsman → oracle:** for one high-impact decision, `scenaria relay "<question>" --decide` (or *Chat → Ask the oracle*) makes three separate model calls, each with only its slice of the context: the archivist reads the past (dossier, rules, past canon), the craftsman proposes 2–4 options for the present, the oracle tests them against the future fixed points. The orchestrator — plain code, not a model — cuts options that break hard canon, and records an **open decision**; you choose. Each role can use its own model.
+
+## Control Scenaria from one place: settings, chat, your own agent
+
+- **Settings (⚙):** one model for chat, analysis, archivist and relay — local (Ollama, LM Studio) or any API — plus an optional model per function, a model list and a connection test. API keys are **never stored**: Scenaria uses the key from an environment variable, or one you type in for this browser session. An environment key only goes to the provider's official endpoint or to endpoints you trust there (an agent or a project file cannot redirect it). The same page connects your agents via MCP with one click and shows copy-paste snippets for any other agent (MCP JSON, HTTP tools, proxy URLs).
+- **Chat (right panel):** talk to your model; it operates Scenaria with the same tools as your agents — status, context, decisions, checkpoints, tasks, canon proposals, the relay. Rewind and fork wait for your OK (setting); approving canon stays with you (an *Approve* button appears in the chat). Every chat is recorded as a conversation.
+- **Your own agent:** connect it in Settings (MCP) or call the HTTP tools — it gets exactly the same capabilities and limits as the built-in chat.
+
+Settings, chat and relay act for you and use your keys, so they need the approval session (the approval link from `scenaria start`), like canon approvals.
+
 ## Context fidelity: see where context broke, changed or was manipulated
 
 Select any node to see a line from the project root to that node, with a percentage per step. Each node's score combines:
@@ -288,7 +300,8 @@ scenaria status | tree [id] [--full] | show <id> | context [id] [--budget 1500] 
 scenaria prompt [--kind mcp|cli|chat] [--lang de|en] | ingest-text [file] | rules [add|rm]
 scenaria analyze [--llm <provider> --model <m>] [--dossier]
 scenaria fidelity [id] | integrity | workspace [--reader ..] [--sections ..] | resolve <refs> | expect "<assumption>" … | string [id]
-scenaria canon [list|add --past|--future ".." [--check ..] [--due ..]|approve|reject|retire <id>|suggest [--llm ..]|check|key|trust <key>]
+scenaria canon [list|add --past|--future ".." [--check ..] [--due ..]|approve|reject|retire <id>|suggest [--llm ..]|check|gate [node …]|key|trust <key>]
+scenaria relay "<question>" [--options "A|B"] [--decide] [--llm <provider> --model <m>]
 scenaria rewind <id> [--lesson ..]       scenaria fork <decisionId> <option>      scenaria diff <from> [to]
 scenaria versions | open <id> [--copy-to dir] | mirror [--enable]
 scenaria conversations | conversation <id> | import <file> | log-message --role .. --text ..

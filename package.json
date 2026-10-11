@@ -1,6 +1,6 @@
 {
   "name": "scenaria",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Quicksave & checkpoints for AI agents \u2014 any LLM, any framework. A decision tree you can rewind, fork and verify via MCP, HTTP, CLI, function calling and a visual scenario map.",
   "type": "module",
   "bin": {
@@ -28,7 +28,8 @@
     "demo": "node scripts/demo.mjs",
     "prepare": "node scripts/prepare.mjs",
     "prepublishOnly": "npm test",
-    "build:binaries": "node scripts/build-binaries.mjs"
+    "build:binaries": "node scripts/build-binaries.mjs",
+    "typecheck:ui": "tsc -p tsconfig.uicheck.json"
   },
   "engines": {
     "node": ">=20"

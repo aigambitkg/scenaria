@@ -58,6 +58,7 @@ Canon events (fixed points; agents only propose — you approve)
   canon approve|reject|retire <id> [--why ..]   (interactive terminal or dashboard only)
   canon suggest [--llm <provider> --model <m>]  The archivist's candidates (with --llm: stored as proposals)
   canon check [id …]                    Run the check commands of approved events (interactive only)
+  canon gate [node …] [--show]          Run the checks on every line's snapshot ("surviving strings"; interactive)
   canon key                             Your approver public key (give it to teammates who should trust you)
   canon trust <public key> [--name ..]  Trust a teammate's approvals on this machine (interactive only)
   rewind <id> [--lesson ..] [--no-files]
@@ -81,6 +82,7 @@ Prompts, analysis & rules
                                         Ready-to-paste prompt so any agent/chat uses Scenaria on its own
   ingest-text [file|-]                  Read \`\`\`scenaria blocks from a chat answer (stdin or file)
   analyze [--llm <provider> --model <m> [--base-url ..] [--api-key-env ..]] [--lang de|en] [--dossier]
+  relay "<question>" [--options "A|B"] [--decide]   Archivist → craftsman → oracle for one high-impact decision
                                         Health check; with --llm: pattern analysis by ANY LLM (Ollama, OpenAI, Anthropic, …)
   rules [add "<rule>" | rm <id>]        Project rules every capsule and prompt carries
 
@@ -121,6 +123,7 @@ const opts = {
   rebuild: { type: "boolean" },
   "no-watch": { type: "boolean" },
   "copy-to": { type: "string" },
+  show: { type: "boolean" },
   print: { type: "boolean" },
   enable: { type: "boolean" },
   disable: { type: "boolean" },
@@ -162,6 +165,8 @@ const opts = {
   lang: { type: "string" },
   "with-context": { type: "boolean" },
   llm: { type: "string" },
+  options: { type: "string" },
+  decide: { type: "boolean" },
   "base-url": { type: "string" },
   "api-key-env": { type: "string" },
   "max-tokens": { type: "string" },
@@ -512,6 +517,29 @@ async function main() {
       const r = applyBlocks(s, text, actor);
       return out([`${r.created.length} node(s) recorded${r.skipped ? `, ${r.skipped} block(s) already known` : ""}.`, ...r.created.map((n) => `- ${n.id} [${n.type}] ${n.title}`), ...r.errors.map((e) => `! ${e}`)].join("\n"), r);
     }
+    case "relay": {
+      const s = Scenaria.open(v.root);
+      const question = p.join(" ").trim();
+      if (!question) throw new Error('Usage: scenaria relay "<question>" [--options "A|B|C"] [--decide] [--llm <provider> --model <m>]');
+      const { runRelay } = await import("./core/relay.js");
+      process.stderr.write(`${C.dim}Archivist → craftsman → oracle …${C.reset}\n`);
+      const r = await runRelay(s, { question, options: v.options ? String(v.options).split("|").map((x) => x.trim()).filter(Boolean) : undefined, createDecision: Boolean(v.decide), lang: v.lang === "en" ? "en" : "de", llm: v.llm ? { provider: v.llm, model: v.model, baseUrl: v["base-url"] } : undefined, actor: { user: v.user, agent: "relay" } });
+      const human = [
+        `${C.bold}Relay ${r.id}${C.reset}: ${r.question}`,
+        `${C.bold}Archivist${C.reset}`,
+        ...r.archivist.constraints.map((c) => `  - ${c.hard ? "[hard] " : ""}${c.text}${c.refs.length ? C.dim + ` (${c.refs.join(", ")})` + C.reset : ""}`),
+        `${C.bold}Craftsman → Oracle${C.reset}`,
+        ...r.craftsman.options.map((o) => {
+          const a = r.oracle.assessments.find((x) => x.option === o.label);
+          const ok = r.surviving.includes(o.label);
+          return `  ${ok ? C.green + "✔" : C.red + "✘"}${C.reset} ${o.label}: ${o.plan}${a?.risks.length ? `\n      ${C.dim}risks: ${a.risks.join("; ")}${C.reset}` : ""}`;
+        }),
+        r.oracle.recommendation ? `${C.bold}Oracle recommends${C.reset} ${r.oracle.recommendation.option} — ${r.oracle.recommendation.why}` : "",
+        ...r.warnings.map((w) => `${C.yellow}! ${w}${C.reset}`),
+        r.decisionId ? `Open decision ${r.decisionId} — choose: scenaria choose ${r.decisionId} <option>  (or in the dashboard)` : `${C.dim}Record as an open decision: add --decide${C.reset}`,
+      ].filter(Boolean);
+      return out(human.join("\n"), r);
+    }
     case "analyze": {
       const s = Scenaria.open(v.root);
       const lang = v.lang === "en" ? "en" : "de";
@@ -521,10 +549,11 @@ async function main() {
         return out(text, { ...d, prompt: analysisPrompt(lang) });
       }
       const m = projectMetrics(s);
-      if (!v.llm && !s.config().analysis) {
+      const { effectiveLlm } = await import("./core/settings.js");
+      if (!v.llm && !effectiveLlm(s, "analysis")) {
         return out(`${renderMetrics(m, 30)}\n\n${C.dim}Pattern analysis with any LLM: scenaria analyze --llm ollama --model llama3.3   (or openai/anthropic/… with the API key in its env var)\nOr copy the dossier into any chat: scenaria analyze --dossier${C.reset}`, m);
       }
-      process.stderr.write(`${C.dim}Analysing with ${v.llm ?? s.config().analysis?.provider} …${C.reset}\n`);
+      process.stderr.write(`${C.dim}Analysing with ${v.llm ?? effectiveLlm(s, "analysis")?.provider} …${C.reset}\n`);
       const rec = await runAnalysis(s, { provider: v.llm, model: v.model, baseUrl: v["base-url"], apiKeyEnv: v["api-key-env"], lang, maxTokens: v["max-tokens"] ? Number(v["max-tokens"]) : undefined });
       const ins = rec.insights;
       const human = [
@@ -634,6 +663,21 @@ async function main() {
         const r = await s.checkCanon(p.slice(1).length ? p.slice(1) : undefined, v.user ?? "cli");
         return out(r.length ? r.map((x) => `${x.status === "passed" ? C.green + "✔" : C.red + "✘"}${C.reset} ${x.id} ${x.detail}`).join("\n") : "No approved canon event has a check command.", r);
       }
+      if (sub === "gate") {
+        const { gateLines, gateMatrix, runGate } = await import("./core/gate.js");
+        const lines = p.slice(1).length ? p.slice(1) : gateLines(s).map((l) => l.head);
+        const cmds = s.canon().filter((k) => k.status === "active" && k.check);
+        if (!v.show) {
+          await interactive("run", `Run ${cmds.length} check command(s) on the snapshots of ${lines.length} line(s) (${lines.join(", ")}):\n${cmds.map((k) => `  ${k.id}: ${k.check}`).join("\n") || "  (none)"}`);
+          await runGate(s, { lines, by: v.user ?? "cli" });
+        }
+        const m = gateMatrix(s);
+        const icon = (x: string) => (x === "passed" ? `${C.green}✔${C.reset}` : x === "failed" ? `${C.red}✘${C.reset}` : `${C.dim}·${C.reset}`);
+        const verdict = (x: string) => (x === "valid" ? `${C.green}survives${C.reset}` : x === "invalid" ? `${C.red}invalid${C.reset}` : `${C.yellow}unproven${C.reset}`);
+        const head = `${"line".padEnd(22)} ${m.events.map((e) => e.id.padEnd(4)).join(" ")}  verdict`;
+        const rows = m.rows.map((r) => `${`${r.head} ${r.scenario}${r.current ? "*" : ""}`.padEnd(22)} ${r.cells.map((c) => icon(c.status) + "   ").join(" ")}  ${verdict(r.verdict)}`);
+        return out([head, ...rows, m.tampered.length ? `${C.red}tampered results ignored: ${m.tampered.join(", ")}${C.reset}` : ""].filter(Boolean).join("\n"), m);
+      }
       if (sub === "key") {
         const { ownApproverKey } = await import("./core/canon.js");
         const k = ownApproverKey();
@@ -658,7 +702,7 @@ async function main() {
         const sug = s.suggestCanon();
         return out(sug.length ? sug.map((x) => `- (${x.kind}) ${x.text}  ${C.dim}${x.why}${C.reset}`).join("\n") : "No candidates found in the history.", sug);
       }
-      throw new Error("Usage: scenaria canon [list|add|approve|reject|retire|suggest|check|key|trust]");
+      throw new Error("Usage: scenaria canon [list|add|approve|reject|retire|suggest|check|gate|key|trust]");
     }
     case "rules": {
       const s = Scenaria.open(v.root);

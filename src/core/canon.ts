@@ -516,37 +516,61 @@ export function activeCanon(store: Store): CanonEvent[] {
   return readCanon(store).filter((e) => e.status === "active");
 }
 
+/** Run one (already approved and adopted) check command; async, output tail only. */
+export async function runCheckCommand(cmd: string, cwd: string, timeoutMs = 300_000): Promise<{ status: "passed" | "failed"; detail: string }> {
+  const r = await new Promise<{ code: number | null; tail: string; timedOut: boolean }>((resolve) => {
+    const child = spawn(cmd, { cwd, shell: true, stdio: ["ignore", "pipe", "pipe"] });
+    let tail = "";
+    const keep = (d: Buffer) => {
+      tail = (tail + d.toString("utf8")).slice(-4000);
+    };
+    child.stdout.on("data", keep);
+    child.stderr.on("data", keep);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutMs);
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      resolve({ code: null, tail: String(err.message), timedOut: false });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code, tail, timedOut });
+    });
+  });
+  const lines = r.tail.trim().split("\n").slice(-6).join(" | ").slice(-500);
+  const status = r.code === 0 && !r.timedOut ? "passed" : "failed";
+  return { status, detail: status === "passed" ? "exit 0" : `${r.timedOut ? "timeout" : `exit ${r.code}`} · ${lines}` };
+}
+
+// ------------------------------------------------------------------ signed records for other modules (gate)
+
+/** Sign any payload with the person's approver key (bound to this project). */
+export function signRecord(store: Store, parts: unknown[]): { pid: string; pub: string; sig: string } {
+  const pid = projectId(store, true);
+  const k = loadOwnKey(true)!;
+  return { pid, pub: k.pub, sig: edSign(null, Buffer.from(JSON.stringify([pid, ...parts])), k.priv).toString("base64") };
+}
+
+/** Valid signature from a key this machine trusts, over this project's payload? */
+export function verifyRecord(store: Store, parts: unknown[], pub?: string, sig?: string): boolean {
+  const pid = projectId(store, false);
+  return Boolean(pid && pub && verifySig(pub, sig, JSON.stringify([pid, ...parts])) && trustedIds().has(keyIdOf(pub)));
+}
+
+export function projectAnchors(store: Store) {
+  const pid = projectId(store, false);
+  return { read: () => readAnchors(pid), raise: (u: Record<string, Anchor>) => raiseAnchors(projectId(store, true), u) };
+}
+export type { Anchor };
+
 /** Run the check commands of approved canon events — only on a person's request. Async: the server keeps serving. */
 export async function runCanonChecks(store: Store, opts: { root: string; head: string | null; clean: boolean; ids?: string[]; by?: string; timeoutMs?: number }) {
   const targets = activeCanon(store).filter((e) => e.check && (!opts.ids?.length || opts.ids.includes(e.id)));
   const results: { id: string; status: "passed" | "failed"; detail: string }[] = [];
-  for (const ev of targets) {
-    const r = await new Promise<{ code: number | null; tail: string; timedOut: boolean }>((resolve) => {
-      const child = spawn(ev.check!, { cwd: opts.root, shell: true, stdio: ["ignore", "pipe", "pipe"] });
-      let tail = "";
-      const keep = (d: Buffer) => {
-        tail = (tail + d.toString("utf8")).slice(-4000);
-      };
-      child.stdout.on("data", keep);
-      child.stderr.on("data", keep);
-      let timedOut = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        child.kill("SIGKILL");
-      }, opts.timeoutMs ?? 300_000);
-      child.on("error", (err) => {
-        clearTimeout(timer);
-        resolve({ code: null, tail: String(err.message), timedOut: false });
-      });
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        resolve({ code, tail, timedOut });
-      });
-    });
-    const lines = r.tail.trim().split("\n").slice(-6).join(" | ").slice(-500);
-    const status = r.code === 0 && !r.timedOut ? "passed" : "failed";
-    results.push({ id: ev.id, status, detail: status === "passed" ? "exit 0" : `${r.timedOut ? "timeout" : `exit ${r.code}`} · ${lines}` });
-  }
+  for (const ev of targets) results.push({ id: ev.id, ...(await runCheckCommand(ev.check!, opts.root, opts.timeoutMs)) });
   if (results.length) {
     store.withLock(() => {
       const events = readRaw(store);

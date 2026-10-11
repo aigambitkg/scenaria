@@ -331,7 +331,7 @@ test("the local approval link works once", async () => {
   try {
     const first = await fetch(`${base}/?approve=once`, { redirect: "manual" });
     assert.equal(first.status, 302);
-    assert.match(first.headers.get("set-cookie"), /Max-Age=43200/);
+    assert.match(first.headers.get("set-cookie"), /Max-Age=2592000/);
     const again = await fetch(`${base}/?approve=once`, { redirect: "manual" });
     assert.equal(again.status, 403);
     assert.match(await again.text(), /already used/);

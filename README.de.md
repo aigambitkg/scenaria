@@ -94,6 +94,18 @@ So werden Fixpunkte durchgesetzt:
 - Zukunftsprüfungen mit ihrem Status;
 - ein Urteil: *gültig*, *noch nicht bewiesen* oder *ungültig*.
 
+**Das Gate – überlebende Strings:** `scenaria canon gate` (oder *Kanon → Arbeitslinien*) führt die übernommenen Prüfbefehle auf dem Snapshot **jeder** Arbeitslinie aus, jeweils in einer temporären Kopie (dein Arbeitsordner bleibt unberührt; `node_modules` & Co. werden verlinkt). Die Tabelle zeigt, welche Linien jeden harten Fixpunkt überstehen. Ergebnisse sind signiert wie Freigaben; geänderte oder zurückgespielte Ergebnisse werden ignoriert und gemeldet.
+
+**Das Relay – Archivar → Handwerker → Orakel:** Für eine Entscheidung mit großer Tragweite macht `scenaria relay "<Frage>" --decide` (oder *Chat → Orakel befragen*) drei getrennte Modell-Aufrufe, jeder nur mit seinem Ausschnitt des Kontexts: Der Archivar liest die Vergangenheit (Dossier, Regeln, vergangene Fixpunkte), der Handwerker schlägt 2–4 Optionen für die Gegenwart vor, das Orakel prüft sie gegen die zukünftigen Fixpunkte. Der Orchestrator – normaler Code, kein Modell – schneidet Optionen ab, die harten Kanon brechen, und legt eine **offene Entscheidung** an; du wählst. Jede Rolle kann ihr eigenes Modell nutzen.
+
+## Scenaria von einer Stelle aus steuern: Einstellungen, Chat, eigener Agent
+
+- **Einstellungen (⚙):** ein Modell für Chat, Analyse, Archivar und Relay – lokal (Ollama, LM Studio) oder über jede API – plus optional ein eigenes Modell pro Funktion, Modellliste und Verbindungstest. API-Schlüssel werden **nie gespeichert**: Scenaria nutzt den Schlüssel aus einer Umgebungsvariable oder einen, den du nur für diese Browser-Sitzung eingibst. Ein Umgebungs-Schlüssel geht nur an den offiziellen Endpunkt des Anbieters oder an Endpunkte, denen du dort vertraust (ein Agent oder eine Projektdatei kann ihn nicht umleiten). Auf derselben Seite verbindest du deine Agenten per MCP mit einem Klick und findest Snippets für jeden anderen Agenten (MCP-JSON, HTTP-Tools, Proxy-URLs).
+- **Chat (rechtes Panel):** Sprich mit deinem Modell – es bedient Scenaria mit denselben Werkzeugen wie deine Agenten: Status, Kontext, Entscheidungen, Checkpoints, Aufgaben, Kanon-Vorschläge, Relay. Zurückspulen und Verzweigen warten auf dein OK (einstellbar); Kanon freigeben bleibt bei dir (im Chat erscheint dafür ein *Freigeben*-Knopf). Jeder Chat wird als Unterhaltung aufgezeichnet.
+- **Dein eigener Agent:** in den Einstellungen verbinden (MCP) oder die HTTP-Tools aufrufen – er bekommt genau dieselben Möglichkeiten und Grenzen wie der eingebaute Chat.
+
+Einstellungen, Chat und Relay handeln für dich und nutzen deine Schlüssel – sie brauchen deshalb wie Kanon-Freigaben die Freigabe-Sitzung (den Freigabe-Link aus `scenaria start`).
+
 ## Kontext-Treue: sehen, wo Kontext abbrach, sich änderte oder manipuliert wurde
 
 Klickst du einen Knoten an, zeigt das Dashboard eine Linie vom Projektstart bis zu diesem Knoten, mit Prozentwert je Schritt. Der Wert jedes Knotens setzt sich zusammen aus:
