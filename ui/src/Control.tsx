@@ -513,7 +513,7 @@ export function ChatPanel(props: { t: Dict; lang: "de" | "en"; keys: SessionKeys
     end.current?.scrollIntoView({ block: "end" });
   }, [messages, pending, busy]);
 
-  const llm = () => (model && props.keys[model.provider] ? { apiKey: props.keys[model.provider] } : undefined);
+  const llm = () => (model && props.keys[model.provider] ? { apiKey: props.keys[model.provider], keyFor: model.provider } : undefined);
 
   const run = async (msgs: ChatMessage[], decisions?: Record<string, "approve" | "deny">) => {
     setBusy(true);
@@ -798,7 +798,7 @@ export function RelayDialog(props: { t: Dict; lang: "de" | "en"; keys: SessionKe
             setBusy(true);
             setErr(null);
             try {
-              const r = await api.relay({ question, options: options.split("\n").map((x) => x.trim()).filter(Boolean), createDecision: create, lang: props.lang, llm: provider && props.keys[provider] ? { apiKey: props.keys[provider] } : undefined });
+              const r = await api.relay({ question, options: options.split("\n").map((x) => x.trim()).filter(Boolean), createDecision: create, lang: props.lang, llm: provider && props.keys[provider] ? { apiKey: props.keys[provider], keyFor: provider } : undefined });
               setReport(r);
               setHistory((h) => [r, ...h]);
               props.onChanged();

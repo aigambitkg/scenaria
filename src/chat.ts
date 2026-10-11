@@ -447,7 +447,7 @@ async function personAction(s: Scenaria, call: ChatToolCall, ctx: { model: strin
     }
     case "scenaria_analyze": {
       const { runAnalysis } = await import("./core/analysis.js");
-      const rec = await runAnalysis(s, { lang: ctx.lang, apiKey: ctx.llm?.apiKey });
+      const rec = await runAnalysis(s, { lang: ctx.lang, apiKey: ctx.llm?.apiKey, keyFor: ctx.llm?.keyFor });
       const i = rec.insights;
       return { content: [`Analysis ${rec.id} (health ${rec.health}/100)`, i.summary ?? "", ...(i.issues ?? []).slice(0, 6).map((x) => `! ${x.title}`), ...(i.rules ?? []).slice(0, 4).map((r) => `rule: ${r.text}`)].filter(Boolean).join("\n"), data: rec };
     }

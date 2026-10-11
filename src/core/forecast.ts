@@ -20,7 +20,7 @@
  * the measured context fidelity of that branch → hit rate per forecast and overall calibration.
  * A forecast never chooses: the person decides.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Scenaria } from "./engine.js";
 import type { ScenariaNode } from "./types.js";
@@ -33,6 +33,8 @@ import { effectiveLlm, upstreams, type LlmRole } from "./settings.js";
 import { writeJsonAtomic } from "./store.js";
 import { createHash } from "node:crypto";
 import { signRecord, verifyRecord } from "./canon.js";
+import { dirname } from "node:path";
+import { globalConfigPath } from "./global.js";
 
 export interface QuickForecast {
   /** 0..100: predicted context retention (combined). */
@@ -104,6 +106,7 @@ export interface Forecast {
   /** Prompts: the variant the person used (marked later), and how the line went after the forecast. */
   used?: string;
   actualLine?: { measured: number; nodes: number };
+  usedSig?: string;
   /** Signature by Scenaria (approver key, bound to the project); computed on read: verified or not. */
   sig?: string;
   pub?: string;
@@ -270,9 +273,15 @@ export function listForecasts(s: Scenaria): Forecast[] {
     .map((f) => {
       try {
         const x = JSON.parse(readFileSync(join(d, f), "utf8")) as Forecast;
+        // Malformed files are skipped (never break the listing).
+        if (!x || typeof x !== "object" || typeof x.id !== "string" || `${x.id}.json` !== f || typeof x.createdAt !== "string" || !x.subject || typeof x.subject !== "object" || !Array.isArray(x.options)) return null;
+        if (x.options.some((o: any) => !o || typeof o.key !== "string" || typeof o.score !== "number" || !o.quick || typeof o.quick !== "object")) return null;
+        x.warnings = Array.isArray(x.warnings) ? x.warnings : [];
         // A forecast file written around Scenaria (e.g. by an agent) is shown as unverified and
         // never counts (it cannot suppress or replace a real forecast).
         x.verified = verifyRecord(s.store, ["forecast/v1", x.id, digest(x)], x.pub, x.sig);
+        // The variant the person marked as used is signed on its own.
+        if (x.used && !verifyRecord(s.store, ["forecast-used/v1", x.id, x.used], x.pub, x.usedSig)) x.used = undefined;
         return x;
       } catch {
         return null;
@@ -284,14 +293,24 @@ export function listForecasts(s: Scenaria): Forecast[] {
 
 /** Content hash of a forecast without the computed / signature fields. */
 function digest(f: Forecast): string {
-  const { sig, pub, verified, actual, actualLine, used, ...content } = f;
-  void sig, pub, verified, actual, actualLine, used;
+  const { sig, pub, verified, actual, actualLine, used, usedSig, ...content } = f;
+  void sig, pub, verified, actual, actualLine, used, usedSig;
   return createHash("sha256").update(JSON.stringify(content)).digest("hex");
 }
 
 function save(s: Scenaria, f: Omit<Forecast, "id">): Forecast {
   mkdirSync(dir(s), { recursive: true });
-  const id = `f${listForecasts(s).reduce((m, x) => Math.max(m, parseInt(x.id.slice(1), 10) || 0), 0) + 1}`;
+  // Reserve the number exclusively: the dashboard and agent processes may save at the same time.
+  let n = readdirSync(dir(s)).reduce((m, x) => Math.max(m, parseInt(x.match(/^f(\d+)\.json$/)?.[1] ?? "0", 10)), 0) + 1;
+  for (;; n++) {
+    try {
+      closeSync(openSync(join(dir(s), `f${n}.json`), "wx"));
+      break;
+    } catch (err: any) {
+      if (err?.code !== "EEXIST" || n > 100000) throw err;
+    }
+  }
+  const id = `f${n}`;
   const out = { id, ...f } as Forecast;
   const sg = signRecord(s.store, ["forecast/v1", id, digest(out)]);
   out.sig = sg.sig;
@@ -461,6 +480,33 @@ export function evaluateForecasts(s: Scenaria): { forecasts: Forecast[]; calibra
   };
 }
 
+/**
+ * Budget of the automatic mode, kept OUTSIDE the project (an agent must not be able to reset it):
+ * every attempt counts, failed ones too.
+ */
+export function autoBudget(s: Scenaria) {
+  // Keyed by the project folder (stable; the project id is only created with the first signature).
+  const key = createHash("sha256").update(s.root).digest("hex").slice(0, 20);
+  const file = join(dirname(globalConfigPath()), "forecast-budget", `${key}.json`);
+  const today = new Date().toISOString().slice(0, 10);
+  const read = (): { date: string; used: number } => {
+    try {
+      const v = JSON.parse(readFileSync(file, "utf8"));
+      return v?.date === today && Number.isFinite(v.used) ? v : { date: today, used: 0 };
+    } catch {
+      return { date: today, used: 0 };
+    }
+  };
+  return {
+    used: () => read().used,
+    spend: () => {
+      const v = read();
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, JSON.stringify({ date: today, used: v.used + 1 }));
+    },
+  };
+}
+
 /** Open decisions ON THE CURRENT LINE without a verified multiverse forecast (automatic mode). */
 export function openWithoutForecast(s: Scenaria): string[] {
   const done = new Set(listForecasts(s).filter((f) => f.verified && f.mode === "multiverse" && f.subject.kind === "decision").map((f) => (f.subject as { node: string }).node));
@@ -480,7 +526,9 @@ export function markUsed(s: Scenaria, id: string, key: string): Forecast {
   if (!f.options.some((o) => o.key === key)) throw new Error(`unknown variant ${key}`);
   const { verified, ...raw } = f;
   void verified;
-  writeJsonAtomic(join(dir(s), `${id}.json`), { ...raw, used: key });
+  const sg = signRecord(s.store, ["forecast-used/v1", id, key]);
+  if (sg.pub !== f.pub) throw new Error("this forecast was signed by another approver key");
+  writeJsonAtomic(join(dir(s), `${id}.json`), { ...raw, used: key, usedSig: sg.sig });
   return { ...f, used: key };
 }
 

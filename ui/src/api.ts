@@ -24,6 +24,8 @@ export interface LlmCall {
   model: string;
   baseUrl?: string;
   apiKey?: string;
+  /** The provider the session key belongs to (never handed to another provider's model). */
+  keyFor?: string;
 }
 
 export type { CanonEvent, CanonSuggestion, StringPayload };

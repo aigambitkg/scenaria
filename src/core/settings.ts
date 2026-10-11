@@ -35,7 +35,7 @@ export function effectiveLlm(s: Scenaria, role: LlmRole, override?: Partial<LlmR
   if (override?.provider && override?.model) return { provider: override.provider, model: override.model, baseUrl: override.baseUrl, apiKey: override.apiKey };
   if (!pick) return null;
   // A session key goes only to the provider it was entered for.
-  const key = override?.apiKey && (!override.keyFor || override.keyFor === pick.provider) ? override.apiKey : undefined;
+  const key = override?.apiKey && override.keyFor === pick.provider ? override.apiKey : undefined;
   return { provider: pick.provider, model: pick.model, baseUrl: pick.baseUrl, apiKey: key };
 }
 

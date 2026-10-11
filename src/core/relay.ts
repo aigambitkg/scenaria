@@ -152,7 +152,7 @@ export async function runRelay(s: Scenaria, req: RelayRequest): Promise<RelayRep
   const capsule = head ? s.context(head, { budget: 900 }).markdown.split("\n").filter((l) => !/^- k\d+ \(future/.test(l)).join("\n") : "(no history yet)";
   const constraintText = archivist.constraints.map((c) => `- ${c.hard ? "[hard] " : ""}${c.text} (${c.refs.join(", ") || "—"})`).join("\n") || "(none found)";
   const given = req.options?.filter((o) => o.trim()).slice(0, 4) ?? [];
-  const c = await ask("craftsman", `QUESTION: ${question}\n${given.length ? `OPTIONS TO REFINE:\n${given.map((o) => `- ${one(o, 200)}`).join("\n")}\n` : ""}\nCONSTRAINTS (from the archivist):\n${constraintText}\n\nACTIVE CANON:\n${canonBlock(cs.events, "past")}\n${canonBlock(cs.events, "future")}\n\nCURRENT STATE:\n${capsule}`);
+  const c = await ask("craftsman", `QUESTION: ${question}\n${given.length ? `OPTIONS TO REFINE:\n${given.map((o) => `- ${one(o, 200)}`).join("\n")}\n` : ""}\nCONSTRAINTS (from the archivist):\n${constraintText}\n\nPAST FIXED POINTS:\n${canonBlock(cs.events, "past")}\n\nCURRENT STATE:\n${capsule}`);
   const known = new Set(cs.events.filter((e) => e.status === "active").map((e) => e.id));
   const craftsman: RelayReport["craftsman"] = {
     options: (Array.isArray(c.options) ? c.options : [])

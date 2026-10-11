@@ -289,3 +289,32 @@ test("review fixes: low-signal options are flagged; fixed points at stake are sh
     writeSettings({ llm: {} });
   }
 });
+
+test("review fixes 2: malformed forecast files are skipped; fakes do not use up the daily budget; relay craftsman sees no future canon", async () => {
+  const { p, s } = project();
+  const { writeFileSync, mkdirSync } = await import("node:fs");
+  mkdirSync(join(p.dir, ".scenaria/forecasts"), { recursive: true });
+  writeFileSync(join(p.dir, ".scenaria/forecasts/f1.json"), "{}");
+  writeFileSync(join(p.dir, ".scenaria/forecasts/f2.json"), JSON.stringify({ id: "f2", options: "x" }));
+  for (let i = 3; i < 30; i++) writeFileSync(join(p.dir, `.scenaria/forecasts/f${i}.json`), JSON.stringify({ id: `f${i}`, subject: { kind: "decision", node: "n9", question: "?" }, createdAt: new Date().toISOString(), mode: "multiverse", trigger: "auto", models: {}, options: [], warnings: [] }));
+  assert.equal(listForecasts(s).filter((f) => f.verified).length, 0);
+  const r = callTool(s, "scenaria_decide", { question: "Which channel?", options: ["Push notification for streaks", "E-mail digest for quests"] }, ctx);
+  assert.match(r.text, /Forecast \(context kept/, "decide still forecasts with junk in the folder");
+  assert.ok(listForecasts(s).some((f) => f.verified && f.mode === "quick"));
+  // relay: the craftsman gets past canon only
+  s.addCanonAsUser({ kind: "future", text: "10k players by 2027-01-01", due: "2027-01-01" }, { user: "kev", via: "cli" });
+  const llm = await fakeLlm((body) => {
+    const sys = roles(body);
+    if (/ARCHIVIST/.test(sys)) return '{"constraints": []}';
+    if (/CRAFTSMAN/.test(sys)) return '{"options": [{"label": "A", "plan": "p"}]}';
+    return '{"assessments": [{"option": "A", "survives": true, "failsOn": []}]}';
+  });
+  try {
+    const { runRelay } = await import("../dist/core/relay.js");
+    await runRelay(s, { question: "What to build next?", llm: { provider: "fake", model: "m", baseUrl: llm.base } });
+    const craft = llm.seen.find((x) => /CRAFTSMAN/.test(roles(x.body))).body.messages[1].content;
+    assert.doesNotMatch(craft, /10k players/);
+  } finally {
+    llm.close();
+  }
+});
