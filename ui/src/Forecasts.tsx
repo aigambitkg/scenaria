@@ -503,7 +503,7 @@ function PromptCheck(props: { t: Dict; lang: "de" | "en"; approval: boolean; llm
 }
 
 /** Compact forecast inside the node panel of a decision. */
-export function DecisionForecast(props: { t: Dict; node: ScenariaNode; graphVersion?: number; onOpen: () => void; hasGoal: boolean; onEditGoal: () => void }) {
+export function DecisionForecast(props: { t: Dict; node: ScenariaNode; graphVersion?: number; onOpen: () => void; hasGoal: boolean; onEditGoal: () => void; chosenAt?: string }) {
   const { t } = props;
   const [opts, setOpts] = useState<ForecastOption[] | null>(null);
   const [mv, setMv] = useState<Forecast | null>(null);
@@ -532,10 +532,12 @@ export function DecisionForecast(props: { t: Dict; node: ScenariaNode; graphVers
     <section className="p-sec forecast-inline">
       <h3>
         {props.node.chosen ? t.fcInlineDecided : t.fcInline} <span className="chip">{mv?.mode === "multiverse" ? t.fcMultiverse : t.fcQuick}</span>
-        {mv && props.node.chosen && <span className="chip">{t.fcMadeBefore}</span>}
+        {props.node.chosen && (mv ? !props.chosenAt || mv.createdAt <= props.chosenAt ? <span className="chip">{t.fcMadeBefore}</span> : <span className="chip v-warning">{t.fcMadeAfter}</span> : <span className="chip v-warning">{t.fcComputedNow}</span>)}
       </h3>
       {!props.hasGoal && <NoGoalNote t={t} onEditGoal={props.onEditGoal} />}
-      <OptionForecasts t={t} options={options} recommended={mv?.recommended?.key} actual={mv?.actual} compact />
+      <div className="compact-universe">
+        <OptionForecasts t={t} options={options} recommended={mv?.recommended?.key} actual={mv?.actual} compact />
+      </div>
       <button className="btn link" onClick={props.onOpen}>
         {t.fcOpen}
       </button>

@@ -621,3 +621,4 @@ table.gate tr.current td:first-child { box-shadow: inset 4px 0 0 var(--marker-so
 .fc-live { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: center; margin-bottom: 8px; }
 .forecast-inline .fopt { padding: 6px 8px; }
 @media (max-width: 900px) { .universe { grid-template-columns: 1fr; } }
+.compact-universe .universe { grid-template-columns: 1fr; gap: 6px; }

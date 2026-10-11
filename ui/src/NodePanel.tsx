@@ -261,7 +261,7 @@ export function NodePanel(props: {
         )}
 
         {n.type === "decision" && (n.options?.length ?? 0) > 1 && props.onForecast && (
-          <DecisionForecast t={t} node={n} graphVersion={props.graphVersion} onOpen={() => props.onForecast!(n.id)} hasGoal={Boolean(allNodes.find((x) => x.type === "mission")?.goal)} onEditGoal={props.onEditGoal} />
+          <DecisionForecast t={t} node={n} graphVersion={props.graphVersion} onOpen={() => props.onForecast!(n.id)} hasGoal={Boolean(allNodes.find((x) => x.type === "mission")?.goal)} onEditGoal={props.onEditGoal} chosenAt={allNodes.filter((x) => x.parentId === n.id).map((x) => x.createdAt).sort()[0]} />
         )}
 
         {n.type === "decision" && (
