@@ -50,6 +50,7 @@ export interface SettingsView {
   effective: Record<LlmRole, LlmChoice | null>;
   trustedEndpoints: string[];
   chat: { confirmDestructive: boolean; maxSteps: number };
+  forecast: { auto: boolean };
   /** Which providers have a key in the environment (names only, never values). */
   envKeys: Record<string, string[]>;
   upstreams: Record<string, string>;
@@ -73,13 +74,14 @@ export function readSettings(s: Scenaria): SettingsView {
     effective,
     trustedEndpoints: g.trustedEndpoints ?? [],
     chat: { confirmDestructive: g.chat?.confirmDestructive !== false, maxSteps: Math.min(30, Math.max(1, g.chat?.maxSteps ?? 10)) },
+    forecast: { auto: g.forecast?.auto !== false },
     envKeys,
     upstreams: upstreams(s),
   };
 }
 
 /** A person's change (dashboard with approval session, or CLI). */
-export function writeSettings(patch: { llm?: { default?: unknown; roles?: Record<string, unknown> }; trustedEndpoints?: unknown; chat?: { confirmDestructive?: unknown; maxSteps?: unknown } }) {
+export function writeSettings(patch: { llm?: { default?: unknown; roles?: Record<string, unknown> }; trustedEndpoints?: unknown; chat?: { confirmDestructive?: unknown; maxSteps?: unknown }; forecast?: { auto?: unknown } }) {
   const g = readGlobalConfig();
   if (patch.llm) {
     const roles: LlmSettings["roles"] = {};
@@ -98,6 +100,7 @@ export function writeSettings(patch: { llm?: { default?: unknown; roles?: Record
       maxSteps: Math.min(30, Math.max(1, Number(patch.chat.maxSteps) || 10)),
     };
   }
+  if (patch.forecast) g.forecast = { auto: patch.forecast.auto !== false };
   writeGlobalConfig(g);
   return g;
 }

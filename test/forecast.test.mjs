@@ -1,0 +1,206 @@
+// Batch 1 (v0.8): forecasts — every decision predicted before a choice; multiverse of archivist/craftsman/oracle.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Scenaria } from "../dist/core/index.js";
+import { createApp } from "../dist/server.js";
+import { callTool } from "../dist/tools.js";
+import { chat } from "../dist/chat.js";
+import { forecast, quickDecision, quickPrompt, evaluateForecasts, listForecasts } from "../dist/core/forecast.js";
+import { writeSettings } from "../dist/core/settings.js";
+import { tempProject } from "./helpers.mjs";
+
+process.env.SCENARIA_HOME = mkdtempSync(join(tmpdir(), "scenaria-home-"));
+const ctx = { source: "mcp", agent: "claude-code" };
+
+function project() {
+  const p = tempProject();
+  const s = Scenaria.init(p.dir);
+  s.startMission({ projectGoal: "Gamer app that brings players back every day with daily quests", title: "Retention features", goal: "Daily quests and streaks that bring players back" });
+  p.write("a.txt", "1");
+  s.checkpoint({ title: "Daily quest backend: quest table and streak counter", facts: ["Streaks reset at midnight"] });
+  return { p, s };
+}
+
+async function fakeLlm(handler) {
+  const seen = [];
+  const server = createServer(async (req, res) => {
+    let b = "";
+    for await (const c of req) b += c;
+    const body = JSON.parse(b || "{}");
+    seen.push({ url: req.url, body });
+    res.writeHead(200, { "content-type": "application/json" });
+    const text = handler(body, seen.length);
+    res.end(JSON.stringify({ model: "fake-1", choices: [{ message: { role: "assistant", content: text } }] }));
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  return { base: `http://127.0.0.1:${server.address().port}/v1`, seen, close: () => server.close() };
+}
+
+const roles = (body) => body.messages[0].content;
+const multiverseReplies = (body) => {
+  const sys = roles(body);
+  if (/ARCHIVIST of a multiverse/.test(sys)) return JSON.stringify({ options: [{ key: "a", past: "continues the quest backend (n3)", refs: ["n3"] }, { key: "b", past: "nothing in the history points to NFTs" }] });
+  if (/CRAFTSMAN of a multiverse/.test(sys)) return JSON.stringify({ options: [{ key: "a", present: "extend quests", trajectory: ["quest UI", "streak reminder", "push"], loses: [] }, { key: "b", present: "new wallet integration", trajectory: ["wallet SDK", "smart contract"], loses: ["daily quest focus", "streak logic"] }] });
+  return JSON.stringify({ options: [{ key: "a", future: "retention up", outcome: "players return daily", context: 85, goal: 90, canonRisks: [], risks: ["notification fatigue"], confidence: 0.8 }, { key: "b", future: "scope creep", outcome: "quests stall", context: 25, goal: 20, canonRisks: ["k1"], risks: ["legal"], confidence: 0.7 }], recommendation: { key: "a", why: "keeps the daily-quest line" } });
+};
+
+test("quick forecast: every option of a decision is predicted before a choice — no model needed", () => {
+  const { s } = project();
+  const d = s.decide({ question: "What next?", options: [{ label: "Streak reminder for daily quests", description: "push notification when a streak is about to reset" }, { label: "NFT marketplace", description: "sell skins as tokens on a blockchain" }] });
+  const q = quickDecision(s, d.id);
+  assert.equal(q.length, 2);
+  assert.ok(q[0].score > q[1].score, `on-goal option should score higher: ${q[0].score} vs ${q[1].score}`);
+  assert.ok(q[0].quick.goal > q[1].quick.goal);
+  // the decide tool shows the forecast right away for open decisions
+  const r = callTool(s, "scenaria_decide", { question: "Which reminder channel?", options: ["Push", "E-mail"] }, ctx);
+  assert.match(r.text, /Forecast \(context kept, before choosing\): a \d+%/);
+  // and agents can read it
+  assert.match(callTool(s, "scenaria_forecast", { id: d.id }, ctx).text, /a Streak reminder.*context \d+%/);
+});
+
+test("quick forecast warns with earlier lessons and shows how an explored option really went", () => {
+  const { p, s } = project();
+  const d = s.decide({ question: "Storage for streaks?", options: [{ label: "Redis cache only", description: "keep streak counters in redis" }, { label: "Postgres table", description: "streak counters in the quest table" }] });
+  s.choose(d.id, "a", "fast");
+  p.write("b.txt", "1");
+  s.checkpoint({ title: "Redis streak counters" });
+  s.rewind(d.id, { lesson: "Redis cache only lost streak counters after a restart" });
+  const q = quickDecision(s, d.id);
+  assert.ok(q[0].quick.warnings.some((w) => /lost streak counters/.test(w)), JSON.stringify(q[0].quick.warnings));
+  assert.ok(q[0].quick.explored, "the explored option shows its measured fidelity");
+  // prompts too
+  const good = quickPrompt(s, "Continue the daily quest backend from n3: add the streak reminder push for players");
+  const bad = quickPrompt(s, "do it");
+  assert.ok(good.score > bad.score);
+});
+
+test("multiverse: archivist (past), craftsman (present), oracle (future) — isolated context, one universe per option", async () => {
+  const { s } = project();
+  s.addCanonAsUser({ kind: "past", text: "No blockchain or crypto features (legal)" }, { user: "kev", via: "cli" });
+  const d = s.decide({ question: "Next feature?", options: [{ label: "Streak reminder", description: "push before a streak resets" }, { label: "NFT skins", description: "sell skins as tokens" }] });
+  const llm = await fakeLlm(multiverseReplies);
+  try {
+    const f = await forecast(s, { node: d.id, llm: { provider: "fake", model: "m", baseUrl: llm.base } });
+    assert.equal(llm.seen.length, 3);
+    const [arch, craft, oracle] = llm.seen.map((x) => x.body.messages[1].content);
+    assert.match(arch, /--- DOSSIER ---/, "the archivist reads the past");
+    assert.doesNotMatch(craft, /--- DOSSIER ---/);
+    assert.match(craft, /CURRENT LINE/, "the craftsman works on the current line");
+    assert.doesNotMatch(oracle, /CURRENT LINE|--- DOSSIER ---/, "the oracle only sees goal, future and the two findings");
+    assert.match(oracle, /MAIN GOAL: Gamer app/);
+    const a = f.options.find((o) => o.key === "a");
+    const b = f.options.find((o) => o.key === "b");
+    assert.ok(a.universe && b.universe);
+    assert.deepEqual(b.universe.loses, ["daily quest focus", "streak logic"]);
+    assert.ok(a.score > 70 && b.score <= 40, `${a.score} / ${b.score} (hard canon risk caps at 40)`);
+    assert.deepEqual(b.universe.canonRisks, ["k1"]);
+    assert.equal(f.recommended.key, "a");
+    assert.equal(s.node(d.id).chosen, undefined, "a forecast never chooses");
+    assert.equal(listForecasts(s)[0].id, f.id);
+  } finally {
+    llm.close();
+  }
+});
+
+test("multiverse for a prompt with variants: which wording keeps the context", async () => {
+  const { s } = project();
+  const llm = await fakeLlm((body) => {
+    const sys = roles(body);
+    if (/ARCHIVIST/.test(sys)) return JSON.stringify({ options: [{ key: "p", past: "-" }, { key: "v1", past: "-" }] });
+    if (/CRAFTSMAN/.test(sys)) return JSON.stringify({ options: [{ key: "p", present: "agent guesses", trajectory: ["rewrite everything"], loses: ["streak logic"] }, { key: "v1", present: "agent continues n3", trajectory: ["add reminder"], loses: [] }] });
+    return JSON.stringify({ options: [{ key: "p", outcome: "drifts", context: 30, goal: 40, confidence: 0.6 }, { key: "v1", outcome: "stays on track", context: 88, goal: 85, confidence: 0.7 }], recommendation: { key: "v1", why: "references the line" } });
+  });
+  try {
+    const f = await forecast(s, { prompt: "make the app better", variants: ["Continue n3: add the streak reminder for daily quests"], llm: { provider: "fake", model: "m", baseUrl: llm.base } });
+    assert.equal(f.subject.kind, "prompt");
+    assert.deepEqual(f.options.map((o) => o.key), ["p", "v1"]);
+    assert.ok(f.options[1].score > f.options[0].score);
+    assert.equal(f.recommended.key, "v1");
+  } finally {
+    llm.close();
+  }
+});
+
+test("evaluation: a forecast is checked against the branch that was really taken", async () => {
+  const { p, s } = project();
+  const d = s.decide({ question: "Next feature?", options: [{ label: "Streak reminder", description: "push before a streak resets" }, { label: "NFT skins", description: "sell skins as tokens" }] });
+  const f = await forecast(s, { node: d.id, quick: true });
+  s.choose(d.id, "a", "keeps the quest line");
+  p.write("c.txt", "1");
+  s.checkpoint({ title: "Streak reminder push for daily quests", facts: ["Reminder 2h before the streak resets"] });
+  const ev = evaluateForecasts(s);
+  const mine = ev.forecasts.find((x) => x.id === f.id);
+  assert.ok(mine.actual?.length === 1, JSON.stringify(mine.actual));
+  assert.equal(mine.actual[0].option, "a");
+  assert.equal(typeof mine.actual[0].error, "number");
+  assert.equal(ev.calibration.evaluated, 1);
+});
+
+test("open decisions get a multiverse forecast automatically while the dashboard runs (person's setting)", async () => {
+  const { s } = project();
+  const llm = await fakeLlm(multiverseReplies);
+  writeSettings({ llm: { default: { provider: "fake", model: "m", baseUrl: llm.base } }, forecast: { auto: true } });
+  const app = createApp(s, { approvalCode: "c", approvalSecret: "sess" });
+  const server = createServer(app.handler);
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const d = s.decide({ question: "Next feature?", options: [{ label: "Streak reminder", description: "push" }, { label: "NFT skins", description: "tokens" }] });
+    for (let i = 0; i < 40 && !listForecasts(s).length; i++) await new Promise((r) => setTimeout(r, 200));
+    const f = listForecasts(s)[0];
+    assert.ok(f, "auto forecast created");
+    assert.equal(f.trigger, "auto");
+    assert.equal(f.subject.node, d.id);
+    // reading is open, starting a forecast is the person's (uses their model)
+    const g = await (await fetch(`${base}/api/forecasts`)).json();
+    assert.equal(g.forecasts.length, 1);
+    const q = await (await fetch(`${base}/api/forecast/quick?node=${d.id}`)).json();
+    assert.equal(q.options.length, 2);
+    const denied = await fetch(`${base}/api/forecast`, { method: "POST", headers: { "content-type": "application/json", "x-scenaria": "1" }, body: JSON.stringify({ node: d.id }) });
+    assert.equal(denied.status, 403);
+  } finally {
+    app.close();
+    server.close();
+    llm.close();
+    writeSettings({ llm: {}, forecast: { auto: true } });
+  }
+});
+
+test("chat: the multiverse is a chat tool", async () => {
+  const { s } = project();
+  const d = s.decide({ question: "Next feature?", options: [{ label: "Streak reminder", description: "push" }, { label: "NFT skins", description: "tokens" }] });
+  let n = 0;
+  const llm = await fakeLlm((body) => {
+    if (body.tools) {
+      n++;
+      return n === 1 ? "" : "Option a keeps the context.";
+    }
+    return multiverseReplies(body);
+  });
+  // first chat turn: a tool call (OpenAI format needs tool_calls, so patch the reply via a second server)
+  llm.close();
+  const tc = createServer(async (req, res) => {
+    let b = "";
+    for await (const c of req) b += c;
+    const body = JSON.parse(b);
+    res.writeHead(200, { "content-type": "application/json" });
+    if (!body.tools) return res.end(JSON.stringify({ model: "m", choices: [{ message: { content: multiverseReplies(body) } }] }));
+    const last = body.messages[body.messages.length - 1];
+    if (last.role === "tool") return res.end(JSON.stringify({ model: "m", choices: [{ message: { content: "Option a keeps the context." } }] }));
+    res.end(JSON.stringify({ model: "m", choices: [{ message: { content: "", tool_calls: [{ id: "x", type: "function", function: { name: "scenaria_multiverse", arguments: JSON.stringify({ node: d.id }) } }] } }] }));
+  });
+  await new Promise((r) => tc.listen(0, "127.0.0.1", r));
+  try {
+    const r = await chat(s, { sessionId: "mv", messages: [{ role: "user", content: "forecast it" }], llm: { provider: "fake", model: "m", baseUrl: `http://127.0.0.1:${tc.address().port}/v1` } });
+    const tool = r.messages.find((m) => m.role === "tool");
+    assert.match(tool.content, /Forecast f1 \(multiverse\)/);
+    assert.match(tool.content, /Recommended: a/);
+    assert.equal(r.messages[r.messages.length - 1].content, "Option a keeps the context.");
+  } finally {
+    tc.close();
+  }
+});

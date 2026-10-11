@@ -127,8 +127,22 @@ const PERSON_TOOLS = [
     },
   },
 ];
+const MULTIVERSE_TOOL = {
+  name: "scenaria_multiverse",
+  description:
+    "Forecast with the multiverse (archivist = past, craftsman = present, oracle = future): for a decision node, one universe per option; or for a prompt/plan (with optional alternative wordings): will it keep the context and the main goal or lose it? Returns predicted context % per option, what each would drop, risks and a recommendation. Use it before choosing or before giving an agent a big prompt.",
+  parameters: {
+    type: "object",
+    properties: {
+      node: { type: "string", description: "Decision node id (e.g. n12)" },
+      prompt: { type: "string", description: "Or: a prompt / plan to evaluate on the current line" },
+      variants: { type: "array", items: { type: "string" }, description: "Alternative wordings of the prompt to compare" },
+    },
+    additionalProperties: false,
+  },
+};
 const PERSON_ONLY = new Set(PERSON_TOOLS.map((t) => t.name));
-const CHAT_TOOLS = [RELAY_TOOL, ...PERSON_TOOLS];
+const CHAT_TOOLS = [RELAY_TOOL, MULTIVERSE_TOOL, ...PERSON_TOOLS];
 
 const MAX_TOOL_TEXT = 8000;
 const isDestructive = (name: string) => Boolean(TOOLS.find((t) => t.name === name)?.annotations?.destructiveHint);
@@ -147,7 +161,7 @@ In this chat:
 - The person can control everything through you. Their own actions — approving/rejecting/retiring canon (scenaria_canon_decide), running checks (scenaria_canon_check), the gate (scenaria_gate), the model analysis (scenaria_analyze), switching the model (scenaria_set_model), connecting agents (scenaria_connect_agents) — you request with these tools; the dashboard shows the person a card and runs it only after their click. New canon: propose it with scenaria_canon action "propose" and then request its approval with scenaria_canon_decide.
 - The main goal: set it with scenaria_start_mission {projectGoal} when the person states it.
 - Rewind and fork change files; the dashboard asks the person before they run. If they decline, accept it.
-- For a high-impact choice, use scenaria_relay (archivist → craftsman → oracle) before deciding; let the person choose.
+- Before an open decision is chosen, or before a big prompt/plan goes to an agent: forecast it with scenaria_multiverse (or quickly with scenaria_forecast) and show the person which option keeps the context and the main goal. For a new high-impact question without options, use scenaria_relay. The person chooses.
 - Keep answers short; reference nodes as n12 and canon as k3 (the dashboard links them).
 - Answer in ${lang === "de" ? "German" : "English"}.
 
@@ -371,7 +385,7 @@ async function execute(s: Scenaria, call: ChatToolCall, ctx: { model: string; us
         options: Array.isArray(call.args.options) ? call.args.options.map(String) : undefined,
         createDecision: call.args.createDecision === true,
         lang: ctx.lang,
-        llm: ctx.llm?.apiKey ? { apiKey: ctx.llm.apiKey } : undefined,
+        llm: ctx.llm,
         actor: { agent: "scenaria-chat", user: ctx.user, model: ctx.model },
       });
       const text = [
@@ -385,6 +399,17 @@ async function execute(s: Scenaria, call: ChatToolCall, ctx: { model: string; us
         ...r.warnings.map((w) => `WARNING: ${w}`),
       ].filter(Boolean);
       return { ...base, content: text.join("\n"), data: r, ok: true };
+    }
+    if (call.name === MULTIVERSE_TOOL.name) {
+      const { forecast } = await import("./core/forecast.js");
+      const f = await forecast(s, { node: call.args.node ? String(call.args.node) : undefined, prompt: call.args.prompt ? String(call.args.prompt) : undefined, variants: Array.isArray(call.args.variants) ? call.args.variants.map(String) : undefined, lang: ctx.lang, llm: ctx.llm, trigger: "chat" });
+      const text = [
+        `Forecast ${f.id} (${f.mode}) — ${f.subject.kind === "decision" ? `${f.subject.node}: ${f.subject.question}` : "prompt"}`,
+        ...f.options.map((o) => `- ${o.key} ${o.label}: context ${o.score}%${o.universe ? ` (goal ${o.universe.goal}%, confidence ${Math.round(o.universe.confidence * 100)}%) → ${o.universe.outcome}${o.universe.loses.length ? ` · would drop: ${o.universe.loses.join("; ")}` : ""}${o.universe.risks.length ? ` · risks: ${o.universe.risks.join("; ")}` : ""}` : ""}${o.quick.warnings.length ? ` · lessons: ${o.quick.warnings.join("; ")}` : ""}`),
+        f.recommended ? `Recommended: ${f.recommended.key} — ${f.recommended.why}` : "",
+        ...f.warnings.map((w) => `WARNING: ${w}`),
+      ].filter(Boolean);
+      return { ...base, content: text.join("\n"), data: f, ok: true };
     }
     if (PERSON_ONLY.has(call.name)) {
       const r = await personAction(s, call, ctx);

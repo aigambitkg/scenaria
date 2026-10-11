@@ -25,6 +25,7 @@ import { archivistProposals } from "./core/canon-llm.js";
 import { gateMatrix, runGate } from "./core/gate.js";
 import { effectiveLlm, listModels, readSettings, upstreams, writeSettings } from "./core/settings.js";
 import { listRelays, runRelay } from "./core/relay.js";
+import { evaluateForecasts, forecast, openWithoutForecast, quickDecision, quickPrompt } from "./core/forecast.js";
 import { chat } from "./chat.js";
 import { TARGETS, agentStatus, connectionSnippets, setupAgents, type Target } from "./setup.js";
 import { callLlm } from "./core/analysis.js";
@@ -129,6 +130,8 @@ export interface AppOptions {
   approverToken?: string;
   /** For tests: fixed session secret. */
   approvalSecret?: string;
+  /** Automatic multiverse forecasts for open decisions (default: per the person's Settings). */
+  autoForecast?: boolean;
 }
 
 function approvalCookie(req: IncomingMessage): string | undefined {
@@ -173,14 +176,36 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
   let approvalLinkSecret = opts.token ? opts.approverToken : opts.approvalCode;
   const isApprover = (req: IncomingMessage) => tokenMatches(approvalCookie(req), approvalSecret);
   let lastVersion = s.store.version();
+  // Automatic multiverse forecasts for open decisions (the person's setting; this process is the
+  // person's dashboard). One at a time; a failure is retried after 10 minutes, never in a loop.
+  let forecasting: string | null = null;
+  const failedAt = new Map<string, number>();
+  const autoForecast = () => {
+    if (forecasting || opts.autoForecast === false) return;
+    try {
+      if (!readSettings(s).forecast.auto || !effectiveLlm(s, "oracle")) return;
+      const next = openWithoutForecast(s).find((id) => Date.now() - (failedAt.get(id) ?? 0) > 600_000);
+      if (!next) return;
+      forecasting = next;
+      forecast(s, { node: next, trigger: "auto", lang: "de" })
+        .catch(() => failedAt.set(next, Date.now()))
+        .finally(() => {
+          forecasting = null;
+        });
+    } catch {
+      /* never break the dashboard */
+    }
+  };
   const timer = setInterval(() => {
     const v = s.store.version();
     if (v !== lastVersion) {
       lastVersion = v;
       for (const c of clients) c.write(`event: change\ndata: ${v}\n\n`);
+      autoForecast();
     }
   }, 800);
   timer.unref();
+  setTimeout(autoForecast, 1500).unref();
 
   const handler = async (req: IncomingMessage, res: ServerResponse) => {
     try {
@@ -374,7 +399,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         // Binding canon actions, the person's settings, the built-in chat and the relay: only with the
         // approval session (not with the API/agent token) — they act for the person or use the person's keys.
         // (The archivist and the analysis also spend the person's quota with the person's keys.)
-        const personOnly = p.startsWith("/api/canon") || p.startsWith("/api/settings") || p.startsWith("/api/agents") || p === "/api/chat" || p === "/api/relay" || p === "/api/analysis/run" || p === "/api/analysis/config";
+        const personOnly = p.startsWith("/api/canon") || p.startsWith("/api/settings") || p.startsWith("/api/agents") || p === "/api/chat" || p === "/api/relay" || p === "/api/forecast" || p === "/api/analysis/run" || p === "/api/analysis/config";
         if (personOnly && req.method === "POST" && !isApprover(req)) {
           return send(res, 403, { error: "This is the person's action (approvals, settings, chat, relay, analysis with your keys): open the approval link from the terminal running Scenaria (scenaria start/ui). Agents can only propose.", code: "approval_required" });
         }
@@ -434,6 +459,24 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           }
         }
         if (req.method === "GET" && p === "/api/relay") return send(res, 200, listRelays(s));
+
+        // ---------- forecasts (multiverse) ----------
+        if (req.method === "GET" && p === "/api/forecasts") return send(res, 200, { ...evaluateForecasts(s), running: forecasting, open: openWithoutForecast(s) });
+        if (req.method === "GET" && p === "/api/forecast/quick") {
+          const node = url.searchParams.get("node");
+          if (node) return send(res, 200, { node, options: quickDecision(s, node) });
+          const text = url.searchParams.get("prompt") ?? "";
+          return send(res, 200, { prompt: text, quick: quickPrompt(s, text) });
+        }
+        if (req.method === "POST" && p === "/api/forecast") {
+          const b = await readBody(req, 200_000);
+          if (token && b?.llm?.baseUrl) return send(res, 400, { error: "custom base URLs are disabled in team mode" });
+          try {
+            return send(res, 200, await forecast(s, { node: b?.node ? String(b.node) : undefined, prompt: b?.prompt ? String(b.prompt) : undefined, variants: Array.isArray(b?.variants) ? b.variants.map(String) : undefined, quick: b?.quick === true, lang: b?.lang === "en" ? "en" : "de", llm: b?.llm, trigger: "person" }));
+          } catch (err: any) {
+            return send(res, 502, { error: err?.message ?? String(err) });
+          }
+        }
         if (req.method === "POST" && p === "/api/relay") {
           const b = await readBody(req);
           if (token && b?.llm?.baseUrl) return send(res, 400, { error: "custom base URLs are disabled in team mode" });

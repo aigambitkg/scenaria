@@ -14,6 +14,7 @@ import { recall, renderRecall } from "./core/recall.js";
 import { projectMetrics, renderMetrics } from "./core/analysis.js";
 import { SECTIONS, checkExpectations, referenceCapsule, renderExpectations, renderWorkspace, resolveRefs, stringPayload, workspace } from "./core/workspace.js";
 import { renderCanon } from "./core/canon.js";
+import { listForecasts, quickDecision } from "./core/forecast.js";
 import type { ScenariaNode, Source } from "./core/types.js";
 
 export interface ToolContext {
@@ -147,7 +148,14 @@ export const TOOLS: ToolDef[] = [
       const canonHint = known.size && !n.respectsCanon && !n.breaksCanon ? `\ncanon: state which fixed points (${[...known].slice(0, 6).join(", ")}) this decision respects (respectsCanon) or breaks (breaksCanon).` : "";
       const broken = n.breaksCanon?.length ? `\nWARNING: breaks canon ${n.breaksCanon.join(", ")} — the user will see this.` : "";
       const hint = (missing.length ? `\nquality: missing ${missing.join(", ")} — include them next time.` : "") + canonHint + broken;
-      return { text: `Decision recorded.\n${brief(n)}${hint}`, data: n };
+      // Open decision: show the forecast per option right away (before anyone chooses).
+      let fc = "";
+      if (!n.chosen) {
+        try {
+          fc = `\nForecast (context kept, before choosing): ${quickDecision(s, n.id).map((o) => `${o.key} ${o.score}%${o.quick.warnings.length ? " ⚠" : ""}`).join(" · ")} — details: scenaria_forecast {id: "${n.id}"}`;
+        } catch {}
+      }
+      return { text: `Decision recorded.\n${brief(n)}${hint}${fc}`, data: n };
     },
   },
   {
@@ -378,6 +386,24 @@ export const TOOLS: ToolDef[] = [
       if (!a.kind || !a.text) throw new Error("propose needs kind and text");
       const ev = s.proposeCanon({ kind: a.kind, text: a.text, due: a.due, check: a.check, evidence: a.evidence }, actor(c));
       return { text: `${ev.id} ${ev.status === "proposed" ? "proposed — the user approves it in the dashboard (Kanon)" : `already exists (${ev.status})`}: ${ev.text}`, data: ev };
+    },
+  },
+  {
+    name: "scenaria_forecast",
+    title: "Forecast a decision",
+    description:
+      "Before choosing an option: how each option of a decision is predicted to keep the context and the main goal (0-100), with warnings from earlier lessons and — if a multiverse forecast exists — the archivist/craftsman/oracle view and the recommendation. Deterministic part needs no model. The person chooses; use it to inform your rationale.",
+    input: { id: str.describe("Decision node id, e.g. n12") },
+    annotations: { readOnlyHint: true },
+    run(s, a) {
+      const quick = quickDecision(s, a.id);
+      const mv = listForecasts(s).find((f) => f.mode === "multiverse" && f.subject.kind === "decision" && f.subject.node === a.id);
+      const lines = quick.map((o) => {
+        const u = mv?.options.find((x) => x.key === o.key);
+        return `- ${o.key} ${o.label}: context ${u ? u.score : o.score}%${o.quick.goal !== null ? `, goal ${u?.universe?.goal ?? o.quick.goal}%` : ""}${o.quick.explored ? `, explored → measured ${o.quick.explored.measured}%` : ""}${o.quick.warnings.length ? ` · lessons: ${o.quick.warnings.join("; ")}` : ""}${u?.universe ? ` · oracle: ${u.universe.outcome}${u.universe.loses.length ? ` · would drop: ${u.universe.loses.join("; ")}` : ""}` : ""}`;
+      });
+      const rec = mv?.recommended ? `\nRecommended (${mv.id}): ${mv.recommended.key} — ${mv.recommended.why}` : mv ? "" : "\n(no multiverse forecast yet — the person can start one in the dashboard)";
+      return { text: `Forecast for ${a.id}:\n${lines.join("\n")}${rec}`, data: { quick, multiverse: mv ?? null } };
     },
   },
   {

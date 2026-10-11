@@ -83,6 +83,8 @@ Prompts, analysis & rules
   ingest-text [file|-]                  Read \`\`\`scenaria blocks from a chat answer (stdin or file)
   analyze [--llm <provider> --model <m> [--base-url ..]] [--lang de|en] [--dossier]
   relay "<question>" [--options "A|B"] [--decide]   Archivist → craftsman → oracle for one high-impact decision
+  forecast [<decision> | --prompt "<text>" [--options "variant A|variant B"]] [--quick]
+                                        Multiverse forecast: does each option / prompt keep the context? (no args: list + hit rate)
                                         Health check; with --llm: pattern analysis by ANY LLM (Ollama, OpenAI, Anthropic, …)
   rules [add "<rule>" | rm <id>]        Project rules every capsule and prompt carries
 
@@ -166,6 +168,8 @@ const opts = {
   "with-context": { type: "boolean" },
   llm: { type: "string" },
   options: { type: "string" },
+  prompt: { type: "string" },
+  quick: { type: "boolean" },
   decide: { type: "boolean" },
   "base-url": { type: "string" },
   "api-key-env": { type: "string" },
@@ -516,6 +520,29 @@ async function main() {
       const text = !p[0] || p[0] === "-" ? await readStdinText() : readFileSync(p[0], "utf8");
       const r = applyBlocks(s, text, actor);
       return out([`${r.created.length} node(s) recorded${r.skipped ? `, ${r.skipped} block(s) already known` : ""}.`, ...r.created.map((n) => `- ${n.id} [${n.type}] ${n.title}`), ...r.errors.map((e) => `! ${e}`)].join("\n"), r);
+    }
+    case "forecast": {
+      const s = Scenaria.open(v.root);
+      const { forecast, quickDecision, quickPrompt, evaluateForecasts } = await import("./core/forecast.js");
+      if (!p[0] && !v.prompt) {
+        const ev = evaluateForecasts(s);
+        const c = ev.calibration;
+        return out([...ev.forecasts.slice(0, 15).map((f) => `${f.id} ${f.mode.padEnd(10)} ${f.subject.kind === "decision" ? `${f.subject.node} ${f.subject.question}` : `prompt: ${f.subject.text.slice(0, 60)}`}${f.recommended ? ` → ${f.recommended.key}` : ""}${f.actual?.length ? `  ${C.dim}(actual: ${f.actual.map((a) => `${a.option} ${a.measured}% vs ${a.predicted}%`).join(", ")})${C.reset}` : ""}`), c.evaluated ? `Calibration: ${c.evaluated} evaluated, mean error ${c.meanError} points, ${c.hits} within ±15` : `${C.dim}No forecast could be checked against reality yet.${C.reset}`].join("\n") || "No forecasts yet.", ev);
+      }
+      if (v.quick || (!process.stdin.isTTY && !v.prompt)) {
+        if (v.prompt) {
+          const q = quickPrompt(s, String(v.prompt));
+          return out(`Prompt keeps the context: ${q.score}%${q.warnings.length ? `\nLessons: ${q.warnings.join("; ")}` : ""}`, q);
+        }
+        const opts = quickDecision(s, p[0]);
+        return out(opts.map((o) => `${o.key} ${o.label}: ${o.score}%${o.quick.goal !== null ? ` (goal ${o.quick.goal}%)` : ""}${o.quick.explored ? ` explored → ${o.quick.explored.measured}%` : ""}${o.quick.warnings.length ? `\n   ⚠ ${o.quick.warnings.join("\n   ⚠ ")}` : ""}`).join("\n"), opts);
+      }
+      // The multiverse uses the person's model settings and keys: a person at a terminal.
+      if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("The multiverse forecast needs an interactive terminal (it uses your model settings and keys). Use --quick for the forecast without a model.");
+      process.stderr.write(`${C.dim}Archivist → craftsman → oracle …${C.reset}\n`);
+      const f = await forecast(s, { node: p[0], prompt: v.prompt ? String(v.prompt) : undefined, variants: v.options ? String(v.options).split("|").map((x) => x.trim()).filter(Boolean) : undefined, lang: v.lang === "en" ? "en" : "de", llm: v.llm ? { provider: v.llm, model: v.model, baseUrl: v["base-url"] } : undefined });
+      const lines = f.options.map((o) => `${C.bold}${o.key} ${o.label}${C.reset}: context ${o.score}%${o.universe ? `, goal ${o.universe.goal}%, confidence ${Math.round(o.universe.confidence * 100)}%\n   past: ${o.universe.past}\n   present: ${o.universe.trajectory.join(" → ")}${o.universe.loses.length ? `\n   would drop: ${o.universe.loses.join("; ")}` : ""}\n   future: ${o.universe.outcome}` : ""}`);
+      return out([`Forecast ${f.id}`, ...lines, f.recommended ? `→ ${f.recommended.key}: ${f.recommended.why}` : "", ...f.warnings.map((w) => `${C.yellow}! ${w}${C.reset}`)].filter(Boolean).join("\n"), f);
     }
     case "relay": {
       const s = Scenaria.open(v.root);

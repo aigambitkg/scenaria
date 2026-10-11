@@ -36,7 +36,7 @@ export interface FidelityPoint {
 const W = { anchor: 0.35, continuity: 0.35, integrity: 0.15, epistemic: 0.15 };
 
 /** Word stems: compounds split at - _ . / ("Launch-Marketing" → launch, market), 6-char prefix (Spiele ~ Spiel). */
-function stems(text: string): Set<string> {
+export function stems(text: string): Set<string> {
   const out = new Set<string>();
   for (const t of tokenize(text)) {
     for (const part of [t, ...t.split(/[-_./]+/)]) if (part.length > 2 && !/^\d+$/.test(part)) out.add(part.slice(0, 6));
@@ -45,7 +45,7 @@ function stems(text: string): Set<string> {
 }
 
 /** Ochiai overlap of two token sets (0..1). */
-function overlap(a: Set<string>, b: Set<string>): number {
+export function overlap(a: Set<string>, b: Set<string>): number {
   if (!a.size || !b.size) return 0;
   let n = 0;
   for (const t of a) if (b.has(t)) n++;
