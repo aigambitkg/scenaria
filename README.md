@@ -126,6 +126,22 @@ How canon events are enforced:
 
 Settings, chat and relay act for you and use your keys, so they need the approval session (the approval link from `scenaria start`), like canon approvals.
 
+## Forecasts and the multiverse: see before you choose (v0.8)
+
+Every open decision gets a **forecast before anyone chooses**: how much of the context and the main goal each option keeps. The quick forecast is instant and needs no model. The **multiverse** runs three isolated roles per option: the archivist reads the past, the craftsman plays the present forward (and names what would be lost), the oracle judges the future against the goal and the fixed points. Prompts and plans can be checked the same way, with variants side by side. Later Scenaria measures how faithful the line really stayed, so the hit rate of the forecasts is visible. Automatic forecasts are opt-in, use only your model and have a daily limit across all projects. Dashboard → **Forecasts**, CLI `scenaria forecast n12`, chat, or the `scenaria_forecast` tool for agents.
+
+## The expert analyst: a report to optimise with (v0.8)
+
+Analysis → **★ Expert analysis** reviews one line, the whole project or **all your projects** through four lenses: architecture & technical decisions, goal & product alignment, agent workflow & context engineering, governance & risk (in the spirit of ISO/IEC 42001). The facts are always computed and shown first. Whatever the model writes is checked against them: wrong figures and statements that contradict the facts are marked and cannot be adopted, evidence must fit the finding, and the model can move the maturity score by at most ±15. Recommendations are prioritised (P1–P3, effort, KPI to move). Rules are adopted with one click and become project rules for every agent; tasks get a direct button. Reports are signed and export as Markdown. Without a model you get the rule-based report. CLI: `scenaria analyst`.
+
+## Several projects: switch with one click (v0.8)
+
+Click the project name at the top to see your Scenaria projects on this computer and switch the dashboard. Your approval and your keys (memory only) stay. Agents keep working in their own project: MCP agents run in their own folder, and the server's HTTP tools, LLM proxy and auto-save stay with the project it was started in.
+
+## Help and introduction
+
+**?** (top right) explains every function in plain words, and every dialog has its own **?**. On the first visit a short introduction (goal → agent → model → forecasts → fixed points and analysis) gets you going. You can skip it, and restart it from **More → Introduction**.
+
 ## Context fidelity: see where context broke, changed or was manipulated
 
 Select any node to see a line from the project root to that node, with a percentage per step. Each node's score combines:

@@ -1,3 +1,4 @@
+import { HelpButton } from "./HelpButton";
 /**
  * Project switcher: the person's Scenaria projects on this computer — switch the dashboard with one
  * click. Agents keep working in their own project; only the dashboard changes.
@@ -19,7 +20,7 @@ function ago(iso: string, lang: "de" | "en") {
   return rtf.format(-Math.round(h / 24), "day");
 }
 
-export function ProjectSwitcher(props: { t: Dict; lang: "de" | "en"; name: string; toast: (m: string) => void; onSwitched: () => void }) {
+export function ProjectSwitcher(props: { t: Dict; lang: "de" | "en"; name: string; toast: (m: string) => void; onSwitched: () => void; openSignal?: number }) {
   const { t } = props;
   const [open, setOpen] = useState(false);
   const [page, setPage] = useState<ProjectsPage | null>(null);
@@ -28,6 +29,9 @@ export function ProjectSwitcher(props: { t: Dict; lang: "de" | "en"; name: strin
   const [path, setPath] = useState("");
   const [confirmForget, setConfirmForget] = useState<string | null>(null);
   const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (props.openSignal) setOpen(true);
+  }, [props.openSignal]);
 
   const load = async () => {
     try {
@@ -78,7 +82,9 @@ export function ProjectSwitcher(props: { t: Dict; lang: "de" | "en"; name: strin
       {open && (
         <div className="pj-menu" role="listbox" aria-label={t.pjTitle}>
           <div className="pj-head">
-            <strong>{t.pjTitle}</strong>
+            <strong>
+              {t.pjTitle} <HelpButton topic="projects" />
+            </strong>
             <span className="muted small">{t.pjExplain}</span>
           </div>
           {err && <p className="error small">{err}</p>}

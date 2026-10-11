@@ -1,3 +1,4 @@
+import { HelpButton } from "./HelpButton";
 import { ExpertPanel } from "./Expert";
 import type { SessionKeys } from "./Control";
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -272,7 +273,7 @@ export function PromptDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: str
       .catch((e) => setText(String(e?.message ?? e)));
   }, [kind, withCtx, props.lang]);
   return (
-    <Modal wide title={t.promptTitle} onClose={props.onClose}>
+    <Modal wide title={<>{t.promptTitle} <HelpButton topic="agents" /></>} onClose={props.onClose}>
       <div className="modal-body prompt-dlg">
         <div className="tabs" role="tablist">
           {(["mcp", "cli", "chat"] as Kind[]).map((k) => (
@@ -403,7 +404,7 @@ export function AnalysisDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessio
   const issues = m ? (showAllIssues ? m.issues : m.issues.slice(0, 8)) : [];
 
   return (
-    <Modal wide title={t.analysisTitle} onClose={props.onClose}>
+    <Modal wide title={<>{t.analysisTitle} <HelpButton topic="analysis" /></>} onClose={props.onClose}>
       <div className="modal-body analysis">
         <div className="side-tabs fc-tabs" role="tablist">
           {(["overview", "expert"] as const).map((k) => (
@@ -874,7 +875,7 @@ export function CanonDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: stri
     </li>
   );
   return (
-    <Modal wide title={t.canonTitle} onClose={props.onClose}>
+    <Modal wide title={<>{t.canonTitle} <HelpButton topic="canon" /></>} onClose={props.onClose}>
       <div className="modal-body analysis canon">
         <p className="hint">{t.canonIntro}</p>
         {!approval && <p className="qnote q-warn">🔒 {t.canonLocked}</p>}

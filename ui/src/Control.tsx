@@ -1,3 +1,4 @@
+import { HelpButton } from "./HelpButton";
 /**
  * v0.7 — control surfaces: Settings (models, keys, agents), the built-in chat, the relay dialog
  * and the canon gate per line of work.
@@ -359,7 +360,7 @@ export function SettingsDialog(props: { t: Dict; keys: SessionKeys; onKey: (prov
   };
 
   return (
-    <Modal wide title={t.settingsTitle} onClose={props.onClose}>
+    <Modal wide title={<>{t.settingsTitle} <HelpButton topic="settings" /></>} onClose={props.onClose}>
       <div className="modal-body analysis settings">
         {page && !page.approval && <p className="qnote q-warn">🔒 {t.settingsLocked}</p>}
         {err && <p className="error">{err}</p>}
@@ -802,7 +803,7 @@ export function RelayDialog(props: { t: Dict; lang: "de" | "en"; keys: SessionKe
       .catch(() => {});
   }, []);
   return (
-    <Modal wide title={t.relayTitle} onClose={props.onClose}>
+    <Modal wide title={<>{t.relayTitle} <HelpButton topic="relay" /></>} onClose={props.onClose}>
       <div className="modal-body analysis">
         <p className="hint">{t.relayHint}</p>
         {!approval && <p className="qnote q-warn">🔒 {t.settingsLocked}</p>}

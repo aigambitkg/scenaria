@@ -673,3 +673,44 @@ table.gate tr.current td:first-child { box-shadow: inset 4px 0 0 var(--marker-so
 .pj-open { display: flex; gap: 6px; }
 .pj-open input { flex: 1; min-width: 0; }
 .pj-confirm { white-space: nowrap; }
+
+/* ---------- more menu, help, onboarding ---------- */
+.more { position: relative; }
+.more-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 60; min-width: 200px; background: var(--surface); border: 1.5px solid var(--ink); border-radius: 3px; box-shadow: var(--shadow-modal); padding: 4px; display: flex; flex-direction: column; }
+.more-menu button { text-align: left; background: none; border: none; padding: 8px 10px; font: inherit; color: var(--ink); cursor: pointer; border-radius: 2px; }
+.more-menu button:hover, .more-menu button:focus-visible { background: color-mix(in srgb, var(--marker) 35%, transparent); }
+.help-top { font-weight: 700; }
+.help-q { width: 22px; height: 22px; min-width: 22px; padding: 0; font-size: 12px; font-weight: 700; border-radius: 50%; vertical-align: middle; }
+.help .help-search { width: 100%; margin: 0 0 10px; }
+.help-index { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-bottom: 12px; font-size: 13px; }
+.help-index a { color: var(--ink-2); }
+.help-topic { border-top: 1px solid var(--rule); padding: 8px 0; }
+.help-topic > summary { cursor: pointer; font-weight: 600; font-size: 15px; padding: 4px 0; }
+.help-body { max-width: 72ch; }
+.help-body h5 { margin: 10px 0 4px; }
+.help-example { border-left: 3px solid var(--marker-solid); padding-left: 8px; }
+.help-terms { display: grid; gap: 6px; margin: 10px 0; }
+.help-terms div { display: grid; grid-template-columns: minmax(120px, 210px) 1fr; gap: 10px; }
+.help-terms dt { font-weight: 600; }
+.help-terms dd { margin: 0; color: var(--ink-2); }
+.help-notes { color: var(--ink-2); font-size: 13px; }
+.onboarding h3 { margin: 6px 0 8px; }
+.ob-dots { list-style: none; display: flex; gap: 6px; padding: 0; margin: 0 0 8px; }
+.ob-dots button { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--ink); background: none; padding: 0; cursor: pointer; }
+.ob-dots li.on button { background: var(--ink); }
+.ob-dots li.ok button { border-color: var(--pass); background: var(--pass); }
+.ob-list { padding-left: 18px; display: flex; flex-direction: column; gap: 6px; }
+.ob-bars { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 4px; }
+.ob-bars > div { display: grid; grid-template-columns: 16px 1fr; align-items: center; gap: 6px; }
+.modal-foot .grow { flex: 1; }
+@media (max-width: 640px) {
+  .help-terms div { grid-template-columns: 1fr; gap: 0; }
+  .more-menu { position: fixed; left: 12px; right: 12px; top: auto; }
+}
+@media (max-width: 900px) {
+  .top-actions { flex-wrap: wrap; justify-content: flex-start; margin-left: 0; max-width: 100%; }
+  .goalbar { max-width: 100%; }
+  .goalbar-text { max-width: 100%; }
+}
+.app { grid-template-columns: minmax(0, 1fr); }
+.topbar { min-width: 0; }

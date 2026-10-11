@@ -1,3 +1,4 @@
+import { HelpButton } from "./HelpButton";
 /**
  * Forecasts ("Prognosen"): see BEFORE choosing how each option — or a prompt — will keep the context
  * and the main goal. Quick forecast (instant, no model) for every decision; the multiverse
@@ -252,7 +253,7 @@ export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessi
 
   const c = page?.calibration;
   return (
-    <Modal wide title={t.fcTitle} onClose={props.onClose}>
+    <Modal wide title={<>{t.fcTitle} <HelpButton topic="forecasts" /></>} onClose={props.onClose}>
       <div className="modal-body analysis forecasts">
         <p className="hint">{t.fcIntro}</p>
         <div className="fc-stats">
@@ -272,6 +273,7 @@ export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessi
         {!approval && <p className="qnote q-warn">🔒 {t.settingsLocked}</p>}
         {!props.nodes.find((n) => n.type === "mission")?.goal && <NoGoalNote t={t} onEditGoal={props.onEditGoal} />}
         {err && <p className="error">{err}</p>}
+        <p className="hint">{t.fcWhy}</p>
         <p className="muted small">{t.fcLegend}</p>
         <div className="side-tabs fc-tabs" role="tablist">
           {(["open", "prompt", "history"] as const).map((k) => (

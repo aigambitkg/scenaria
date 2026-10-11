@@ -106,6 +106,22 @@ So werden Fixpunkte durchgesetzt:
 
 Einstellungen, Chat und Relay handeln für dich und nutzen deine Schlüssel – sie brauchen deshalb wie Kanon-Freigaben die Freigabe-Sitzung (den Freigabe-Link aus `scenaria start`).
 
+## Prognosen und Multiversum: sehen, bevor man wählt (v0.8)
+
+Jede offene Entscheidung bekommt eine **Prognose, bevor jemand wählt**: Wie viel vom Kontext und vom Hauptziel hält jede Option? Die Schnellprognose ist sofort da und braucht kein Modell. Das **Multiversum** lässt drei getrennte Rollen je Option arbeiten: Der Archivar liest die Vergangenheit, der Handwerker spielt die Gegenwart weiter (und sagt, was verloren ginge), das Orakel beurteilt die Zukunft gegen Ziel und Fixpunkte. Prompts und Pläne lassen sich genauso prüfen, Varianten im direkten Vergleich. Später misst Scenaria, wie treu die Linie wirklich blieb. So wird die Trefferquote der Prognosen sichtbar. Automatische Prognosen sind optional, nutzen nur dein Modell und haben ein Tageslimit über alle Projekte. Im Dashboard unter **Prognosen**, per CLI mit `scenaria forecast n12`, im Chat oder für Agenten mit dem Tool `scenaria_forecast`.
+
+## Der Experten-Analyst: ein Bericht zum Optimieren (v0.8)
+
+Unter Analyse → **★ Experten-Analyse** wird eine Linie, das ganze Projekt oder **alle deine Projekte** aus vier Blickwinkeln geprüft: Architektur & technische Entscheidungen, Ziel- & Produktausrichtung, Agenten-Workflow & Kontext-Engineering, Governance & Risiko (im Sinne von ISO/IEC 42001). Die Fakten werden immer berechnet und stehen oben. Was das Modell schreibt, wird gegen sie geprüft: Falsche Zahlen und Aussagen, die den Fakten widersprechen, werden markiert und sind nicht übernehmbar. Belege müssen zum Befund passen, und der Reifegrad darf sich durch das Modell um höchstens ±15 verschieben. Empfehlungen sind priorisiert (P1–P3, Aufwand, Ziel-Kennzahl). Regeln übernimmst du mit einem Klick, dann gelten sie als Projektregeln für jeden Agenten; Aufgaben haben einen direkten Knopf. Berichte sind signiert und lassen sich als Markdown exportieren. Ohne Modell gibt es den regelbasierten Bericht. CLI: `scenaria analyst`.
+
+## Mehrere Projekte: mit einem Klick wechseln (v0.8)
+
+Ein Klick auf den Projektnamen oben zeigt deine Scenaria-Projekte auf diesem Rechner, und du kannst das Dashboard umschalten. Freigabe und Schlüssel (nur im Speicher) bleiben erhalten. Agenten arbeiten weiter in ihrem eigenen Projekt: MCP-Agenten in ihrem Ordner, und HTTP-Tools, LLM-Proxy und das automatische Sichern des Servers bleiben beim Startprojekt.
+
+## Hilfe und Einführung
+
+**?** oben rechts erklärt jede Funktion in einfachen Worten, und jeder Dialog hat sein eigenes **?**. Beim ersten Besuch führt eine kurze Einführung durch die ersten Schritte: Ziel, Agent, Modell, Prognosen, Fixpunkte und Analyse. Du kannst sie überspringen und über **Mehr → Einführung** jederzeit neu starten.
+
 ## Kontext-Treue: sehen, wo Kontext abbrach, sich änderte oder manipuliert wurde
 
 Klickst du einen Knoten an, zeigt das Dashboard eine Linie vom Projektstart bis zu diesem Knoten, mit Prozentwert je Schritt. Der Wert jedes Knotens setzt sich zusammen aus:

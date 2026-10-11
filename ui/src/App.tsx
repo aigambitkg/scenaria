@@ -3,6 +3,9 @@ import { ReactFlowProvider } from "@xyflow/react";
 import { api, type Fidelity, type Graph, type ScenariaEvent, type ScenariaNode } from "./api";
 import { dict, initialLang, saveLang, type Lang } from "./i18n";
 import { ProjectSwitcher } from "./Projects";
+import { HelpDialog, Onboarding, onboardingDone, restartOnboarding } from "./Help";
+import { HelpContext } from "./HelpButton";
+import type { HelpAction } from "./helpContent";
 import { layoutTree, taskOf } from "./layout";
 import { NodeId, ScenarioMap } from "./Map";
 import { NodePanel } from "./NodePanel";
@@ -42,6 +45,12 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
   const [convos, setConvos] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [relayOpen, setRelayOpen] = useState(false);
+  const [analysisTab, setAnalysisTab] = useState<"overview" | "expert">("overview");
+  /** Help: false = closed, string = open at that topic. */
+  const [help, setHelp] = useState<string | false>(false);
+  const [onboarding, setOnboarding] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [projectsSignal, setProjectsSignal] = useState(0);
   /** Forecasts page: false = closed, null = open without focus, "n12" = focused on a decision. */
   const [forecastFocus, setForecastFocus] = useState<string | null | false>(false);
   const [side, setSide] = useState<"node" | "chat">("node");
@@ -194,7 +203,66 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
     await load();
   };
 
+  // First visit in this browser: the short introduction (skippable, restart via More → Introduction).
+  const askedOnboarding = useRef(false);
+  useEffect(() => {
+    if (graph && !askedOnboarding.current) {
+      askedOnboarding.current = true;
+      if (!onboardingDone()) setOnboarding(true);
+    }
+  }, [graph]);
+
+  /** Help topics and the introduction open functions directly. */
+  const act = (a: HelpAction) => {
+    setHelp(false);
+    setOnboarding(false);
+    setMoreOpen(false);
+    switch (a) {
+      case "goal":
+        setEditGoal(root?.goal ?? "");
+        break;
+      case "forecasts":
+        setForecastFocus(null);
+        break;
+      case "analysis":
+      case "expert":
+        setAnalysisTab(a === "expert" ? "expert" : "overview");
+        setAnalysisOpen(true);
+        break;
+      case "canon":
+        setCanonOpen(true);
+        break;
+      case "chat":
+        setSide("chat");
+        break;
+      case "relay":
+        setRelayOpen(true);
+        break;
+      case "settings":
+        setSettingsOpen(true);
+        break;
+      case "prompt":
+        setPromptOpen(true);
+        break;
+      case "conversations":
+        setConvos(true);
+        break;
+      case "protocol":
+        api.log().then((r) => setLog(r.events)).catch(() => {});
+        break;
+      case "projects":
+        setProjectsSignal((n) => n + 1);
+        break;
+      case "onboarding":
+        restartOnboarding();
+        setOnboarding(true);
+        break;
+    }
+  };
+  const helpCtx = useMemo(() => ({ open: (topic: string) => setHelp(topic), label: t.helpOpen }), [t]);
+
   return (
+    <HelpContext.Provider value={helpCtx}>
     <div className="app">
       <header className="topbar">
         <div className="brand">
@@ -205,7 +273,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
             <path d="M11 16 21 8M11 16l10 8" stroke="currentColor" strokeWidth="2" />
           </svg>
           <span className="brand-name">Scenaria</span>
-          {graph && <ProjectSwitcher t={t} lang={lang} name={graph.config.projectName} toast={toast} onSwitched={props.onProjectSwitched} />}
+          {graph && <ProjectSwitcher t={t} lang={lang} name={graph.config.projectName} toast={toast} onSwitched={props.onProjectSwitched} openSignal={projectsSignal} />}
         </div>
         {graph && (
           <div className={`goalbar ${root?.goal ? "" : "missing"}`}>
@@ -249,22 +317,47 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
             {t.fcButton}
             {openDecisions > 0 && <span className="hchip mid">{openDecisions}</span>}
           </button>
-          <button className="btn accent" onClick={() => setPromptOpen(true)} title={t.promptHintShort}>
-            {t.agentPrompt}
-          </button>
           <button className="btn" onClick={() => setCanonOpen(true)} title={t.canonHint}>
             {t.canon}
             {canonInfo && canonInfo.proposed > 0 ? <span className="hchip mid">{canonInfo.proposed}</span> : canonInfo ? <span className="hchip">{canonInfo.active}</span> : null}
           </button>
-          <button className="btn" onClick={() => setAnalysisOpen(true)}>
+          <button
+            className="btn"
+            onClick={() => {
+              setAnalysisTab("overview");
+              setAnalysisOpen(true);
+            }}
+            title={t.xIntro}
+          >
             {t.analysis}
             {health !== null && <span className={`hchip ${health >= 80 ? "good" : health >= 55 ? "mid" : "low"}`}>{health}</span>}
           </button>
-          <button className="btn" onClick={() => setConvos(true)}>
-            {t.conversations}
-          </button>
-          <button className="btn" onClick={async () => setLog((await api.log()).events)}>
-            {t.protocol}
+          <div className="more">
+            <button className="btn" aria-haspopup="menu" aria-expanded={moreOpen} title={t.moreHint} onClick={() => setMoreOpen(!moreOpen)}>
+              {t.more} ▾
+            </button>
+            {moreOpen && (
+              <div className="more-menu" role="menu" onMouseLeave={() => setMoreOpen(false)}>
+                <button role="menuitem" onClick={() => act("prompt")} title={t.promptHintShort}>
+                  {t.agentPrompt}
+                </button>
+                <button role="menuitem" onClick={() => act("conversations")}>
+                  {t.conversations}
+                </button>
+                <button role="menuitem" onClick={() => act("protocol")}>
+                  {t.protocol}
+                </button>
+                <button role="menuitem" onClick={() => act("relay")}>
+                  {t.relay}
+                </button>
+                <button role="menuitem" onClick={() => act("onboarding")}>
+                  {t.obRestart}
+                </button>
+              </div>
+            )}
+          </div>
+          <button className="btn icon help-top" onClick={() => setHelp("start")} title={t.helpTitle} aria-label={t.helpTitle}>
+            ?
           </button>
           <button className="btn icon gear" onClick={() => setSettingsOpen(true)} title={t.settings} aria-label={t.settings}>
             ⚙
@@ -299,6 +392,17 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
             <div className="empty">
               <h1>{t.noMission}</h1>
               <p>{t.noMissionHint}</p>
+              <p className="row">
+                <button className="btn primary" onClick={() => act("prompt")}>
+                  {t.agentPrompt}
+                </button>
+                <button className="btn" onClick={() => act("onboarding")}>
+                  {t.obRestart}
+                </button>
+                <button className="btn" onClick={() => setHelp("start")}>
+                  {t.helpTitle}
+                </button>
+              </p>
             </div>
           ) : null}
         </section>
@@ -506,6 +610,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
           t={t}
           lang={lang}
           keys={keys}
+          initialTab={analysisTab}
           toast={toast}
           onOpenCanon={() => {
             setAnalysisOpen(false);
@@ -523,6 +628,18 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
         />
       )}
       </ErrorBoundary>
+      {help !== false && <HelpDialog t={t} lang={lang} topic={help} onClose={() => setHelp(false)} onAction={act} />}
+      {onboarding && (
+        <Onboarding
+          t={t}
+          lang={lang}
+          goal={root?.goal ?? null}
+          toast={toast}
+          onGoalSaved={load}
+          onAction={act}
+          onClose={() => setOnboarding(false)}
+        />
+      )}
       <div className="toasts" aria-live="polite">
         {toasts.map((x) => (
           <div key={x.id} className="toast">
@@ -531,5 +648,6 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
         ))}
       </div>
     </div>
+    </HelpContext.Provider>
   );
 }
