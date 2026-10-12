@@ -14,7 +14,7 @@ export interface LlmSettings {
   /** Default model for chat, analysis, archivist and relay. */
   default?: LlmChoice;
   /** Optional model per function. */
-  roles?: Partial<Record<"chat" | "analysis" | "archivist" | "craftsman" | "oracle" | "analyst", LlmChoice>>;
+  roles?: Partial<Record<"chat" | "analysis" | "archivist" | "craftsman" | "oracle" | "analyst" | "auditor", LlmChoice>>;
 }
 
 export interface GlobalConfig {

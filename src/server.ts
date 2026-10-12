@@ -26,7 +26,8 @@ import { gateMatrix, runGate } from "./core/gate.js";
 import { effectiveLlm, listModels, readSettings, upstreams, writeSettings } from "./core/settings.js";
 import { listRelays, runRelay } from "./core/relay.js";
 import { benchmarkInWorker, calibrationFor, forecastQuality } from "./core/predict.js";
-import { autoBudget, evaluateForecasts, forecast, markUsed, openWithoutForecast, quickDecision, quickPrompt } from "./core/forecast.js";
+import { autoBudget, evaluateForecasts, forecast, listForecasts, markUsed, openWithoutForecast, quickDecision, quickPrompt } from "./core/forecast.js";
+import { auditForecast, deepAudit, listOracleBacktests, oracleBacktest, oracleQuality } from "./core/auditor.js";
 import { chat } from "./chat.js";
 import { TARGETS, agentStatus, connectionSnippets, setupAgents, type Target } from "./setup.js";
 import { callLlm } from "./core/analysis.js";
@@ -493,6 +494,37 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
             return send(res, 200, { calibration: cal, ...(await benchmarkInWorker(cal)) });
           } catch (err: any) {
             return send(res, 500, { error: err?.message ?? String(err) });
+          }
+        }
+        // The Prüf-Experte: the checklist is free and open to read; the skeptic and the oracle backtest
+        // use the person's model (person-only, like every POST under /api/forecast).
+        if (req.method === "GET" && p === "/api/forecast/audit") {
+          const id = url.searchParams.get("id") ?? "";
+          const f = listForecasts(s).find((x) => x.id === id);
+          if (!f) return send(res, 404, { error: `unknown forecast ${id}` });
+          return send(res, 200, auditForecast(s, f, url.searchParams.get("lang") === "en" ? "en" : "de"));
+        }
+        if (req.method === "POST" && p === "/api/forecast/audit") {
+          const b = await readBody(req);
+          if (token && b?.llm?.baseUrl) return send(res, 400, { error: "custom base URLs are disabled in team mode" });
+          try {
+            const lang = b?.lang === "en" ? "en" : "de";
+            const rec = await deepAudit(s, String(b?.id ?? ""), { lang, llm: b?.llm });
+            const f = listForecasts(s).find((x) => x.id === rec.forecast)!;
+            return send(res, 200, auditForecast(s, f, lang));
+          } catch (err: any) {
+            return send(res, 502, { error: err?.message ?? String(err) });
+          }
+        }
+        if (req.method === "GET" && p === "/api/forecast/oracle") return send(res, 200, { ...oracleQuality(s), runs: listOracleBacktests(s).slice(0, 10) });
+        if (req.method === "POST" && p === "/api/forecast/oracle-backtest") {
+          const b = await readBody(req);
+          if (token && b?.llm?.baseUrl) return send(res, 400, { error: "custom base URLs are disabled in team mode" });
+          try {
+            const rec = await oracleBacktest(s, { limit: Number(b?.limit) || 5, lang: b?.lang === "en" ? "en" : "de", llm: b?.llm });
+            return send(res, 200, { run: rec, ...oracleQuality(s) });
+          } catch (err: any) {
+            return send(res, 502, { error: err?.message ?? String(err) });
           }
         }
         if (req.method === "POST" && p === "/api/forecast/used") {

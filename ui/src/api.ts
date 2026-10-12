@@ -14,6 +14,16 @@ export type { Forecast, ForecastOption, QuickForecast };
 import type { ExpertReport, FactSheet, Finding, Recommendation } from "../../src/core/expert";
 import type { Explain, Quality as ForecastQuality, BenchSummary, Calibration } from "../../src/core/predict";
 export type { Explain, ForecastQuality, BenchSummary, Calibration };
+import type { Audit, Check, DeepAudit, OracleQuality } from "../../src/core/auditor";
+import type { OracleAdjust } from "../../src/core/oracle";
+export type { Audit, Check, DeepAudit, OracleQuality, OracleAdjust };
+export interface OracleBacktestRun {
+  id: string;
+  createdAt: string;
+  model: string | null;
+  cases: { decision: string; option: string; label: string; core: number; oracle: number; actual: number }[];
+  verified?: boolean;
+}
 import type { KnownProject } from "../../src/core/projects";
 export type { ExpertReport, FactSheet, Finding, Recommendation, KnownProject };
 export interface ProjectsPage {
@@ -143,6 +153,10 @@ export const api = {
   quickPrompt: (text: string) => req<{ prompt: string; quick: QuickForecast }>(`/api/forecast/quick?prompt=${encodeURIComponent(text)}`),
   runForecast: (b: { node?: string; prompt?: string; variants?: string[]; quick?: boolean; lang: string; llm?: Partial<LlmCall> }) => req<Forecast>("/api/forecast", b),
   forecastQuality: () => req<ForecastQuality>("/api/forecast/quality"),
+  audit: (id: string, lang: string) => req<Audit>(`/api/forecast/audit?id=${encodeURIComponent(id)}&lang=${lang}`),
+  deepAudit: (id: string, lang: string, llm?: Partial<LlmCall>) => req<Audit>("/api/forecast/audit", { id, lang, llm }),
+  oracleQuality: () => req<OracleQuality & { runs: OracleBacktestRun[] }>("/api/forecast/oracle"),
+  oracleBacktest: (limit: number, lang: string, llm?: Partial<LlmCall>) => req<OracleQuality & { run: OracleBacktestRun }>("/api/forecast/oracle-backtest", { limit, lang, llm }),
   benchmark: () => req<BenchSummary & { calibration: Calibration }>("/api/forecast/benchmark", {}),
   markUsed: (id: string, key: string) => req<Forecast>("/api/forecast/used", { id, key }),
   models: (b: { provider: string; baseUrl?: string; apiKey?: string }) => req<{ models: string[] }>("/api/settings/models", b),

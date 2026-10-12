@@ -8,14 +8,13 @@
  *                 afterwards — from the option's own words and the next step in context (fidelity
  *                 formula), the line's level, lessons and fixed points at stake; learned weights and an
  *                 uncertainty band from this project's backtest. Also available to agents.
- *   multiverse  — three model roles with disjoint context (like the relay):
- *                   archivist (PAST: dossier, rules, past canon, lessons)
- *                   craftsman (PRESENT: the current line, the concrete next steps per option and
- *                              which context each option must carry or would drop)
- *                   oracle    (FUTURE: main goal, future canon → outcome, context retention %,
- *                              goal alignment %, risks, confidence, recommendation)
- *                 One universe per option. Runs on the person's request (dashboard, chat) or
- *                 automatically for open decisions when the person enabled it in Settings.
+ *   multiverse  — three model roles with disjoint context (core/oracle.ts): archivist (PAST),
+ *                 craftsman (PRESENT), oracle (FUTURE). The oracle may only CORRECT the core's two
+ *                 parts — bounded (±20), each correction with a reason and evidence ids that exist;
+ *                 the final number uses the same formula as the core, so it stays traceable.
+ *                 Every forecast is checked by the Prüf-Experte (core/auditor.ts).
+ *                 Runs on the person's request (dashboard, chat) or automatically for open
+ *                 decisions when the person enabled it in Settings.
  *
  * Evaluation: once an option was really taken (chosen or explored), the forecast is compared with
  * the measured fidelity of that branch (mean of its first steps with content, within the task).
@@ -23,21 +22,20 @@
  * A forecast never chooses: the person decides.
  */
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import type { Scenaria } from "./engine.js";
-import type { ScenariaNode } from "./types.js";
-import { callLlm, dossier, type LlmRequest } from "./analysis.js";
-import { canonState, type CanonEvent } from "./canon.js";
-import { nearestGoal } from "./context.js";
-import { stems, overlap } from "./fidelity.js";
-import { MIN_STEPS, MODEL_VERSION, branchOf, calibrationFor, measureLine, predictOption, predictPrompt, viewNow, type Explain } from "./predict.js";
-import { nodeText } from "./recall.js";
-import { effectiveLlm, upstreams, type LlmRole } from "./settings.js";
-import { writeJsonAtomic } from "./store.js";
+import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
+import type { Scenaria } from "./engine.js";
+import type { LlmRequest } from "./analysis.js";
 import { signRecord, verifyRecord } from "./canon.js";
-import { dirname } from "node:path";
+import { MIN_STEPS, MODEL_VERSION, branchOf, calibrationFor, measureLine, predictOption, predictPrompt, viewNow, type Explain } from "./predict.js";
+import { runMultiverse, type OracleAdjust } from "./oracle.js";
+import { oracleTrust } from "./auditor.js";
+import type { LlmRole } from "./settings.js";
+import { writeJsonAtomic } from "./store.js";
 import { globalConfigPath } from "./global.js";
+
+/** Oracle version of multiverse forecasts (2 = bounded, evidence-backed corrections of the core). */
+export const ORACLE_VERSION = 2;
 
 export interface QuickForecast {
   /** 0..100: predicted context retention (combined). */
@@ -66,16 +64,27 @@ export interface Universe {
   future: string;
   /** Predicted next steps on this line. */
   trajectory: string[];
-  /** 0..100 */
+  /** 0..100 — the final (corrected) forecast of this option. */
   context: number;
-  /** 0..100 */
+  /** 0..100 — closeness of the option to the goal (core, for display). */
   goal: number;
-  /** What context this option would drop (prompt/decision loses context). */
+  /** What context this option would carry / drop (craftsman). */
+  keeps?: string[];
   loses: string[];
   canonRisks: string[];
   risks: string[];
   confidence: number;
   outcome: string;
+  /** Oracle v2: the bounded, evidence-backed corrections of the core (see core/oracle.ts). */
+  own?: OracleAdjust;
+  ctx?: OracleAdjust;
+  ownAfter?: number;
+  ctxAfter?: number;
+  core?: number;
+  capped?: boolean;
+  gamma?: number;
+  pastRefs?: string[];
+  flagResolved?: boolean;
 }
 
 export interface ForecastOption {
@@ -104,6 +113,8 @@ export interface Forecast {
   mode: "quick" | "multiverse";
   /** Forecast model version (2 = same quantity as the measurement; older ones are kept but not scored). */
   model?: number;
+  /** Oracle version of a multiverse forecast (2 = bounded, evidence-backed corrections of the core). */
+  oracle?: number;
   trigger: "person" | "auto" | "chat";
   models: Partial<Record<LlmRole, string>>;
   options: ForecastOption[];
@@ -121,51 +132,9 @@ export interface Forecast {
 }
 
 type Lang = "de" | "en";
-const clamp = (x: number) => Math.max(0, Math.min(100, Math.round(x)));
-const norm = (x: number, full: number) => Math.max(0, Math.min(1, x / full));
 const one = (x: unknown, max = 600) => String(x ?? "").replace(/\s+/g, " ").trim().slice(0, max);
-const strs = (x: unknown, max = 8, len = 240) => (Array.isArray(x) ? x.map((v) => one(v, len)).filter(Boolean).slice(0, max) : []);
-/** Accepts 0..1 or 0..100. */
-const pct = (x: unknown) => {
-  const n = Number(x);
-  if (!Number.isFinite(n)) return 50;
-  return clamp(n > 0 && n < 1 ? n * 100 : n);
-};
 
 // ------------------------------------------------------------------ quick (deterministic)
-
-interface LineContext {
-  path: ScenariaNode[];
-  mainGoal: Set<string>;
-  taskGoal: Set<string>;
-  window: Set<string>;
-  lessons: { node: string; text: string; toks: Set<string> }[];
-  canon: CanonEvent[];
-}
-
-function lineContext(s: Scenaria, at: string | null, opts: { excludeLast?: boolean } = {}): LineContext {
-  const all = s.store.listNodes();
-  const full = at ? s.path(at) : [];
-  // For a decision: the line BEFORE it (its own text names every option and would favour none).
-  const path = opts.excludeLast ? full.slice(0, -1) : full;
-  const root = s.project();
-  const task = path.length ? nearestGoal(path) : null;
-  const window = new Set<string>();
-  for (const n of path.slice(-6)) for (const t of stems(nodeText(n))) window.add(t);
-  // Lessons anywhere in the project: rewinds with a lesson, failed verifications.
-  const lessons = all.flatMap((n) => [
-    ...(n.lessons ?? []).map((l) => ({ node: n.id, text: l })),
-    ...(n.verification?.status === "failed" ? [{ node: n.id, text: `${n.title}: ${n.verification.notes ?? "failed verification"}` }] : []),
-  ]);
-  return {
-    path,
-    mainGoal: stems(root?.goal ?? ""),
-    taskGoal: stems(task ? `${task.title} ${task.goal ?? ""}` : ""),
-    window,
-    lessons: lessons.map((l) => ({ ...l, toks: stems(l.text) })),
-    canon: canonState(s.store).events.filter((e) => e.status === "active"),
-  };
-}
 
 const toQuick = (p: ReturnType<typeof predictOption>): QuickForecast => ({
   score: p.explain.predicted,
@@ -205,38 +174,6 @@ export function quickPrompt(s: Scenaria, text: string, at?: string | null): Quic
   const q = toQuick(predictPrompt(v, head, text, calibrationFor(s)));
   if (v.mainGoal && !text.trim()) q.score = 0;
   return q;
-}
-
-// ------------------------------------------------------------------ multiverse (three roles)
-
-const langLine = (lang: Lang) => `Write all text values in ${lang === "de" ? "German" : "English"}.`;
-const PROMPTS = {
-  archivist: (lang: Lang) => `You are the ARCHIVIST of a multiverse forecast. You only know the PAST of the project (dossier, rules, past fixed points, lessons). For EACH option below, say briefly what the history implies for it: which earlier decisions, constraints or lessons it continues or contradicts. Cite node ids (n12) and canon ids (k3). No predictions about the future.
-Answer ONLY with JSON: {"options": [{"key": "<key>", "past": "…", "refs": ["n7"]}]}
-${langLine(lang)}`,
-  craftsman: (lang: Lang) => `You are the CRAFTSMAN of a multiverse forecast. You work in the PRESENT: the current line of work and the main goal. For EACH option, predict the concrete next 3 steps an agent would take, which context it must carry along to stay on track, and which context it would likely DROP (forget, ignore, overwrite).
-Answer ONLY with JSON: {"options": [{"key": "<key>", "present": "…", "trajectory": ["step 1", "step 2", "step 3"], "loses": ["…"]}]}
-${langLine(lang)}`,
-  oracle: (lang: Lang) => `You are the ORACLE of a multiverse forecast. You only look at the FUTURE: the main goal and the future fixed points (dates, load, legal deadlines), plus what the archivist and craftsman found. For EACH option predict: the outcome, how well the line will keep its context (0-100), how well it serves the main goal (0-100), which canon ids it puts at risk, other risks, and your confidence (0-1). Then recommend one option. Be concrete; with little information, say so and lower the confidence.
-Answer ONLY with JSON: {"options": [{"key": "<key>", "future": "…", "outcome": "…", "context": 0-100, "goal": 0-100, "canonRisks": ["k2"], "risks": ["…"], "confidence": 0.0-1.0}], "recommendation": {"key": "<key>", "why": "…"}}
-${langLine(lang)}`,
-};
-
-function json(text: string): any {
-  const cands = [text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1], text, text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)];
-  for (const c of cands) {
-    if (!c?.trim()) continue;
-    try {
-      const v = JSON.parse(c.trim());
-      if (v && typeof v === "object") return v;
-    } catch {}
-  }
-  throw new Error("The model did not return the expected JSON.");
-}
-
-function canonText(events: CanonEvent[], kind: "past" | "future") {
-  const list = events.filter((e) => e.kind === kind);
-  return list.length ? list.map((e) => `- ${e.id} (${e.hard ? "hard" : "soft"}${e.due ? `, by ${e.due}` : ""}): ${e.text}`).join("\n") : "(none)";
 }
 
 function dir(s: Scenaria) {
@@ -343,71 +280,40 @@ export async function forecast(s: Scenaria, req: ForecastRequest): Promise<Forec
     return save(s, { subject, createdAt: new Date().toISOString(), mode: "quick", trigger: req.trigger ?? "person", models: {}, options, recommended: { key: best.key, why: lang === "de" ? "höchste Kontext-Prognose (ohne Modell)" : "highest context forecast (no model)" }, warnings: [] });
   }
 
-  const ups = upstreams(s);
-  const models: Forecast["models"] = {};
-  const warnings: string[] = [];
-  const ask = async (role: "archivist" | "craftsman" | "oracle", user: string) => {
-    const cfg = effectiveLlm(s, role, req.llm, { globalOnly: req.globalOnly });
-    if (!cfg) throw new Error("No model configured — choose one in Settings.");
-    const out = await callLlm(cfg, ups, PROMPTS[role](lang), user);
-    models[role] = out.model;
-    return json(out.text);
-  };
-  const cs = canonState(s.store);
-  const active = cs.events.filter((e) => e.status === "active");
-  const optionList = options.map((o) => `- key "${o.key}": ${o.label}${o.text ? ` — ${one(o.text, 500)}` : ""}`).join("\n");
-  const question = subject.kind === "decision" ? `DECISION: ${subject.question}` : `PROMPT TO EVALUATE (what happens if an agent gets this on the current line?):`;
-  const root = s.project();
-  const goalLine = `MAIN GOAL: ${root?.goal ?? "(not set)"}`;
-
-  // 1. Archivist — past only.
-  const lc = lineContext(s, lineAt);
-  const lessons = lc.lessons.slice(-12).map((l) => `- ${l.node}: ${l.text}`).join("\n") || "(none)";
-  const a = await ask("archivist", `${question}\nOPTIONS:\n${optionList}\n\nPAST FIXED POINTS:\n${canonText(active, "past")}\n\nRULES:\n${s.rules().map((r) => `- ${r.id}: ${r.text}`).join("\n") || "(none)"}\n\nLESSONS:\n${lessons}\n\n--- DOSSIER ---\n${dossier(s, { maxTokens: 4000 }).text}`);
-  // 2. Craftsman — present only (the current line, compact).
-  // The present only: the capsule without future fixed points (those belong to the oracle).
-  const capsule = lineAt ? s.context(lineAt, { budget: 900 }).markdown.split("\n").filter((l) => !/^- k\d+ \(future/.test(l)).join("\n") : "(no history yet)";
-  const archNotes = (Array.isArray(a.options) ? a.options : []).map((x: any) => `- ${one(x?.key, 10)}: ${one(x?.past, 400)}`).join("\n");
-  const c = await ask("craftsman", `${goalLine}\n${question}\nOPTIONS:\n${optionList}\n\nWHAT THE PAST SAYS (archivist):\n${archNotes || "(nothing)"}\n\nCURRENT LINE:\n${capsule}`);
-  // 3. Oracle — future only.
-  const craftNotes = (Array.isArray(c.options) ? c.options : []).map((x: any) => `- ${one(x?.key, 10)}: ${one(x?.present, 300)} | steps: ${strs(x?.trajectory, 3, 120).join(" → ")} | would drop: ${strs(x?.loses, 4, 120).join("; ") || "-"}`).join("\n");
-  const o = await ask("oracle", `${goalLine}\n${question}\nOPTIONS:\n${optionList}\n\nFUTURE FIXED POINTS:\n${canonText(active, "future")}\nHARD PAST CONSTRAINTS:\n${active.filter((e) => e.kind === "past" && e.hard).map((e) => `- ${e.id}: ${e.text}`).join("\n") || "(none)"}\n\nARCHIVIST:\n${archNotes || "(nothing)"}\nCRAFTSMAN:\n${craftNotes || "(nothing)"}\n\nToday: ${new Date().toISOString().slice(0, 10)}`);
-
-  const known = new Set(active.map((e) => e.id));
-  const byKey = (arr: any, key: string) => (Array.isArray(arr) ? arr.find((x: any) => one(x?.key, 20) === key) : undefined);
+  // The multiverse: three roles correct the core — bounded, with reasons and evidence (core/oracle.ts).
+  const v = viewNow(s);
+  const gamma = oracleTrust(s).gamma;
+  const mv = await runMultiverse(s, v, subject, options.filter((o) => o.quick.explain).map((o) => ({ key: o.key, label: o.label, text: o.text, explain: o.quick.explain! })), { lang, llm: req.llm, globalOnly: req.globalOnly, gamma });
   for (const opt of options) {
-    const pa = byKey(a.options, opt.key);
-    const pr = byKey(c.options, opt.key);
-    const fu = byKey(o.options, opt.key);
-    if (!fu) {
-      warnings.push(`${opt.key}: ${lang === "de" ? "vom Orakel nicht bewertet" : "not assessed by the oracle"}`);
-      continue;
-    }
-    const conf = Number(fu.confidence);
+    const u = mv.options.find((x) => x.key === opt.key);
+    if (!u) continue;
     opt.universe = {
-      past: one(pa?.past, 600),
-      present: one(pr?.present, 600),
-      future: one(fu.future, 600),
-      trajectory: strs(pr?.trajectory, 4, 200),
-      loses: strs(pr?.loses, 5, 200),
-      context: pct(fu.context),
-      goal: pct(fu.goal),
-      canonRisks: strs(fu.canonRisks, 6, 10).filter((k) => known.has(k)),
-      risks: strs(fu.risks, 5, 240),
-      confidence: Number.isFinite(conf) ? Math.max(0, Math.min(1, conf)) : 0.5,
-      outcome: one(fu.outcome, 600),
+      past: u.past,
+      present: u.present,
+      future: u.outcome,
+      trajectory: u.trajectory,
+      context: u.predicted,
+      goal: opt.quick.goal ?? 0,
+      keeps: u.keeps,
+      loses: u.loses,
+      canonRisks: u.canonRisks,
+      risks: u.risks.map((r) => `${r.text}${r.refs.length ? ` (${r.refs.join(", ")})` : ""}`),
+      confidence: u.confidence,
+      outcome: u.outcome,
+      own: u.own,
+      ctx: u.ctx,
+      ownAfter: u.ownAfter,
+      ctxAfter: u.ctxAfter,
+      core: u.core,
+      capped: u.capped,
+      gamma: u.gamma,
+      pastRefs: u.pastRefs,
+      flagResolved: u.flagResolved,
     };
-    // Blend: the model's view weighted by its confidence, the deterministic layer as anchor.
-    const w = 0.4 + 0.4 * opt.universe.confidence;
-    const model = opt.universe.context * 0.7 + opt.universe.goal * 0.3;
-    let score = model * w + opt.quick.score * (1 - w);
-    if (opt.universe.canonRisks.some((k) => active.find((e) => e.id === k)?.hard)) score = Math.min(score, 40);
-    opt.score = clamp(score);
+    opt.score = u.predicted;
   }
-  const rec = o.recommendation && options.some((x) => x.key === one(o.recommendation.key, 20)) ? { key: one(o.recommendation.key, 20), why: one(o.recommendation.why, 600) } : undefined;
   const best = [...options].sort((x, y) => y.score - x.score)[0];
-  if (rec && best && rec.key !== best.key) warnings.push(lang === "de" ? `Das Orakel empfiehlt ${rec.key}, die Kontext-Prognose spricht für ${best.key}.` : `The oracle recommends ${rec.key}; the context forecast favours ${best.key}.`);
-  return save(s, { subject, createdAt: new Date().toISOString(), mode: "multiverse", trigger: req.trigger ?? "person", models, options, recommended: rec ?? (best ? { key: best.key, why: lang === "de" ? "höchste Kontext-Prognose" : "highest context forecast" } : undefined), warnings });
+  return save(s, { subject, createdAt: new Date().toISOString(), mode: "multiverse", oracle: ORACLE_VERSION, trigger: req.trigger ?? "person", models: mv.models, options, recommended: mv.recommended ?? (best ? { key: best.key, why: lang === "de" ? "höchste korrigierte Prognose" : "highest corrected forecast" } : undefined), warnings: mv.warnings });
 }
 
 // ------------------------------------------------------------------ evaluation

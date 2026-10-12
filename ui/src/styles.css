@@ -723,5 +723,22 @@ table.gate tr.current td:first-child { box-shadow: inset 4px 0 0 var(--marker-so
 .fc-why th { text-align: left; font-weight: 600; white-space: nowrap; }
 .fc-why td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .fc-formula { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; margin: 6px 0 2px; }
+.fc-oracle { border-top: 1px dashed var(--rule); margin-top: 6px; padding-top: 6px; }
+.fc-adj { margin: 4px 0; }
+.fc-adj-num { font-family: var(--mono); font-weight: 600; }
+.fc-adj.unbacked { opacity: 0.7; }
+.fc-adj.unbacked .fc-adj-num { text-decoration: line-through; color: var(--fail); }
+.audit-box { border-left: 3px solid var(--rule); padding: 4px 0 4px 10px; margin: 8px 0; }
+.audit-box.reliable { border-left-color: var(--pass); }
+.audit-box.caution { border-left-color: var(--warn); }
+.audit-box.unreliable { border-left-color: var(--fail); }
+.audit-checks { list-style: none; padding: 0; margin: 4px 0; }
+.audit-checks li { margin: 3px 0; overflow-wrap: anywhere; }
+.au-icon { display: inline-block; width: 1.2em; font-weight: 700; }
+.au-ok .au-icon { color: var(--pass); }
+.au-warn .au-icon { color: var(--warn); }
+.au-fail .au-icon { color: var(--fail); }
+.au-info .au-icon { color: var(--ink-3); }
+.audit-deep { margin-top: 6px; }
 .fc-cases td, .fc-cases th { font-variant-numeric: tabular-nums; }
 .qnote.q-good { border-color: var(--pass); }

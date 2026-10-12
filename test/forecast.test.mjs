@@ -45,7 +45,13 @@ const multiverseReplies = (body) => {
   const sys = roles(body);
   if (/ARCHIVIST of a multiverse/.test(sys)) return JSON.stringify({ options: [{ key: "a", past: "continues the quest backend (n3)", refs: ["n3"] }, { key: "b", past: "nothing in the history points to NFTs" }] });
   if (/CRAFTSMAN of a multiverse/.test(sys)) return JSON.stringify({ options: [{ key: "a", present: "extend quests", trajectory: ["quest UI", "streak reminder", "push"], loses: [] }, { key: "b", present: "new wallet integration", trajectory: ["wallet SDK", "smart contract"], loses: ["daily quest focus", "streak logic"] }] });
-  return JSON.stringify({ options: [{ key: "a", future: "retention up", outcome: "players return daily", context: 85, goal: 90, canonRisks: [], risks: ["notification fatigue"], confidence: 0.8 }, { key: "b", future: "scope creep", outcome: "quests stall", context: 25, goal: 20, canonRisks: ["k1"], risks: ["legal"], confidence: 0.7 }], recommendation: { key: "a", why: "keeps the daily-quest line" } });
+  return JSON.stringify({
+    options: [
+      { key: "a", outcome: "players return daily", ownAdjust: { delta: 10, why: "the reminder continues the streak counter of the daily quest backend", refs: ["n3"] }, ctxAdjust: { delta: 0 }, risks: [{ text: "notification fatigue", refs: [] }], canonRisks: [], confidence: 0.8 },
+      { key: "b", outcome: "quests stall", ownAdjust: { delta: -10, why: "tokens on a blockchain are excluded", refs: ["k1", "n99"] }, ctxAdjust: { delta: 15, why: "trust me" }, risks: [{ text: "legal", refs: ["k1"] }], canonRisks: ["k1"], confidence: 0.7 },
+    ],
+    recommendation: { key: "a", why: "keeps the daily-quest line" },
+  });
 };
 
 test("quick forecast: every option of a decision is predicted before a choice — no model needed", () => {
@@ -78,7 +84,7 @@ test("quick forecast warns with earlier lessons and shows how an explored option
   assert.ok(good.score > bad.score);
 });
 
-test("multiverse: archivist (past), craftsman (present), oracle (future) — isolated context, one universe per option", async () => {
+test("multiverse: archivist (past), craftsman (present), oracle (future) — isolated context; the oracle only corrects the core, traceably", async () => {
   const { s } = project();
   s.addCanonAsUser({ kind: "past", text: "No blockchain or crypto features (legal)" }, { user: "kev", via: "cli" });
   const d = s.decide({ question: "Next feature?", options: [{ label: "Streak reminder", description: "push before a streak resets" }, { label: "NFT skins", description: "sell skins as tokens" }] });
@@ -87,17 +93,35 @@ test("multiverse: archivist (past), craftsman (present), oracle (future) — iso
     const f = await forecast(s, { node: d.id, llm: { provider: "fake", model: "m", baseUrl: llm.base } });
     assert.equal(llm.seen.length, 3);
     const [arch, craft, oracle] = llm.seen.map((x) => x.body.messages[1].content);
-    assert.match(arch, /--- DOSSIER ---/, "the archivist reads the past");
-    assert.doesNotMatch(craft, /--- DOSSIER ---/);
-    assert.match(craft, /CURRENT LINE/, "the craftsman works on the current line");
-    assert.doesNotMatch(oracle, /CURRENT LINE|--- DOSSIER ---/, "the oracle only sees goal, future and the two findings");
+    assert.match(arch, /--- PAST ---/, "the archivist reads the past");
+    assert.doesNotMatch(arch, /CURRENT LINE|CORE/);
+    assert.doesNotMatch(craft, /--- PAST ---/);
+    assert.match(craft, /--- CURRENT LINE ---/, "the craftsman works on the current line");
+    assert.doesNotMatch(oracle, /--- CURRENT LINE ---|--- PAST ---/, "the oracle sees goal, future, the core and the two findings");
     assert.match(oracle, /MAIN GOAL: Gamer app/);
+    assert.match(oracle, /CORE \(word-based/);
+    assert.equal(f.oracle, 2);
     const a = f.options.find((o) => o.key === "a");
     const b = f.options.find((o) => o.key === "b");
     assert.ok(a.universe && b.universe);
     assert.deepEqual(b.universe.loses, ["daily quest focus", "streak logic"]);
-    assert.ok(a.score > 70 && b.score <= 40, `${a.score} / ${b.score} (hard canon risk caps at 40)`);
+    // a: backed correction, applied = Δ·confidence·γ (γ = 1 without history)
+    assert.equal(a.universe.own.backed, true);
+    assert.equal(a.universe.own.applied, 8);
+    assert.equal(a.universe.ownAfter, Math.min(100, a.quick.explain.own.score + 8));
+    assert.equal(a.universe.core, a.quick.score);
+    // the final number = the core formula with the corrected parts (traceable)
+    const e = a.quick.explain;
+    const P = Math.round(e.line + e.alpha * (a.universe.ownAfter - e.line) + e.beta * (a.universe.ctxAfter - e.line) - e.risk.lessons - e.risk.canon);
+    assert.equal(a.score, Math.max(0, Math.min(100, P)));
+    // b: an invented evidence id is dropped, a reason without evidence counts 0, a hard fixed point caps at 40
+    assert.deepEqual(b.universe.own.refs, ["k1"]);
+    assert.deepEqual(b.universe.own.dropped, ["n99"]);
+    assert.equal(b.universe.ctx.backed, false);
+    assert.equal(b.universe.ctx.applied, 0);
+    assert.ok(b.score <= 40, `hard canon risk caps at 40: ${b.score}`);
     assert.deepEqual(b.universe.canonRisks, ["k1"]);
+    assert.ok(f.warnings.some((w) => /ohne Grund oder gültige Belege/.test(w)), JSON.stringify(f.warnings));
     assert.equal(f.recommended.key, "a");
     assert.equal(s.node(d.id).chosen, undefined, "a forecast never chooses");
     assert.equal(listForecasts(s)[0].id, f.id);
@@ -112,7 +136,7 @@ test("multiverse for a prompt with variants: which wording keeps the context", a
     const sys = roles(body);
     if (/ARCHIVIST/.test(sys)) return JSON.stringify({ options: [{ key: "p", past: "-" }, { key: "v1", past: "-" }] });
     if (/CRAFTSMAN/.test(sys)) return JSON.stringify({ options: [{ key: "p", present: "agent guesses", trajectory: ["rewrite everything"], loses: ["streak logic"] }, { key: "v1", present: "agent continues n3", trajectory: ["add reminder"], loses: [] }] });
-    return JSON.stringify({ options: [{ key: "p", outcome: "drifts", context: 30, goal: 40, confidence: 0.6 }, { key: "v1", outcome: "stays on track", context: 88, goal: 85, confidence: 0.7 }], recommendation: { key: "v1", why: "references the line" } });
+    return JSON.stringify({ options: [{ key: "p", outcome: "drifts", ownAdjust: { delta: -5, why: "make better is not tied to the daily quest backend", refs: ["n3"] }, confidence: 0.6 }, { key: "v1", outcome: "stays on track", ctxAdjust: { delta: 5, why: "continues the daily quest backend n3", refs: ["n3"] }, confidence: 0.7 }], recommendation: { key: "v1", why: "references the line" } });
   });
   try {
     const f = await forecast(s, { prompt: "make the app better", variants: ["Continue n3: add the streak reminder for daily quests"], llm: { provider: "fake", model: "m", baseUrl: llm.base } });
@@ -195,7 +219,8 @@ test("chat: the multiverse is a chat tool", async () => {
     if (!body.tools) return res.end(JSON.stringify({ model: "m", choices: [{ message: { content: multiverseReplies(body) } }] }));
     const last = body.messages[body.messages.length - 1];
     if (last.role === "tool") return res.end(JSON.stringify({ model: "m", choices: [{ message: { content: "Option a keeps the context." } }] }));
-    res.end(JSON.stringify({ model: "m", choices: [{ message: { content: "", tool_calls: [{ id: "x", type: "function", function: { name: "scenaria_multiverse", arguments: JSON.stringify({ node: d.id }) } }] } }] }));
+    const call = /AUDIT/.test(JSON.stringify(body.messages)) ? { name: "scenaria_audit_forecast", arguments: JSON.stringify({ id: "f1" }) } : { name: "scenaria_multiverse", arguments: JSON.stringify({ node: d.id }) };
+    res.end(JSON.stringify({ model: "m", choices: [{ message: { content: "", tool_calls: [{ id: "x", type: "function", function: call }] } }] }));
   });
   await new Promise((r) => tc.listen(0, "127.0.0.1", r));
   try {
@@ -203,7 +228,14 @@ test("chat: the multiverse is a chat tool", async () => {
     const tool = r.messages.find((m) => m.role === "tool");
     assert.match(tool.content, /Forecast f1 \(multiverse\)/);
     assert.match(tool.content, /Recommended: a/);
+    assert.match(tool.content, /core \d+% → with oracle \d+%/, "the corrections are visible to the chat model");
+    assert.match(tool.content, /Prüf-Experte f1: /, "with the auditor's verdict");
     assert.equal(r.messages[r.messages.length - 1].content, "Option a keeps the context.");
+    // the auditor is a chat tool too
+    const r2 = await chat(s, { sessionId: "au", messages: [{ role: "user", content: "AUDIT f1" }], lang: "en", llm: { provider: "fake", model: "m", baseUrl: `http://127.0.0.1:${tc.address().port}/v1` } });
+    const t2 = r2.messages.find((m) => m.role === "tool");
+    assert.equal(t2.toolName, "scenaria_audit_forecast");
+    assert.match(t2.content, /Auditor f1: (reliable|with caution|not reliable)/);
   } finally {
     tc.close();
   }

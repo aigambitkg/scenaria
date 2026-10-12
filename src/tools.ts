@@ -17,6 +17,7 @@ import { renderCanon } from "./core/canon.js";
 import { baselineReport, listReports } from "./core/expert.js";
 import { listForecasts, quickDecision, quickSummary, snapshotQuick } from "./core/forecast.js";
 import { explainText, forecastQuality } from "./core/predict.js";
+import { auditForecast, auditText } from "./core/auditor.js";
 import type { ScenariaNode, Source } from "./core/types.js";
 
 export interface ToolContext {
@@ -395,7 +396,7 @@ export const TOOLS: ToolDef[] = [
     name: "scenaria_forecast",
     title: "Forecast a decision",
     description:
-      "Before choosing an option: how each option of a decision is predicted to keep the context and the main goal (0-100), with warnings from earlier lessons and — if a multiverse forecast exists — the archivist/craftsman/oracle view and the recommendation. Deterministic part needs no model. The person chooses; use it to inform your rationale.",
+      "Before choosing an option: how each option of a decision is predicted to keep the context and the main goal (0-100), with warnings from earlier lessons and — if a multiverse forecast exists — the oracle's evidence-backed corrections of the core, the recommendation and the Prüf-Experte's verdict (reliable / with caution / not reliable). Deterministic part needs no model. The person chooses; use it to inform your rationale.",
     input: { id: str.describe("Decision node id, e.g. n12") },
     annotations: { readOnlyHint: true },
     run(s, a) {
@@ -403,12 +404,13 @@ export const TOOLS: ToolDef[] = [
       const mv = listForecasts(s).find((f) => f.verified && f.mode === "multiverse" && f.subject.kind === "decision" && f.subject.node === a.id);
       const lines = quick.map((o) => {
         const u = mv?.options.find((x) => x.key === o.key);
-        return `- ${o.key} ${o.label}: context ${u ? u.score : o.score}%${o.quick.explain ? ` ±${o.quick.explain.band}` : ""}${o.quick.goal !== null ? `, goal ${u?.universe?.goal ?? o.quick.goal}%` : ""}${o.quick.signal === "low" ? " (too little text to judge)" : ""}${o.quick.explored ? `, explored → measured ${o.quick.explored.measured}%` : ""}${o.quick.warnings.length ? ` · lessons: ${o.quick.warnings.join("; ")}` : ""}${o.quick.canonHints.length ? ` · fixed points at stake (oracle to judge): ${o.quick.canonHints.join("; ")}` : ""}${u?.universe ? ` · oracle: ${u.universe.outcome}${u.universe.loses.length ? ` · would drop: ${u.universe.loses.join("; ")}` : ""}` : ""}`;
+        return `- ${o.key} ${o.label}: context ${u ? u.score : o.score}%${o.quick.explain ? ` ±${o.quick.explain.band}` : ""}${o.quick.goal !== null ? `, goal ${u?.universe?.goal ?? o.quick.goal}%` : ""}${o.quick.signal === "low" ? " (too little text to judge)" : ""}${o.quick.explored ? `, explored → measured ${o.quick.explored.measured}%` : ""}${o.quick.warnings.length ? ` · lessons: ${o.quick.warnings.join("; ")}` : ""}${o.quick.canonHints.length ? ` · fixed points at stake (oracle to judge): ${o.quick.canonHints.join("; ")}` : ""}${u?.universe ? ` · core ${u.universe.core ?? o.score}% → oracle ${u.score}%${u.universe.capped ? " (capped: hard fixed point at risk)" : ""}${[u.universe.own, u.universe.ctx].filter((x) => x && x.proposed).map((x) => ` [${x!.backed ? `${x!.applied > 0 ? "+" : ""}${x!.applied}: ${x!.why} (${x!.refs.join(", ")})` : "unbacked correction, not counted"}]`).join("")} · ${u.universe.outcome}${u.universe.loses.length ? ` · would drop: ${u.universe.loses.join("; ")}` : ""}` : ""}`;
       });
       lines.push(`Summary: ${quickSummary(quick)}`);
       const q = forecastQuality(s);
       lines.push(`How these numbers are made: ${quick[0]?.quick.explain ? explainText(quick[0].quick.explain).split("\n")[0].replace(/ = \d+ ±.*/, "") : "fidelity formula"} (per option). Quality on this project: ${q.n} past cases, mean error ${q.mae ?? "–"} vs ${q.maeBaseline ?? "–"} for naive persistence${q.enough ? "" : " — too little data to trust the numbers yet"}.`);
       const rec = mv?.recommended ? `\nRecommended (${mv.id}): ${mv.recommended.key} — ${mv.recommended.why}` : mv ? "" : "\n(no multiverse forecast yet — the person can start one in the dashboard)";
+      if (mv) lines.push(auditText(auditForecast(s, mv, "en"), "en"));
       return { text: `Forecast for ${a.id}:\n${lines.join("\n")}${rec}`, data: { quick, multiverse: mv ?? null } };
     },
   },

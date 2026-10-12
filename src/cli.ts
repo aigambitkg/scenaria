@@ -86,6 +86,10 @@ Prompts, analysis & rules
   analyst [<report id>] [--scope project|line|all] [--head <node>] [--no-model] [--adopt <index>] [--out-file report.md]
                                         Expert analysis to optimise with (list · run · show a report · adopt a recommendation as rule)
   forecast --quality | --benchmark        Forecast quality: backtest against reality / test bench
+  forecast --audit <f3> [--deep]          Prüf-Experte: checklist of a forecast; --deep: the skeptic checks
+                                        each oracle claim against its evidence (uses your model)
+  forecast --oracle-backtest [--limit 5]  Does the oracle improve forecasts? Past decisions again, as of
+                                        their own time, with and without the oracle (uses your model)
   forecast [<decision> | --prompt "<text>" [--options "variant A|variant B"]] [--quick]
                                         Multiverse forecast: does each option / prompt keep the context? (no args: list + hit rate)
                                         Health check; with --llm: pattern analysis by ANY LLM (Ollama, OpenAI, Anthropic, …)
@@ -175,6 +179,9 @@ const opts = {
   quick: { type: "boolean" },
   benchmark: { type: "boolean" },
   quality: { type: "boolean" },
+  audit: { type: "string" },
+  deep: { type: "boolean" },
+  "oracle-backtest": { type: "boolean" },
   scope: { type: "string" },
   head: { type: "string" },
   "no-model": { type: "boolean" },
@@ -550,6 +557,43 @@ async function main() {
         ];
         return out(human.join("\n"), q);
       }
+      if (v.audit || v["oracle-backtest"]) {
+        const A = await import("./core/auditor.js");
+        const lang = de ? "de" : "en";
+        const needTty = () => {
+          if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("This uses your model settings and keys: it needs an interactive terminal (a person). The checklist alone: scenaria forecast --audit <id>.");
+        };
+        const llm = v.llm ? { provider: v.llm, model: v.model, baseUrl: v["base-url"] } : undefined;
+        if (v["oracle-backtest"]) {
+          needTty();
+          process.stderr.write(`${C.dim}${de ? "Orakel-Backtest: 3 Modellaufrufe je Entscheidung …" : "Oracle backtest: 3 model calls per decision …"}${C.reset}\n`);
+          const r = await A.oracleBacktest(s, { limit: v.limit ? Number(v.limit) : 5, lang, llm });
+          const q = A.oracleQuality(s);
+          const human = [
+            `${C.bold}${de ? "Orakel-Backtest" : "Oracle backtest"} ${r.id}${C.reset} (${r.cases.length} ${de ? "Optionen" : "options"})`,
+            ...r.cases.map((c) => `  ${c.decision} ${c.label.slice(0, 40)}: ${de ? "Kern" : "core"} ${c.core} · ${de ? "mit Orakel" : "with oracle"} ${c.oracle} · ${de ? "real" : "actual"} ${c.actual}`),
+            `${de ? "Fehler Ø gesamt" : "mean error overall"}: ${de ? "Kern" : "core"} ${q.backtest.maeCore ?? "–"} · ${de ? "mit Orakel" : "with oracle"} ${q.backtest.maeOracle ?? "–"} · γ ${q.gamma} (${q.gammaN})`,
+          ];
+          return out(human.join("\n"), { run: r, quality: q });
+        }
+        const f = (await import("./core/forecast.js")).listForecasts(s).find((x) => x.id === v.audit);
+        if (!f) throw new Error(`Unknown forecast ${v.audit}`);
+        if (v.deep) {
+          needTty();
+          process.stderr.write(`${C.dim}${de ? "Prüf-Experte prüft die Aussagen des Orakels …" : "The auditor checks the oracle's claims …"}${C.reset}\n`);
+          await A.deepAudit(s, f.id, { lang, llm });
+        }
+        const a = A.auditForecast(s, f, lang);
+        const icon = { ok: `${C.green}✔${C.reset}`, warn: `${C.yellow}!${C.reset}`, fail: `${C.red}✘${C.reset}`, info: `${C.dim}·${C.reset}` };
+        const verdict = { reliable: de ? "belastbar" : "reliable", caution: de ? "mit Vorsicht" : "with caution", unreliable: de ? "nicht belastbar" : "not reliable" }[a.verdict];
+        const deep = a.deep[0];
+        const human = [
+          `${C.bold}${de ? "Prüf-Experte" : "Auditor"} ${f.id}: ${verdict}${C.reset}`,
+          ...a.checks.map((c) => `  ${icon[c.status]} ${c.text}`),
+          ...(deep ? [`${de ? "KI-Prüfung" : "AI check"} ${deep.id}${deep.verified ? "" : " (unsigned!)"}: ${deep.verdicts.filter((x) => x.verdict === "supported").length}/${deep.verdicts.length} ${de ? "Aussagen belegt" : "claims supported"}`, ...deep.verdicts.map((x) => `  ${x.verdict === "supported" ? icon.ok : x.verdict === "contradicted" ? icon.fail : icon.warn} ${x.claim}: ${x.reason}`), `  ${de ? "geprüfte Prognose" : "audited forecast"}: ${Object.entries(deep.audited).map(([k, n]) => `${k} ${n}`).join(" · ")}`] : []),
+        ];
+        return out(human.join("\n"), a);
+      }
       if (v.benchmark) {
         const b = await P.benchmark(P.calibrationFor(s));
         const human = [
@@ -578,8 +622,16 @@ async function main() {
       if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("The multiverse forecast needs an interactive terminal (it uses your model settings and keys). Use --quick for the forecast without a model.");
       process.stderr.write(`${C.dim}Archivist → craftsman → oracle …${C.reset}\n`);
       const f = await forecast(s, { node: p[0], prompt: v.prompt ? String(v.prompt) : undefined, variants: v.options ? String(v.options).split("|").map((x) => x.trim()).filter(Boolean) : undefined, lang: v.lang === "en" ? "en" : "de", llm: v.llm ? { provider: v.llm, model: v.model, baseUrl: v["base-url"] } : undefined });
-      const lines = f.options.map((o) => `${C.bold}${o.key} ${o.label}${C.reset}: context ${o.score}%${o.universe ? `, goal ${o.universe.goal}%, confidence ${Math.round(o.universe.confidence * 100)}%\n   past: ${o.universe.past}\n   present: ${o.universe.trajectory.join(" → ")}${o.universe.loses.length ? `\n   would drop: ${o.universe.loses.join("; ")}` : ""}\n   future: ${o.universe.outcome}` : ""}`);
-      return out([`Forecast ${f.id}`, ...lines, f.recommended ? `→ ${f.recommended.key}: ${f.recommended.why}` : "", ...f.warnings.map((w) => `${C.yellow}! ${w}${C.reset}`)].filter(Boolean).join("\n"), f);
+      const adj = (name: string, a?: { proposed: number; applied: number; why: string; refs: string[]; backed: boolean }) =>
+        a && a.proposed ? `\n   ${name} ${a.proposed > 0 ? "+" : ""}${a.proposed} → ${a.backed ? `${a.applied > 0 ? "+" : ""}${a.applied}` : de ? "nicht gewertet (ohne Beleg)" : "not counted (no evidence)"}: ${a.why}${a.refs.length ? ` [${a.refs.join(", ")}]` : ""}` : "";
+      const lines = f.options.map((o) => {
+        const u = o.universe;
+        if (!u) return `${C.bold}${o.key} ${o.label}${C.reset}: ${o.score}%`;
+        return `${C.bold}${o.key} ${o.label}${C.reset}: ${de ? "Kern" : "core"} ${u.core ?? o.quick.score}% → ${de ? "mit Orakel" : "with oracle"} ${o.score}%${u.capped ? ` (${de ? "gedeckelt: harter Fixpunkt" : "capped: hard fixed point"} ${u.canonRisks.join(", ")})` : ""} · ${de ? "Sicherheit" : "confidence"} ${Math.round(u.confidence * 100)}% · γ ${u.gamma ?? 1}${adj(de ? "eigene Worte" : "own words", u.own)}${adj(de ? "im Kontext" : "in context", u.ctx)}\n   ${de ? "Vergangenheit" : "past"}: ${u.past}\n   ${de ? "Gegenwart" : "present"}: ${u.trajectory.join(" → ")}${u.loses.length ? `\n   ${de ? "würde verlieren" : "would drop"}: ${u.loses.join("; ")}` : ""}\n   ${de ? "Zukunft" : "future"}: ${u.outcome}`;
+      });
+      const audit = (await import("./core/auditor.js")).auditForecast(s, f, de ? "de" : "en");
+      const verdict = { reliable: de ? "belastbar" : "reliable", caution: de ? "mit Vorsicht" : "with caution", unreliable: de ? "nicht belastbar" : "not reliable" }[audit.verdict];
+      return out([`Forecast ${f.id}`, ...lines, f.recommended ? `→ ${f.recommended.key}: ${f.recommended.why}` : "", ...f.warnings.map((w) => `${C.yellow}! ${w}${C.reset}`), `${de ? "Prüf-Experte" : "Auditor"}: ${verdict}  ${C.dim}(scenaria forecast --audit ${f.id} [--deep])${C.reset}`].filter(Boolean).join("\n"), f);
     }
     case "relay": {
       const s = Scenaria.open(v.root);

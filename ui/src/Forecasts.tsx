@@ -5,13 +5,16 @@ import { HelpButton } from "./HelpButton";
  * (archivist = past, craftsman = present, oracle = future) on request or automatically.
  */
 import { useEffect, useMemo, useState } from "react";
-import { api, type Explain, type Forecast, type ForecastOption, type ForecastQuality, type BenchSummary, type ForecastsPage, type QuickForecast, type ScenariaNode } from "./api";
+import { api, type Audit, type Explain, type Forecast, type ForecastOption, type ForecastQuality, type BenchSummary, type ForecastsPage, type OracleAdjust, type OracleBacktestRun, type OracleQuality, type QuickForecast, type ScenariaNode } from "./api";
 import { Modal } from "./Dialogs";
 import { NodeId } from "./Map";
 import type { Dict } from "./i18n";
 import type { SessionKeys } from "./Control";
 
 const errText = (e: any) => String(e?.message ?? e);
+type Universe = NonNullable<ForecastOption["universe"]>;
+type LlmFn = () => { apiKey: string; keyFor: string } | undefined;
+const signed = (n: number) => `${n > 0 ? "+" : ""}${n}`;
 const tone = (n: number) => (n >= 70 ? "good" : n >= 45 ? "mid" : "low");
 
 /** One horizontal bar: predicted context retention. */
@@ -30,7 +33,7 @@ export function ScoreBar({ value, label, measured, band }: { value: number; labe
 }
 
 /** "Why this number?" — every part of the forecast (model v2), so it can be retraced by hand. */
-export function Derivation({ t, e }: { t: Dict; e: Explain }) {
+export function Derivation({ t, e, u }: { t: Dict; e: Explain; u?: Universe }) {
   const pc = (x: number | null) => (x === null ? "–" : `${Math.round(x * 100)} %`);
   const risk = e.risk.lessons + e.risk.canon;
   const goalWord = e.goalKind === "task" ? t.fcTaskGoal : t.fcGoal;
@@ -76,10 +79,144 @@ export function Derivation({ t, e }: { t: Dict; e: Explain }) {
       <p className="fc-formula">
         P = L + α·({t.fcOwnShort} − L) + β·({t.fcCtxShort} − L) − {t.fcRiskShort} = {e.line} + {e.alpha}·({e.own.score} − {e.line}) + {e.beta}·({e.inContext.score} − {e.line}) − {risk} = <strong>{e.predicted}</strong> ± {e.band}
       </p>
+      {u?.own && u.ctx && u.ownAfter !== undefined && u.ctxAfter !== undefined && (
+        <div className="fc-oracle">
+          <OracleRow t={t} name={t.fcOracleOwn} a={u.own} conf={u.confidence} gamma={u.gamma ?? 1} />
+          <OracleRow t={t} name={t.fcOracleCtx} a={u.ctx} conf={u.confidence} gamma={u.gamma ?? 1} />
+          <p className="fc-formula">
+            {t.fcFormulaOracle} {e.line} + {e.alpha}·({u.ownAfter} − {e.line}) + {e.beta}·({u.ctxAfter} − {e.line}) − {risk} = <strong>{u.capped ? Math.round(e.line + e.alpha * (u.ownAfter - e.line) + e.beta * (u.ctxAfter - e.line) - risk) : u.context}</strong>
+            {u.capped ? <> → <strong>{u.context}</strong></> : null}
+          </p>
+          {u.capped && <p className="qnote q-warn">⚑ {t.fcCapped(u.canonRisks.join(", "))}</p>}
+          {u.flagResolved && <p className="qnote q-good">{t.fcFlagResolved}</p>}
+        </div>
+      )}
       <p className="muted small">
         {e.calibrated ? t.fcLearned(e.learnedFrom) : t.fcNotCalibrated(e.learnedFrom)}
         {e.breakRisk ? ` · ⚠ ${t.fcBreakRisk}` : ""}
       </p>
+    </div>
+  );
+}
+
+/** One oracle correction: what was proposed, what counts and why — with its evidence. */
+function OracleRow({ t, name, a, conf, gamma }: { t: Dict; name: string; a: OracleAdjust; conf: number; gamma: number }) {
+  if (!a.proposed) return null;
+  return (
+    <div className={`fc-adj ${a.backed ? "" : "unbacked"}`}>
+      <strong>{name}</strong> <span className="fc-adj-num">{a.backed ? signed(a.applied) : "0"}</span>
+      <span className="muted small"> · {a.backed ? t.fcOracleApplied(a.proposed, Math.round(conf * 100) / 100, gamma, a.applied) : `${signed(a.proposed)} → ${t.fcUnbacked}`}</span>
+      {a.why && <div className="small">„{a.why}“</div>}
+      {a.refs.length > 0 && (
+        <div className="fchips">
+          {a.refs.map((r) => (
+            <span key={r} className="chip">
+              {r}
+            </span>
+          ))}
+        </div>
+      )}
+      {a.dropped.length > 0 && <div className="muted small">✘ {t.fcDropped(a.dropped.join(", "))}</div>}
+    </div>
+  );
+}
+
+const VERDICT_CLASS: Record<string, string> = { reliable: "v-passed", caution: "v-warning", unreliable: "v-failed" };
+const CHECK_ICON: Record<string, string> = { ok: "✔", warn: "!", fail: "✘", info: "·" };
+
+/** The Prüf-Experte of one forecast: verdict, checklist and the AI check of the oracle's claims. */
+export function AuditBox(props: { t: Dict; id: string; mode?: Forecast["mode"]; approval?: boolean; llm?: LlmFn; compact?: boolean; version?: string }) {
+  const { t } = props;
+  const lang = t.langCode;
+  const [a, setA] = useState<Audit | null>(null);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api
+      .audit(props.id, lang)
+      .then((x) => alive && setA(x))
+      .catch((e) => alive && setErr(errText(e)));
+    return () => {
+      alive = false;
+    };
+  }, [props.id, lang, props.version]);
+  if (!a) return err ? <p className="error small">{err}</p> : null;
+  const deep = a.deep[0];
+  const head = (
+    <span className={`chip ${VERDICT_CLASS[a.verdict]}`} title={a.checks.map((c) => `${CHECK_ICON[c.status]} ${c.text}`).join("\n")}>
+      {t.auTitle}: {t.auVerdict[a.verdict]}
+    </span>
+  );
+  if (props.compact) return head;
+  return (
+    <div className={`audit-box ${a.verdict}`}>
+      <div className="row">
+        {head}
+        {deep && <span className={`chip ${deep.verified ? "" : "v-failed"}`}>{deep.verified ? t.auDeepResult(deep.verdicts.filter((x) => x.verdict === "supported").length, deep.verdicts.length) : t.auUnsigned}</span>}
+        <button className="btn link" aria-expanded={open} onClick={() => setOpen(!open)}>
+          {open ? t.auHide : t.auShow}
+        </button>
+      </div>
+      {open && (
+        <>
+          <p className="muted small">{t.auHint}</p>
+          <ul className="audit-checks">
+            {a.checks.map((c, i) => (
+              <li key={i} className={`au-${c.status}`}>
+                <span className="au-icon">{CHECK_ICON[c.status]}</span> {c.text}
+              </li>
+            ))}
+          </ul>
+          {deep?.verified && (
+            <div className="audit-deep">
+              <p className="small">
+                <strong>{t.auDeep}</strong> <span className="muted">({deep.model ?? "–"}, {new Date(deep.createdAt).toLocaleString()})</span>
+              </p>
+              <ul className="audit-checks">
+                {deep.verdicts.map((v) => (
+                  <li key={v.claim} className={v.verdict === "supported" ? "au-ok" : v.verdict === "contradicted" ? "au-fail" : "au-warn"}>
+                    <span className="au-icon">{v.verdict === "supported" ? "✔" : v.verdict === "contradicted" ? "✘" : "!"}</span> <strong>{v.claim}</strong> {t.auClaim[v.verdict]}
+                    {v.refs.length ? <span className="muted small"> [{v.refs.join(", ")}]</span> : null}
+                    {v.reason && <div className="muted small">{v.reason}</div>}
+                  </li>
+                ))}
+              </ul>
+              <p className="small">
+                {t.auAudited}:{" "}
+                {Object.entries(deep.audited)
+                  .map(([k, n]) => `${k} ${n}%`)
+                  .join(" · ")}
+              </p>
+            </div>
+          )}
+          {props.mode === "multiverse" && (
+            <div className="row">
+              <button
+                className="btn"
+                disabled={!props.approval || busy}
+                title={t.auDeepHint}
+                onClick={async () => {
+                  setBusy(true);
+                  setErr(null);
+                  try {
+                    setA(await api.deepAudit(props.id, lang, props.llm?.()));
+                  } catch (e) {
+                    setErr(errText(e));
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                {busy ? "…" : t.auDeep}
+              </button>
+              <span className="muted small">{t.auDeepHint}</span>
+            </div>
+          )}
+          {err && <p className="error small">{err}</p>}
+        </>
+      )}
     </div>
   );
 }
@@ -143,6 +280,11 @@ export function OptionForecasts(props: { t: Dict; options: ForecastOption[]; rec
             </div>
             <ScoreBar value={o.score} label={t.fcContextKept} measured={act?.measured} band={!u ? o.quick.explain?.band : undefined} />
             <div className="fopt-meta">
+              {u && u.core !== undefined && (
+                <span className={`chip ${u.capped ? "v-warning" : ""}`} title={u.capped ? t.fcCapped(u.canonRisks.join(", ")) : undefined}>
+                  {t.fcCore} {u.core}% → {t.fcWithOracle} {o.score}%
+                </span>
+              )}
               <QuickChips t={t} q={o.quick} goal={u?.goal} />
               {act && (
                 <span className={`chip ${act.error <= 15 ? "v-passed" : "v-warning"}`} title={t.fcActualHint}>
@@ -160,7 +302,7 @@ export function OptionForecasts(props: { t: Dict; options: ForecastOption[]; rec
                 </button>
               )}
             </div>
-            {o.quick.explain && why[o.key] && <Derivation t={t} e={o.quick.explain} />}
+            {o.quick.explain && why[o.key] && <Derivation t={t} e={o.quick.explain} u={u} />}
             {u && isOpen(o.key) && (
               <div className="universe">
                 <div>
@@ -186,6 +328,7 @@ export function OptionForecasts(props: { t: Dict; options: ForecastOption[]; rec
                   <h5>{t.fcFuture}</h5>
                   <p>{u.outcome || u.future || "—"}</p>
                   {u.risks.length > 0 && <p className="muted small">⚠ {u.risks.join(" · ")}</p>}
+                  {(u.pastRefs?.length ?? 0) > 0 && <p className="muted small">↩ {u.pastRefs!.join(", ")}</p>}
                   {u.canonRisks.length > 0 && <p className="small">⚑ {t.fcCanonRisk}: {u.canonRisks.join(", ")}</p>}
                   <p className="muted small">
                     {t.fcGoal} {u.goal}% · {t.fcConfidence} {Math.round(u.confidence * 100)}%
@@ -238,6 +381,7 @@ export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessi
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [tab, setTab] = useState<"open" | "prompt" | "history" | "quality">("open");
+  const [auditOpen, setAuditOpen] = useState<string | null>(null);
   const { approval, provider } = useApproval();
   const llm = () => (provider && props.keys[provider] ? { apiKey: props.keys[provider], keyFor: provider } : undefined);
 
@@ -399,6 +543,7 @@ export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessi
                       {w}
                     </p>
                   ))}
+                  {mv && <AuditBox t={t} id={mv.id} mode={mv.mode} approval={approval} llm={llm} version={String(page?.calibration.evaluated)} />}
                   <div className="row">
                     <button className="btn primary" disabled={!approval || Boolean(busy)} onClick={() => runMultiverse(d.id)} title={t.fcMultiverseHint}>
                       {busy === d.id ? t.running : mv ? t.fcRerun : t.fcRunMultiverse}
@@ -412,7 +557,7 @@ export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessi
 
         {tab === "prompt" && <PromptCheck t={t} lang={props.lang} approval={approval} llm={llm} toast={props.toast} onDone={load} />}
 
-        {tab === "quality" && <QualityPanel t={t} approval={approval} live={c} />}
+        {tab === "quality" && <QualityPanel t={t} approval={approval} live={c} llm={llm} />}
         {tab === "history" && (
           <section className="a-sec">
             {!page?.forecasts.length && <p className="muted">{t.fcNoHistory}</p>}
@@ -434,7 +579,13 @@ export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessi
                   {f.recommended && <span className="muted small"> → {f.recommended.key}</span>}
                   {f.actual?.length ? <span className="muted small"> · {f.actual.map((a) => `${a.option}: ${t.fcPredicted} ${a.predicted}% / ${t.fcActual} ${a.measured}%`).join(", ")}</span> : null}
                   {f.actualLine && !f.actual?.length ? <span className="muted small"> · {t.fcLineAfter} {f.actualLine.measured}%</span> : null}
-                  <span className="muted small"> · {new Date(f.createdAt).toLocaleString()}</span>
+                  <span className="muted small"> · {new Date(f.createdAt).toLocaleString()}</span>{" "}
+                  {f.verified && (
+                    <button className="btn link inline" aria-expanded={auditOpen === f.id} onClick={() => setAuditOpen(auditOpen === f.id ? null : f.id)}>
+                      {t.fcAudit}
+                    </button>
+                  )}
+                  {auditOpen === f.id && <AuditBox t={t} id={f.id} mode={f.mode} approval={approval} llm={llm} />}
                 </li>
               ))}
             </ul>
@@ -543,6 +694,12 @@ function PromptCheck(props: { t: Dict; lang: "de" | "en"; approval: boolean; llm
         <>
           <OptionForecasts t={t} options={result.options} recommended={result.recommended?.key} actual={result.actual} />
           {result.recommended && <p className="small">★ {result.recommended.why}</p>}
+          {result.warnings.map((w, i) => (
+            <p key={i} className="qnote q-warn">
+              {w}
+            </p>
+          ))}
+          {result.id && <AuditBox t={t} id={result.id} mode={result.mode} approval={props.approval} llm={props.llm} />}
           {result.id && <div className="row">
             <span className="muted small">{t.fcMarkUsedHint}</span>
             {result.options.map((o) => (
@@ -604,6 +761,7 @@ export function DecisionForecast(props: { t: Dict; node: ScenariaNode; graphVers
       <div className="compact-universe">
         <OptionForecasts t={t} options={options} recommended={mv?.recommended?.key} actual={mv?.actual} compact />
       </div>
+      {mv && <AuditBox t={t} id={mv.id} compact version={String(props.graphVersion ?? "")} />}
       <button className="btn link" onClick={props.onOpen}>
         {t.fcOpen}
       </button>
@@ -612,7 +770,7 @@ export function DecisionForecast(props: { t: Dict; node: ScenariaNode; graphVers
 }
 
 /** Forecast quality: the backtest (every past decision forecast as of its own time) and the test bench. */
-export function QualityPanel({ t, approval, live }: { t: Dict; approval: boolean; live?: ForecastsPage["calibration"] }) {
+export function QualityPanel({ t, approval, live, llm }: { t: Dict; approval: boolean; live?: ForecastsPage["calibration"]; llm?: LlmFn }) {
   const [q, setQ] = useState<ForecastQuality | null>(null);
   const [bench, setBench] = useState<BenchSummary | null>(null);
   const [busy, setBusy] = useState(false);
@@ -713,6 +871,7 @@ export function QualityPanel({ t, approval, live }: { t: Dict; approval: boolean
           <p className="muted small">{t.fcqLiveText(live.evaluated, live.meanError, live.multiverse?.evaluated ?? 0, live.multiverse?.meanError ?? null, live.legacy ?? 0)}</p>
         </>
       )}
+      <OracleQualitySection t={t} approval={approval} llm={llm} />
       <h4>{t.fcqBench}</h4>
       <p className="muted small">{t.fcqBenchHint}</p>
       <button
@@ -749,5 +908,92 @@ export function QualityPanel({ t, approval, live }: { t: Dict; approval: boolean
         </div>
       )}
     </div>
+  );
+}
+
+/** Does the oracle improve the core? Live cases, oracle backtest, γ. */
+function OracleQualitySection({ t, approval, llm }: { t: Dict; approval: boolean; llm?: LlmFn }) {
+  const [q, setQ] = useState<(OracleQuality & { runs: OracleBacktestRun[] }) | null>(null);
+  const [limit, setLimit] = useState(5);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const load = () =>
+    api
+      .oracleQuality()
+      .then(setQ)
+      .catch((e) => setErr(errText(e)));
+  useEffect(() => {
+    load();
+  }, []);
+  const last = q?.runs[0];
+  return (
+    <>
+      <h4>{t.fcqOracle}</h4>
+      <p className="muted small">{t.fcqOracleHint}</p>
+      {q && (
+        <>
+          {q.skillVsCore === null ? (
+            <p className="qnote q-info">{t.fcqOracleNone}</p>
+          ) : (
+            <p className={`qnote ${q.skillVsCore > 0 ? "q-good" : "q-warn"}`}>
+              {q.skillVsCore > 0 ? t.fcqOracleBetter(q.skillVsCore) : t.fcqOracleWorse(q.skillVsCore)} <span className="muted small">({t.fcqOracleCorrected(q.corrected)})</span>
+            </p>
+          )}
+          <p className="small">{t.fcqOracleGamma(q.gamma, q.gammaN)}</p>
+          <p className="muted small">{t.fcqOracleRow(t.fcqOracleLive, q.live.n, q.live.maeCore, q.live.maeOracle)}</p>
+          <p className="muted small">
+            {t.fcqOracleRow(t.fcqOracleBt, q.backtest.n, q.backtest.maeCore, q.backtest.maeOracle)} · {q.backtest.runs} {t.fcqOracleRuns}
+          </p>
+          {last && last.cases.length > 0 && (
+            <table className="log fc-cases">
+              <thead>
+                <tr>
+                  <th>{t.fcqDecision}</th>
+                  <th>{t.fcCore}</th>
+                  <th>{t.fcWithOracle}</th>
+                  <th>{t.fcqActual}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {last.cases.map((c) => (
+                  <tr key={`${c.decision}-${c.option}`}>
+                    <td>
+                      <NodeId id={c.decision} /> {c.label}
+                    </td>
+                    <td className={Math.abs(c.core - c.actual) <= Math.abs(c.oracle - c.actual) ? "" : "muted"}>{c.core}</td>
+                    <td className={Math.abs(c.oracle - c.actual) < Math.abs(c.core - c.actual) ? "" : "muted"}>{c.oracle}</td>
+                    <td>{c.actual}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </>
+      )}
+      <div className="row">
+        <label className="small">
+          <input type="number" min={1} max={10} value={limit} onChange={(e) => setLimit(Math.max(1, Math.min(10, Number(e.target.value) || 1)))} style={{ width: "4em" }} /> {t.fcqOracleLimit}
+        </label>
+        <button
+          className="btn"
+          disabled={!approval || busy}
+          onClick={async () => {
+            setBusy(true);
+            setErr(null);
+            try {
+              await api.oracleBacktest(limit, t.langCode, llm?.());
+              await load();
+            } catch (e) {
+              setErr(errText(e));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {busy ? "…" : t.fcqOracleRun(limit * 3)}
+        </button>
+      </div>
+      {err && <p className="error small">{err}</p>}
+    </>
   );
 }

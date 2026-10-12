@@ -215,8 +215,10 @@ export function viewAsOf(s: Scenaria, t: string, h: History = readHistory(s), fo
   }
   const goalChanges = h.goalHistory.map((g) => g.until).filter((x): x is string => typeof x === "string" && x <= t);
   const fid = fidelityAll(fidNodes, { integrity: h.integrity, goalChanges });
-  // Fixed points in force at t: approved by then; a later retirement does not count against t.
-  const canon = h.canon.filter((e) => typeof e.decidedAt === "string" && (e.status === "active" ? e.decidedAt <= t : e.status === "retired" && e.createdAt <= t && e.decidedAt > t));
+  // Fixed points in force at t, from the canon log: approved by t and not retired/rejected by t.
+  const state = new Map<string, string>();
+  for (const e of h.events) if (e.type === "canon" && e.ts <= t && typeof e.data?.id === "string" && typeof e.data?.status === "string") state.set(e.data.id, e.data.status);
+  const canon = h.canon.filter((e) => state.get(e.id) === "active" || (!h.events.some((x) => x.type === "canon" && x.data?.id === e.id) && e.status === "active" && typeof e.decidedAt === "string" && e.decidedAt <= t));
   return {
     nodes: byId,
     children: childrenOf(withGoal),
@@ -722,6 +724,19 @@ export function calibrationFor(s: Scenaria): Calibration {
   const v = String(s.store.version());
   const hit = calCache.get(key);
   if (hit && hit.v === v) return hit.cal;
+  // Small projects (and every later call — decisions are cached): compute now. A large project's first
+  // backtest in a fresh process runs in the background; meanwhile the defaults are used (shown as such).
+  if (!hit && s.store.listNodes().length > COLD_LIMIT) {
+    calCache.set(key, { v, cal: UNCALIBRATED });
+    setImmediate(() => {
+      try {
+        calCache.set(key, { v, cal: forecastQuality(s).calibration });
+      } catch {
+        /* keep the defaults */
+      }
+    });
+    return UNCALIBRATED;
+  }
   let cal = UNCALIBRATED;
   try {
     cal = forecastQuality(s).calibration;
@@ -731,6 +746,7 @@ export function calibrationFor(s: Scenaria): Calibration {
   calCache.set(key, { v, cal });
   return cal;
 }
+const COLD_LIMIT = 800;
 
 // ------------------------------------------------------------------ the test bench (synthetic)
 

@@ -155,8 +155,22 @@ const MULTIVERSE_TOOL = {
     additionalProperties: false,
   },
 };
+const AUDIT_TOOL = {
+  name: "scenaria_audit_forecast",
+  description:
+    "The Prüf-Experte (auditor) of a forecast: a deterministic checklist (made before the choice? signed? enough data? options distinguishable within the uncertainty band? core better than naive on this project? every oracle correction backed by a reason and existing evidence?) and a verdict (reliable / with caution / not reliable). With deep=true a skeptical model also checks each oracle claim against its evidence and removes unsupported corrections (uses the person's model). Use it before the person relies on a forecast.",
+  parameters: {
+    type: "object",
+    properties: {
+      id: { type: "string", description: "Forecast id, e.g. f3" },
+      deep: { type: "boolean", description: "Also let the skeptic check the oracle's claims (model call)" },
+    },
+    required: ["id"],
+    additionalProperties: false,
+  },
+};
 const PERSON_ONLY = new Set(PERSON_TOOLS.map((t) => t.name));
-const CHAT_TOOLS = [RELAY_TOOL, MULTIVERSE_TOOL, ...PERSON_TOOLS];
+const CHAT_TOOLS = [RELAY_TOOL, MULTIVERSE_TOOL, AUDIT_TOOL, ...PERSON_TOOLS];
 
 const MAX_TOOL_TEXT = 8000;
 const isDestructive = (name: string) => Boolean(TOOLS.find((t) => t.name === name)?.annotations?.destructiveHint);
@@ -175,7 +189,7 @@ In this chat:
 - The person can control everything through you. Their own actions — approving/rejecting/retiring canon (scenaria_canon_decide), running checks (scenaria_canon_check), the gate (scenaria_gate), the model analysis (scenaria_analyze), the expert report to optimise with (scenaria_expert_analysis), switching the model (scenaria_set_model), connecting agents (scenaria_connect_agents) — you request with these tools; the dashboard shows the person a card and runs it only after their click. New canon: propose it with scenaria_canon action "propose" and then request its approval with scenaria_canon_decide.
 - The main goal: set it with scenaria_start_mission {projectGoal} when the person states it.
 - Rewind and fork change files; the dashboard asks the person before they run. If they decline, accept it.
-- Before an open decision is chosen, or before a big prompt/plan goes to an agent: forecast it with scenaria_multiverse (or quickly with scenaria_forecast) and show the person which option keeps the context and the main goal. For a new high-impact question without options, use scenaria_relay. The person chooses.
+- Before an open decision is chosen, or before a big prompt/plan goes to an agent: forecast it with scenaria_multiverse (or quickly with scenaria_forecast) and show the person which option keeps the context and the main goal — with the core number, the oracle's corrections and their evidence, and the Prüf-Experte's verdict (scenaria_audit_forecast; deep=true lets the skeptic check the oracle's claims). For a new high-impact question without options, use scenaria_relay. The person chooses.
 - Keep answers short; reference nodes as n12 and canon as k3 (the dashboard links them).
 - Answer in ${lang === "de" ? "German" : "English"}.
 
@@ -417,13 +431,29 @@ async function execute(s: Scenaria, call: ChatToolCall, ctx: { model: string; us
     if (call.name === MULTIVERSE_TOOL.name) {
       const { forecast } = await import("./core/forecast.js");
       const f = await forecast(s, { node: call.args.node ? String(call.args.node) : undefined, prompt: call.args.prompt ? String(call.args.prompt) : undefined, variants: Array.isArray(call.args.variants) ? call.args.variants.map(String) : undefined, lang: ctx.lang, llm: ctx.llm, trigger: "chat" });
+      const { auditForecast, auditText } = await import("./core/auditor.js");
+      const adj = (name: string, a?: { proposed: number; applied: number; why: string; refs: string[]; backed: boolean }) => (a && a.proposed ? ` · ${name} ${a.proposed > 0 ? "+" : ""}${a.proposed}${a.backed ? ` (counted ${a.applied}): ${a.why} [${a.refs.join(", ")}]` : " NOT counted (no reason/evidence)"}` : "");
       const text = [
         `Forecast ${f.id} (${f.mode}) — ${f.subject.kind === "decision" ? `${f.subject.node}: ${f.subject.question}` : "prompt"}`,
-        ...f.options.map((o) => `- ${o.key} ${o.label}: context ${o.score}%${o.universe ? ` (goal ${o.universe.goal}%, confidence ${Math.round(o.universe.confidence * 100)}%) → ${o.universe.outcome}${o.universe.loses.length ? ` · would drop: ${o.universe.loses.join("; ")}` : ""}${o.universe.risks.length ? ` · risks: ${o.universe.risks.join("; ")}` : ""}` : ""}${o.quick.warnings.length ? ` · lessons: ${o.quick.warnings.join("; ")}` : ""}`),
+        ...f.options.map((o) => {
+          const u = o.universe;
+          return `- ${o.key} ${o.label}: ${u ? `core ${u.core ?? o.quick.score}% → with oracle ${o.score}%${u.capped ? ` (capped, hard fixed point ${u.canonRisks.join(", ")})` : ""}${adj("own words", u.own)}${adj("in context", u.ctx)} · confidence ${Math.round(u.confidence * 100)}% → ${u.outcome}${u.loses.length ? ` · would drop: ${u.loses.join("; ")}` : ""}${u.risks.length ? ` · risks: ${u.risks.join("; ")}` : ""}` : `${o.score}%`}${o.quick.warnings.length ? ` · lessons: ${o.quick.warnings.join("; ")}` : ""}`;
+        }),
         f.recommended ? `Recommended: ${f.recommended.key} — ${f.recommended.why}` : "",
         ...f.warnings.map((w) => `WARNING: ${w}`),
+        auditText(auditForecast(s, f, ctx.lang), ctx.lang),
       ].filter(Boolean);
       return { ...base, content: text.join("\n"), data: f, ok: true };
+    }
+    if (call.name === AUDIT_TOOL.name) {
+      const { auditForecast, auditText, deepAudit } = await import("./core/auditor.js");
+      const { listForecasts } = await import("./core/forecast.js");
+      const id = String(call.args.id ?? "");
+      if (call.args.deep === true) await deepAudit(s, id, { lang: ctx.lang, llm: ctx.llm });
+      const f = listForecasts(s).find((x) => x.id === id);
+      if (!f) throw new Error(`Unknown forecast ${id}`);
+      const a = auditForecast(s, f, ctx.lang);
+      return { ...base, content: auditText(a, ctx.lang), data: a, ok: true };
     }
     if (PERSON_ONLY.has(call.name)) {
       const r = await personAction(s, call, ctx);
