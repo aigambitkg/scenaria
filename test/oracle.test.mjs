@@ -414,3 +414,45 @@ test("person: write down a decision, see progress while the model works, check a
     f0.close();
   }
 });
+
+test("auditor's area: overview with verdicts, signed/before-choice counts, and a downloadable report (read-only)", async () => {
+  const { p, s } = project();
+  const d = decision(s);
+  const f1 = await forecast(s, { node: d.id, quick: true });
+  s.choose(d.id, "a", "on goal");
+  const f2 = await forecast(s, { node: d.id, quick: true }); // after the choice → not reliable
+  const d2 = decision(s);
+  const f3 = await forecast(s, { node: d2.id, quick: true });
+  const file = join(p.dir, `.scenaria/forecasts/${f3.id}.json`);
+  const j = JSON.parse(readFileSync(file, "utf8"));
+  j.options[0].score = 99;
+  writeFileSync(file, JSON.stringify(j)); // changed outside → unsigned
+  const o = A.auditOverview(s, "en");
+  assert.equal(o.counts.forecasts, 3);
+  assert.equal(o.counts.unsigned, 1);
+  assert.equal(o.counts.unreliable, 2);
+  assert.equal(o.counts.decisionForecasts, 3);
+  assert.equal(o.counts.beforeChoice, 2, "f2 was made after the choice");
+  assert.equal(o.rows.find((r) => r.id === f2.id).verdict, "unreliable");
+  assert.ok(o.rows.find((r) => r.id === f1.id).verdict !== "unreliable");
+  const md = A.auditReportMarkdown(o, "de");
+  assert.match(md, /# Prüfbericht Prognosen/);
+  assert.match(md, new RegExp(`\\| ${f3.id} ⚠ \\|`), "unsigned marked");
+  assert.match(md, /Nach der Wahl erstellt|nicht belastbar/);
+  const app = createApp(s, { approvalCode: "c", approvalSecret: "sess", autoForecast: false });
+  const server = createServer(app.handler);
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const r = await fetch(`${base}/api/audit/report?format=md&lang=en`);
+    assert.equal(r.status, 200);
+    assert.match(r.headers.get("content-disposition"), /attachment; filename="scenaria-pruefbericht-.*\.md"/);
+    assert.match(await r.text(), /# Forecast audit report/);
+    const js = await (await fetch(`${base}/api/audit/report?format=json`)).json();
+    assert.equal(js.counts.forecasts, 3);
+    assert.equal((await fetch(`${base}/api/audit/overview`)).status, 200, "open to read without approval");
+  } finally {
+    app.close();
+    server.close();
+  }
+});

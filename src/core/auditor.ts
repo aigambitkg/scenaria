@@ -369,7 +369,7 @@ function latestDeep(deep: DeepAudit[]): { ok?: DeepAudit; unsigned: number } {
 }
 
 /** The checklist of one forecast (deterministic, nothing stored). */
-export function auditForecast(s: Scenaria, f: Forecast, lang: Lang = "de"): Audit {
+export function auditForecast(s: Scenaria, f: Forecast, lang: Lang = "de", pre: { quality?: ReturnType<typeof forecastQuality>; trust?: { gamma: number; n: number }; deep?: DeepAudit[] } = {}): Audit {
   const t = T[lang];
   const checks: Check[] = [];
   const add = (id: string, status: CheckStatus, text: string) => checks.push({ id, status, text });
@@ -396,10 +396,10 @@ export function auditForecast(s: Scenaria, f: Forecast, lang: Lang = "de"): Audi
     add("distinct", gap >= ex[0].band ? "ok" : "warn", gap >= ex[0].band ? t.distinctOk(gap, ex[0].band) : t.distinctWarn(gap, ex[0].band));
   }
   // 5. calibration of the core on this project
-  const q = forecastQuality(s);
+  const q = pre.quality ?? forecastQuality(s);
   if (!q.enough) add("calibration", "warn", t.calibFew(q.decisions, q.minDecisions));
   else add("calibration", (q.skill ?? 0) > 0 ? "ok" : "warn", (q.skill ?? 0) > 0 ? t.calibOk(q.decisions, q.skill!) : t.calibBad(q.decisions, q.skill ?? 0));
-  const deep = listDeepAudits(s, f.id);
+  const deep = pre.deep ? pre.deep.filter((d) => d.forecast === f.id) : listDeepAudits(s, f.id);
   const { ok: d0, unsigned } = latestDeep(deep);
   const supported = (claim: string) => Boolean(d0?.verdicts.some((v) => v.claim === claim && v.verdict === "supported"));
   // 6. warning flags — resolved only when the skeptic agrees with the oracle's evidence.
@@ -432,7 +432,7 @@ export function auditForecast(s: Scenaria, f: Forecast, lang: Lang = "de"): Audi
     if (f.recommended && best && f.recommended.key !== best.key) add("consistency", "warn", t.recWarn(f.recommended.key, best.key));
     const capped = f.options.filter((o) => o.universe?.capped).map((o) => `${o.key}: ${o.universe!.canonRisks.join(", ")}`);
     if (capped.length) add("canon", "info", t.canon(capped.join("; ")));
-    const tr = oracleTrust(s);
+    const tr = pre.trust ?? oracleTrust(s);
     add("trust", tr.n >= 5 && tr.gamma < 0.5 ? "warn" : "info", tr.n >= 5 && tr.gamma < 0.5 ? t.trustLow(tr.gamma, tr.n) : t.trustInfo(tr.gamma, tr.n));
   }
   if (unsigned) add("deepUnsigned", "info", t.deepUnsigned(unsigned));
@@ -550,4 +550,123 @@ export function auditText(a: Audit, lang: Lang = "en"): string {
         ]
       : []),
   ].join("\n");
+}
+
+// ------------------------------------------------------------------ the auditor's area
+
+export interface AuditRow {
+  id: string;
+  createdAt: string;
+  mode: Forecast["mode"];
+  trigger: Forecast["trigger"];
+  subject: string;
+  node?: string;
+  verified: boolean;
+  verdict: Audit["verdict"];
+  open: string[];
+  failed: string[];
+  recommended?: string;
+  options: { key: string; label: string; score: number; core?: number }[];
+  actual: { option: string; measured: number; predicted: number; error: number }[];
+  deep: { id: string; supported: number; total: number; verified: boolean } | null;
+}
+export interface AuditOverview {
+  generatedAt: string;
+  project: string;
+  counts: { forecasts: number; signed: number; unsigned: number; reliable: number; caution: number; unreliable: number; beforeChoice: number; decisionForecasts: number; aiChecked: number; withOracle: number };
+  core: { decisions: number; minDecisions: number; enough: boolean; mae: number | null; maeBaseline: number | null; skill: number | null; coverage: number | null };
+  oracle: OracleQuality;
+  rows: AuditRow[];
+}
+
+/** Everything an auditor needs, for all forecasts at once (deterministic, nothing stored). */
+export function auditOverview(s: Scenaria, lang: Lang = "de"): AuditOverview {
+  const ev = evaluateForecasts(s);
+  const quality = forecastQuality(s);
+  const trust = oracleTrust(s);
+  const deep = listDeepAudits(s);
+  const rows: AuditRow[] = ev.forecasts.map((f) => {
+    const a = auditForecast(s, f, lang, { quality, trust, deep });
+    const d0 = a.deep.find((d) => d.verified);
+    return {
+      id: f.id,
+      createdAt: f.createdAt,
+      mode: f.mode,
+      trigger: f.trigger,
+      subject: f.subject.kind === "decision" ? f.subject.question : f.subject.text.slice(0, 200),
+      node: f.subject.kind === "decision" ? f.subject.node : undefined,
+      verified: Boolean(f.verified),
+      verdict: a.verdict,
+      open: a.checks.filter((c) => c.status === "warn").map((c) => c.text),
+      failed: a.checks.filter((c) => c.status === "fail").map((c) => c.text),
+      recommended: f.recommended?.key,
+      options: f.options.map((o) => ({ key: o.key, label: o.label, score: o.score, core: o.universe?.core })),
+      actual: (f.actual ?? []).map((x) => ({ option: x.option, measured: x.measured, predicted: x.predicted, error: x.error })),
+      deep: d0 ? { id: d0.id, supported: d0.verdicts.filter((v) => v.verdict === "supported").length, total: d0.verdicts.length, verified: true } : null,
+    };
+  });
+  const timing = rows.filter((r) => r.node);
+  const before = timing.filter((r) => !r.failed.some((x) => /Nach der Wahl|after the choice/.test(x))).length;
+  return {
+    generatedAt: new Date().toISOString(),
+    project: s.root.split(/[\\/]/).pop() ?? s.root,
+    counts: {
+      forecasts: rows.length,
+      signed: rows.filter((r) => r.verified).length,
+      unsigned: rows.filter((r) => !r.verified).length,
+      reliable: rows.filter((r) => r.verdict === "reliable").length,
+      caution: rows.filter((r) => r.verdict === "caution").length,
+      unreliable: rows.filter((r) => r.verdict === "unreliable").length,
+      beforeChoice: before,
+      decisionForecasts: timing.length,
+      aiChecked: rows.filter((r) => r.deep).length,
+      withOracle: rows.filter((r) => r.mode === "multiverse").length,
+    },
+    core: { decisions: quality.decisions, minDecisions: quality.minDecisions, enough: quality.enough, mae: quality.mae, maeBaseline: quality.maeBaseline, skill: quality.skill, coverage: quality.coverage },
+    oracle: oracleQuality(s),
+    rows,
+  };
+}
+
+/** The audit report as Markdown — for a file, a ticket or an email. */
+export function auditReportMarkdown(o: AuditOverview, lang: Lang = "de"): string {
+  const de = lang === "de";
+  const v = { reliable: de ? "belastbar" : "reliable", caution: de ? "mit Vorsicht" : "with caution", unreliable: de ? "nicht belastbar" : "not reliable" };
+  const pct = (x: number | null) => (x === null ? "–" : `${Math.round(x * 100)} %`);
+  const c = o.counts;
+  const lines = [
+    `# ${de ? "Prüfbericht Prognosen" : "Forecast audit report"} – ${o.project}`,
+    "",
+    `${de ? "Erstellt" : "Generated"}: ${o.generatedAt.slice(0, 16).replace("T", " ")} UTC · Scenaria`,
+    "",
+    `## ${de ? "Zusammenfassung" : "Summary"}`,
+    "",
+    `| ${de ? "Kennzahl" : "Measure"} | ${de ? "Wert" : "Value"} |`,
+    "|---|---|",
+    `| ${de ? "Prognosen" : "Forecasts"} | ${c.forecasts} (${c.signed} ${de ? "signiert" : "signed"}, ${c.unsigned} ${de ? "nicht signiert" : "unsigned"}) |`,
+    `| ${de ? "Urteil" : "Verdict"} | ${c.reliable} ${v.reliable} · ${c.caution} ${v.caution} · ${c.unreliable} ${v.unreliable} |`,
+    `| ${de ? "Vor der Wahl erstellt" : "Made before the choice"} | ${c.beforeChoice}/${c.decisionForecasts} |`,
+    `| ${de ? "Mit Orakel (Multiversum)" : "With oracle (multiverse)"} | ${c.withOracle}, ${de ? "davon KI-geprüft" : "AI-checked"}: ${c.aiChecked} |`,
+    `| ${de ? "Kern: Entscheidungen im Rückblick" : "Core: decisions in the backtest"} | ${o.core.decisions}${o.core.enough ? "" : de ? ` (aussagekräftig ab ${o.core.minDecisions})` : ` (meaningful from ${o.core.minDecisions})`} |`,
+    `| ${de ? "Kern: Fehler Ø / naive Fortschreibung / Skill" : "Core: mean error / naive persistence / skill"} | ${o.core.mae ?? "–"} / ${o.core.maeBaseline ?? "–"} / ${o.core.skill ?? "–"} |`,
+    `| ${de ? "Kern: Wirklichkeit im Band" : "Core: reality within the band"} | ${pct(o.core.coverage)} |`,
+    `| ${de ? "Orakel vs. Kern (Skill)" : "Oracle vs. core (skill)"} | ${o.oracle.skillVsCore ?? "–"}${o.oracle.enough ? "" : de ? " (Tendenz)" : " (tendency)"} · ${de ? "Vertrauen" : "trust"} γ ${o.oracle.gamma} (${o.oracle.gammaN}) |`,
+    "",
+    `## ${de ? "Prognosen" : "Forecasts"}`,
+    "",
+    `| ID | ${de ? "Datum" : "Date"} | ${de ? "Art" : "Kind"} | ${de ? "Gegenstand" : "Subject"} | ${de ? "Empfehlung" : "Recommendation"} | ${de ? "Urteil" : "Verdict"} | ${de ? "KI-Prüfung" : "AI check"} | ${de ? "Wirklich" : "Actual"} |`,
+    "|---|---|---|---|---|---|---|---|",
+    ...o.rows.map((r) => `| ${r.id}${r.verified ? "" : " ⚠"} | ${r.createdAt.slice(0, 10)} | ${r.mode} | ${(r.node ? `${r.node}: ` : "") + r.subject.replace(/\|/g, "/").slice(0, 80)} | ${r.recommended ?? "–"} | ${v[r.verdict]} | ${r.deep ? `${r.deep.supported}/${r.deep.total}` : "–"} | ${r.actual.map((a) => `${a.option} ${a.measured} (${a.predicted})`).join(", ") || "–"} |`),
+    "",
+    `## ${de ? "Offene Punkte je Prognose" : "Open points per forecast"}`,
+    "",
+    ...o.rows.flatMap((r) => (r.failed.length || r.open.length ? [`### ${r.id} – ${v[r.verdict]}`, ...r.failed.map((x) => `- ✘ ${x}`), ...r.open.map((x) => `- ! ${x}`), ""] : [])),
+    `## ${de ? "So wird geprüft" : "How it is checked"}`,
+    "",
+    de
+      ? "Jede Prognose ist von Scenaria signiert; außerhalb geänderte Dateien gelten als nicht signiert. Die Checkliste prüft Zeitpunkt (vor der Wahl), Datenbasis, Unterscheidbarkeit gegenüber dem Unsicherheitsband, die Bilanz des Kerns auf diesem Projekt und jede Korrektur des Orakels (Grund + existierender, konkreter Beleg, höchstens ±20 Punkte). Die KI-Prüfung beurteilt jede Aussage des Orakels nur gegen die Belegtexte, wie sie bei der Prognose waren. Der Rückblick prognostiziert vergangene Entscheidungen nur mit dem Wissen ihrer Zeit."
+      : "Every forecast is signed by Scenaria; files changed outside count as unsigned. The checklist checks timing (before the choice), data basis, distinguishability against the uncertainty band, the core's track record on this project and every oracle correction (reason + existing, specific evidence, at most ±20 points). The AI check judges each oracle claim only against the evidence texts as they were when the forecast was made. The backtest forecasts past decisions with only the knowledge of their time.",
+    "",
+  ];
+  return lines.join("\n");
 }

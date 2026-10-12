@@ -27,7 +27,7 @@ import { effectiveLlm, listModels, readSettings, upstreams, writeSettings } from
 import { listRelays, runRelay } from "./core/relay.js";
 import { benchmarkInWorker, calibrationFor, forecastQuality } from "./core/predict.js";
 import { autoBudget, evaluateForecasts, forecast, listForecasts, markUsed, openWithoutForecast, quickDecision, quickPrompt } from "./core/forecast.js";
-import { auditForecast, deepAudit, listOracleBacktests, oracleBacktest, oracleQuality, pastDecisions } from "./core/auditor.js";
+import { auditForecast, auditOverview, auditReportMarkdown, deepAudit, listOracleBacktests, oracleBacktest, oracleQuality, pastDecisions } from "./core/auditor.js";
 import { chat } from "./chat.js";
 import { TARGETS, agentStatus, connectionSnippets, setupAgents, type Target } from "./setup.js";
 import { callLlm } from "./core/analysis.js";
@@ -501,6 +501,16 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           return send(res, 200, { ...evaluateForecasts(s), running: forecasting, open: openWithoutForecast(s), failed, auto: { ...readSettings(s).forecast, usedToday: autoBudget(s).used() } });
         }
         if (req.method === "GET" && p === "/api/forecast/quality") return send(res, 200, forecastQuality(s));
+        // The auditor's area: read-only, for everyone who can open the dashboard.
+        if (req.method === "GET" && p === "/api/audit/overview") return send(res, 200, auditOverview(s, url.searchParams.get("lang") === "en" ? "en" : "de"));
+        if (req.method === "GET" && p === "/api/audit/report") {
+          const lang = url.searchParams.get("lang") === "en" ? "en" : "de";
+          const o = auditOverview(s, lang);
+          const md = url.searchParams.get("format") !== "json";
+          const name = `scenaria-pruefbericht-${o.project.replace(/[^\w.-]+/g, "_")}-${o.generatedAt.slice(0, 10)}.${md ? "md" : "json"}`;
+          res.writeHead(200, { "content-type": md ? "text/markdown; charset=utf-8" : "application/json; charset=utf-8", "cache-control": "no-store", "content-disposition": `attachment; filename="${name}"` });
+          return res.end(md ? auditReportMarkdown(o, lang) : JSON.stringify(o, null, 2));
+        }
         if (req.method === "GET" && p === "/api/forecast/progress") return send(res, 200, { job, auto: forecasting });
         if (req.method === "GET" && p === "/api/forecast/past") return send(res, 200, pastDecisions(s));
         if (req.method === "POST" && p === "/api/forecast/decision") {

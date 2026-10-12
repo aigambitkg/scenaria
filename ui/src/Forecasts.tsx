@@ -1,4 +1,5 @@
 import { HelpButton } from "./HelpButton";
+import { ErrorBox, NewDecisionForm, PastCheck, ReadyCheck, ResultCard, RunProgress, StartCards, useReadiness } from "./ForecastStart";
 /**
  * Forecasts ("Prognosen"): see BEFORE choosing how each option — or a prompt — will keep the context
  * and the main goal. Quick forecast (instant, no model) for every decision; the multiverse
@@ -127,11 +128,11 @@ const VERDICT_CLASS: Record<string, string> = { reliable: "v-passed", caution: "
 const CHECK_ICON: Record<string, string> = { ok: "✔", warn: "!", fail: "✘", info: "·" };
 
 /** The Prüf-Experte of one forecast: verdict, checklist and the AI check of the oracle's claims. */
-export function AuditBox(props: { t: Dict; id: string; mode?: Forecast["mode"]; approval?: boolean; llm?: LlmFn; compact?: boolean; version?: string }) {
+export function AuditBox(props: { t: Dict; id: string; mode?: Forecast["mode"]; approval?: boolean; llm?: LlmFn; compact?: boolean; version?: string; startOpen?: boolean }) {
   const { t } = props;
   const lang = t.langCode;
   const [a, setA] = useState<Audit | null>(null);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(Boolean(props.startOpen));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
@@ -347,19 +348,38 @@ export function OptionForecasts(props: { t: Dict; options: ForecastOption[]; rec
   );
 }
 
-function useApproval() {
-  const [approval, setApproval] = useState(false);
-  const [provider, setProvider] = useState<string | null>(null);
+/** The plain-language result of a saved forecast, with the auditor's verdict. */
+function LastResult({ t, f, onDetails, onNode }: { t: Dict; f: Forecast; onDetails?: () => void; onNode?: (id: string) => void }) {
+  const [audit, setAudit] = useState<Audit | null>(null);
   useEffect(() => {
+    let alive = true;
     api
-      .settings()
-      .then((s) => {
-        setApproval(s.approval);
-        setProvider(s.effective.oracle?.provider ?? null);
-      })
+      .audit(f.id, t.langCode)
+      .then((a) => alive && setAudit(a))
       .catch(() => {});
-  }, []);
-  return { approval, provider };
+    return () => {
+      alive = false;
+    };
+  }, [f.id, t.langCode]);
+  return (
+    <>
+      {onNode && (
+        <p className="small">
+          {f.subject.kind === "decision" ? (
+            <>
+              <button className="btn link inline" onClick={() => onNode((f.subject as { node: string }).node)}>
+                <NodeId id={f.subject.node} />
+              </button>{" "}
+              {f.subject.question}
+            </>
+          ) : (
+            <em>„{f.subject.text.slice(0, 100)}“</em>
+          )}
+        </p>
+      )}
+      <ResultCard t={t} f={f} audit={audit} onDetails={onDetails} />
+    </>
+  );
 }
 
 /** The forecasts page: open decisions, prompt check, history and hit rate. */
@@ -383,10 +403,21 @@ export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessi
   const [quick, setQuick] = useState<Record<string, ForecastOption[]>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [tab, setTab] = useState<"open" | "prompt" | "history" | "quality">("open");
+  const focusNode = props.focus ? props.nodes.find((n) => n.id === props.focus) : undefined;
+  type Tab = "start" | "open" | "prompt" | "past" | "history" | "quality";
+  const [tab, setTab] = useState<Tab>(focusNode?.type === "decision" ? (focusNode.chosen ? "past" : "open") : "start");
   const [auditOpen, setAuditOpen] = useState<string | null>(null);
-  const { approval, provider } = useApproval();
+  const hasGoal = Boolean(props.nodes.find((n) => n.type === "mission")?.goal);
+  const ready = useReadiness(props.keys, hasGoal);
+  const { approval, provider } = ready;
+  const canRun = approval && Boolean(ready.model) && !ready.keyMissing;
   const llm = () => (provider && props.keys[provider] ? { apiKey: props.keys[provider], keyFor: provider } : undefined);
+  const [errs, setErrs] = useState<Record<string, string>>({});
+  const [fresh, setFresh] = useState<Record<string, Forecast>>({});
+  const [writing, setWriting] = useState(false);
+  const [pendingRun, setPendingRun] = useState<string | null>(null);
+  const [details, setDetails] = useState<Record<string, boolean>>({});
+  const decided = props.nodes.filter((n) => n.type === "decision" && n.chosen && (n.options?.length ?? 0) > 1).length;
 
   const onLine = useMemo(() => {
     const byId = new Map(props.nodes.map((n) => [n.id, n]));
@@ -435,17 +466,27 @@ export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessi
 
   const runMultiverse = async (node: string) => {
     setBusy(node);
-    setErr(null);
+    setErrs((x) => ({ ...x, [node]: "" }));
     try {
-      await api.runForecast({ node, lang: props.lang, llm: llm() });
+      const f = await api.runForecast({ node, lang: props.lang, llm: llm() });
+      setFresh((x) => ({ ...x, [node]: f }));
+      setBusy(null);
       await load();
       props.onChanged();
     } catch (e) {
-      setErr(errText(e));
+      setErrs((x) => ({ ...x, [node]: errText(e) }));
     } finally {
       setBusy(null);
     }
   };
+  // A decision written down with "save and forecast": run as soon as it is in the list.
+  useEffect(() => {
+    if (pendingRun && decisions.some((d) => d.id === pendingRun) && !busy) {
+      const id = pendingRun;
+      setPendingRun(null);
+      runMultiverse(id);
+    }
+  }, [pendingRun, decisions.map((d) => d.id).join(",")]);
 
   const [pick, setPick] = useState<{ node: string; key: string; label: string; why: string } | null>(null);
   const choose = async () => {
@@ -465,7 +506,6 @@ export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessi
   return (
     <Modal wide title={<>{t.fcTitle} <HelpButton topic="forecasts" /></>} onClose={props.onClose}>
       <div className="modal-body analysis forecasts">
-        <p className="hint">{t.fcIntro}</p>
         <div className="fc-stats">
           <button className="chip" title={t.fcCalibrationHint} onClick={() => setTab("quality")}>
             {t.fcCalibration}: {!c ? "…" : c.evaluated ? `${c.hits}/${c.evaluated} ${t.fcWithin} · Ø ±${c.meanError}` : t.fcNoCalibration} · {t.fcTabQuality} →
@@ -480,22 +520,67 @@ export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessi
           )}
           {page?.running && <span className="chip v-warning">⟳ {t.fcRunning} {page.running}</span>}
         </div>
-        {!approval && <p className="qnote q-warn">🔒 {t.settingsLocked}</p>}
-        {!props.nodes.find((n) => n.type === "mission")?.goal && <NoGoalNote t={t} onEditGoal={props.onEditGoal} />}
-        {err && <p className="error">{err}</p>}
-        <p className="hint">{t.fcWhy}</p>
-        <p className="muted small">{t.fcLegend}</p>
+        {err && <ErrorBox t={t} message={err} onOpenSettings={props.onOpenSettings} />}
         <div className="side-tabs fc-tabs" role="tablist">
-          {(["open", "prompt", "history", "quality"] as const).map((k) => (
+          {(["start", "open", "prompt", "past", "history", "quality"] as const).map((k) => (
             <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>
-              {k === "open" ? `${t.fcTabOpen} (${decisions.length})` : k === "prompt" ? t.fcTabPrompt : k === "history" ? `${t.fcTabHistory} (${page?.forecasts.length ?? 0})` : t.fcTabQuality}
+              {k === "start" ? t.fcTabStart : k === "open" ? `${t.fcTabOpen} (${decisions.filter((d) => !d.chosen).length})` : k === "prompt" ? t.fcTabPrompt : k === "past" ? `${t.fcTabPast} (${decided})` : k === "history" ? `${t.fcTabHistory} (${page?.forecasts.length ?? 0})` : t.fcTabQuality}
             </button>
           ))}
         </div>
 
+        {tab === "start" && (
+          <section className="a-sec fc-start">
+            <p className="hint">{t.fcIntro}</p>
+            <ReadyCheck t={t} r={ready} onOpenSettings={props.onOpenSettings} onEditGoal={props.onEditGoal} />
+            <h3>{t.stTitle}</h3>
+            <StartCards
+              t={t}
+              open={decisions.filter((d) => !d.chosen).length}
+              past={decided}
+              onOpen={() => setTab("open")}
+              onNew={() => {
+                setWriting(true);
+                setTab("open");
+              }}
+              onPrompt={() => setTab("prompt")}
+              onPast={() => setTab("past")}
+            />
+            {page?.forecasts.find((f) => f.verified) && (
+              <>
+                <h4>{t.stLast}</h4>
+                <LastResult t={t} f={page.forecasts.find((f) => f.verified)!} onNode={props.onNode} />
+              </>
+            )}
+          </section>
+        )}
+        {tab === "past" && <PastCheck t={t} lang={props.lang} approval={approval} ready={canRun} focus={focusNode?.chosen ? focusNode.id : null} llm={llm} onNode={props.onNode} onBusy={() => {}} onOpenSettings={props.onOpenSettings} />}
+
         {tab === "open" && (
           <>
-            {!decisions.length && <p className="muted">{t.fcNoOpen}</p>}
+            {!approval && <p className="qnote q-warn">🔒 {t.rdNoApproval}</p>}
+            {!hasGoal && <NoGoalNote t={t} onEditGoal={props.onEditGoal} />}
+            {writing || !decisions.length ? (
+              <NewDecisionForm
+                t={t}
+                approval={approval}
+                ready={canRun}
+                onCancel={decisions.length ? () => setWriting(false) : undefined}
+                onCreated={(id, run) => {
+                  setWriting(false);
+                  props.onChanged();
+                  if (run) setPendingRun(id);
+                  props.toast(id);
+                }}
+              />
+            ) : (
+              <div className="row">
+                <button className="btn" onClick={() => setWriting(true)}>
+                  + {t.ndTitle}
+                </button>
+              </div>
+            )}
+            <p className="muted small">{t.fcLegend}</p>
             {decisions.map((d) => {
               const mv = latest(d.id);
               const opts = mv?.options ?? quick[d.id];
@@ -511,7 +596,20 @@ export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessi
                     <span className="chip">{mv ? `${t.fcMultiverse} · ${new Date(mv.createdAt).toLocaleString()}` : t.fcQuickOnly}</span>
                   </h3>
                   {page?.failed[d.id] && <p className="qnote q-bad">{t.fcFailed}: {page.failed[d.id]}</p>}
-                  {opts ? (
+                  {busy === d.id && <RunProgress t={t} kind="multiverse" />}
+                  {errs[d.id] && <ErrorBox t={t} message={errs[d.id]} onOpenSettings={props.onOpenSettings} />}
+                  {mv && <LastResult t={t} f={fresh[d.id] ?? mv} onDetails={() => setDetails({ ...details, [d.id]: !details[d.id] })} />}
+                  {mv && !details[d.id] && !d.chosen && (
+                    <div className="row choose-row">
+                      <span className="small">{t.chooseOption}:</span>
+                      {mv.options.map((o) => (
+                        <button key={o.key} className={`btn ${mv.recommended?.key === o.key ? "primary" : ""}`} onClick={() => setPick({ node: d.id, key: o.key, label: o.label, why: o.universe ? `${t.fcBecause}: ${o.universe.outcome}`.slice(0, 300) : "" })}>
+                          {o.key} {o.label.slice(0, 40)}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {opts && mv && !details[d.id] ? null : opts ? (
                     <OptionForecasts
                       t={t}
                       options={opts}
@@ -540,17 +638,16 @@ export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessi
                       </button>
                     </form>
                   )}
-                  {mv?.recommended && <p className="small">★ {mv.recommended.why}</p>}
-                  {mv?.warnings.map((w, i) => (
-                    <p key={i} className="qnote q-warn">
-                      {w}
-                    </p>
-                  ))}
                   {mv && <AuditBox t={t} id={mv.id} mode={mv.mode} approval={approval} llm={llm} version={String(page?.calibration.evaluated)} />}
                   <div className="row">
-                    <button className="btn primary" disabled={!approval || Boolean(busy)} onClick={() => runMultiverse(d.id)} title={t.fcMultiverseHint}>
+                    <button className="btn primary" disabled={!canRun || Boolean(busy)} onClick={() => runMultiverse(d.id)} title={canRun ? t.fcMultiverseHint : t.rdNotReady}>
                       {busy === d.id ? t.running : mv ? t.fcRerun : t.fcRunMultiverse}
                     </button>
+                    {!canRun && (
+                      <button className="btn link" onClick={() => setTab("start")}>
+                        {t.rdNotReady.split("–")[0].split("—")[0].trim()} →
+                      </button>
+                    )}
                   </div>
                 </section>
               );
@@ -622,8 +719,10 @@ function PromptCheck(props: { t: Dict; lang: "de" | "en"; approval: boolean; llm
     }, 350);
     return () => clearTimeout(id);
   }, [text]);
+  const [running, setRunning] = useState(false);
   const run = async (quickOnly: boolean) => {
     setBusy(true);
+    setRunning(!quickOnly);
     setErr(null);
     try {
       const f = await api.runForecast({ prompt: text, variants: variants.filter((v) => v.trim()), quick: quickOnly, lang: props.lang, llm: props.llm() });
@@ -633,6 +732,7 @@ function PromptCheck(props: { t: Dict; lang: "de" | "en"; approval: boolean; llm
       setErr(errText(e));
     } finally {
       setBusy(false);
+      setRunning(false);
     }
   };
   // Without the approval session: the same quick check, computed but not saved (no hit rate).
@@ -692,16 +792,12 @@ function PromptCheck(props: { t: Dict; lang: "de" | "en"; approval: boolean; llm
           {busy ? t.running : t.fcRunMultiverse}
         </button>
       </div>
-      {err && <p className="error">{err}</p>}
+      {running && <RunProgress t={t} kind="multiverse" />}
+      {err && <ErrorBox t={t} message={err} />}
       {result && (
         <>
+          {result.id ? <LastResult t={t} f={result} /> : <ResultCard t={t} f={result} />}
           <OptionForecasts t={t} options={result.options} recommended={result.recommended?.key} actual={result.actual} />
-          {result.recommended && <p className="small">★ {result.recommended.why}</p>}
-          {result.warnings.map((w, i) => (
-            <p key={i} className="qnote q-warn">
-              {w}
-            </p>
-          ))}
           {result.id && <AuditBox t={t} id={result.id} mode={result.mode} approval={props.approval} llm={props.llm} />}
           {result.id && <div className="row">
             <span className="muted small">{t.fcMarkUsedHint}</span>
@@ -766,7 +862,7 @@ export function DecisionForecast(props: { t: Dict; node: ScenariaNode; graphVers
       </div>
       {mv && <AuditBox t={t} id={mv.id} compact version={String(props.graphVersion ?? "")} />}
       <button className="btn link" onClick={props.onOpen}>
-        {t.fcOpen}
+        {props.node.chosen ? `${t.stPast} →` : t.fcOpen}
       </button>
     </section>
   );

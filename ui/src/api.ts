@@ -14,15 +14,17 @@ export type { Forecast, ForecastOption, QuickForecast };
 import type { ExpertReport, FactSheet, Finding, Recommendation } from "../../src/core/expert";
 import type { Explain, Quality as ForecastQuality, BenchSummary, Calibration } from "../../src/core/predict";
 export type { Explain, ForecastQuality, BenchSummary, Calibration };
-import type { Audit, Check, DeepAudit, OracleQuality } from "../../src/core/auditor";
+import type { Audit, AuditOverview, AuditRow, BacktestRecord, Check, DeepAudit, OracleQuality, PastDecision, PastOption } from "../../src/core/auditor";
 import type { OracleAdjust } from "../../src/core/oracle";
-export type { Audit, Check, DeepAudit, OracleQuality, OracleAdjust };
-export interface OracleBacktestRun {
-  id: string;
-  createdAt: string;
-  model: string | null;
-  cases: { decision: string; option: string; label: string; core: number; oracle: number; actual: number }[];
-  verified?: boolean;
+export type { Audit, AuditOverview, AuditRow, Check, DeepAudit, OracleQuality, OracleAdjust, PastDecision, PastOption };
+export type OracleBacktestRun = BacktestRecord;
+export interface ForecastJob {
+  kind: "multiverse" | "audit" | "backtest";
+  subject: string;
+  step: string;
+  index?: number;
+  total?: number;
+  startedAt: string;
 }
 import type { KnownProject } from "../../src/core/projects";
 export type { ExpertReport, FactSheet, Finding, Recommendation, KnownProject };
@@ -157,6 +159,11 @@ export const api = {
   deepAudit: (id: string, lang: string, llm?: Partial<LlmCall>) => req<Audit>("/api/forecast/audit", { id, lang, llm }),
   oracleQuality: () => req<OracleQuality & { runs: OracleBacktestRun[] }>("/api/forecast/oracle"),
   oracleBacktest: (limit: number, lang: string, llm?: Partial<LlmCall>) => req<OracleQuality & { run: OracleBacktestRun }>("/api/forecast/oracle-backtest", { limit, lang, llm }),
+  auditOverview: (lang: string) => req<AuditOverview>(`/api/audit/overview?lang=${lang}`),
+  forecastProgress: () => req<{ job: ForecastJob | null; auto: string | null }>("/api/forecast/progress"),
+  pastDecisions: () => req<{ id: string; question: string; at: string; chosen?: string; chosenLabel?: string; options: number; measurable: number }[]>("/api/forecast/past"),
+  createDecision: (question: string, options: { label: string; description?: string }[]) => req<ScenariaNode>("/api/forecast/decision", { question, options }),
+  oracleBacktestDecisions: (decisions: string[], lang: string, llm?: Partial<LlmCall>) => req<OracleQuality & { run: OracleBacktestRun }>("/api/forecast/oracle-backtest", { decisions, lang, llm }),
   benchmark: () => req<BenchSummary & { calibration: Calibration }>("/api/forecast/benchmark", {}),
   markUsed: (id: string, key: string) => req<Forecast>("/api/forecast/used", { id, key }),
   models: (b: { provider: string; baseUrl?: string; apiKey?: string }) => req<{ models: string[] }>("/api/settings/models", b),

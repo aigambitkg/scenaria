@@ -13,6 +13,7 @@ import { AnalysisDialog, CanonDialog, ConversationsDialog, DiffDialog, PromptDia
 import { ChatPanel, RelayDialog, SettingsDialog, type SessionKeys } from "./Control";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { ForecastsDialog } from "./Forecasts";
+import { AuditDialog } from "./AuditArea";
 
 type Pending =
   | { mode: "rewind"; node: ScenariaNode }
@@ -38,6 +39,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
   const [headCtx, setHeadCtx] = useState<{ tokens: number; historyTokens: number } | null>(null);
   const [fidelity, setFidelity] = useState<Fidelity | null>(null);
   const [canonOpen, setCanonOpen] = useState(false);
+  const [auditOpen, setAuditOpen] = useState(false);
   const [canonInfo, setCanonInfo] = useState<{ active: number; proposed: number } | null>(null);
   const [pending, setPending] = useState<Pending>(null);
   const [diff, setDiff] = useState<{ from: string; to: string; stat: string; patch: string } | null>(null);
@@ -224,6 +226,9 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
       case "forecasts":
         setForecastFocus(null);
         break;
+      case "audit":
+        setAuditOpen(true);
+        break;
       case "analysis":
       case "expert":
         setAnalysisTab(a === "expert" ? "expert" : "overview");
@@ -316,6 +321,9 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
           <button className="btn" onClick={() => setForecastFocus(null)} title={t.fcIntro}>
             {t.fcButton}
             {openDecisions > 0 && <span className="hchip mid">{openDecisions}</span>}
+          </button>
+          <button className="btn" onClick={() => setAuditOpen(true)} title={t.adButtonHint}>
+            {t.adButton}
           </button>
           <button className="btn" onClick={() => setCanonOpen(true)} title={t.canonHint}>
             {t.canon}
@@ -584,6 +592,18 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
           onNode={(id) => {
             if (graph?.nodes.some((x) => x.id === id)) setSelected(id);
             setForecastFocus(false);
+            setSide("node");
+          }}
+        />
+      )}
+      {auditOpen && (
+        <AuditDialog
+          t={t}
+          lang={lang}
+          onClose={() => setAuditOpen(false)}
+          onNode={(id) => {
+            if (graph?.nodes.some((x) => x.id === id)) setSelected(id);
+            setAuditOpen(false);
             setSide("node");
           }}
         />

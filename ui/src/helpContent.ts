@@ -2,7 +2,7 @@
  * The help area: every function in plain words — what it is, when it helps, how to use it, one example.
  * Kept as data (DE/EN) so the help dialog, the onboarding and the "?" buttons share one source.
  */
-export type HelpAction = "goal" | "forecasts" | "analysis" | "expert" | "canon" | "chat" | "relay" | "settings" | "prompt" | "conversations" | "protocol" | "projects" | "onboarding";
+export type HelpAction = "goal" | "forecasts" | "audit" | "analysis" | "expert" | "canon" | "chat" | "relay" | "settings" | "prompt" | "conversations" | "protocol" | "projects" | "onboarding";
 
 export interface HelpTopic {
   id: string;
@@ -82,9 +82,9 @@ const de: HelpTopic[] = [
     when: "Vor jeder wichtigen Wahl und bevor du einem Agenten einen großen Prompt gibst.",
     example: "„Login mit Passkeys?“ – der Kern kennt das Wort nicht und gibt 48 ± 20. Das Orakel korrigiert +12, weil Knoten n7 „passwortloses Anmelden“ als Ziel nennt (Beleg n7). Neue Zahl: 48 + α·12 = 52 – nachrechenbar in „Warum diese Zahl?“.",
     how: [
-      "Oben „Prognosen“ öffnen (die Zahl zeigt offene Entscheidungen) – oder einen Entscheidungsknoten anklicken.",
-      "Die Schnellprognose (der Kern) ist sofort da. „Warum diese Zahl?“ zeigt jede Zutat und die Formel.",
-      "Für eine tiefe Prognose „Multiversum starten“: Das Orakel korrigiert den Kern – begrenzt und mit Belegen.",
+      "Oben „Prognosen“ öffnen. Der Tab „Start“ zeigt, ob alles bereit ist (Modell, Freigabe, Hauptziel) – mit dem Knopf, der fehlende Punkte behebt.",
+      "Einen von drei Wegen wählen: offene Entscheidung vorhersagen (keine da? direkt aufschreiben), Prompt prüfen oder eine vergangene Entscheidung nachprüfen.",
+      "„Speichern und vorhersagen“ bzw. „Multiversum starten“: Du siehst, welche Rolle gerade arbeitet; danach steht das Ergebnis in Klartext da. „Details“ zeigt jede Zahl und die Formel.",
       "Den Prüf-Experten lesen (belastbar / mit Vorsicht / nicht belastbar), bei Bedarf die KI-Prüfung starten.",
       "Wählen – mit der Prognose als Begründung. Im Tab „Güte“ siehst du, wie gut die Prognosen auf diesem Projekt bisher waren.",
     ],
@@ -116,6 +116,7 @@ const de: HelpTopic[] = [
     when: "Bevor du nach einer Prognose wählst – vor allem, wenn das Orakel den Kern stark korrigiert hat.",
     example: "Die Passkey-Option: Der Kern hatte gewarnt (eigene Worte ohne Bezug), das Orakel korrigiert mit Beleg n7. Prüf-Experte: „mit Vorsicht“ – erst nach der KI-Prüfung. Der Skeptiker liest n7, bestätigt den Bezug → „belastbar“. Hätte er widersprochen, fiele die Korrektur in der geprüften Prognose weg.",
     how: [
+      "Oben „Prüfung“ öffnen: alle Prognosen mit Ampel (belastbar / mit Vorsicht / nicht belastbar), Kennzahlen und den Prüfbericht zum Herunterladen (Markdown oder JSON).",
       "Unter jeder gespeicherten Prognose: „Prüfpunkte zeigen“ – die Checkliste läuft sofort und ohne KI.",
       "„KI-Prüfung der Orakel-Aussagen“: Ein skeptisches Modell prüft jede Aussage NUR gegen die zitierten Belege (so, wie sie bei der Prognose waren). Nicht belegte Korrekturen fallen in der „geprüften Prognose“ weg.",
       "Im Tab „Güte“: Rückblick (jede vergangene Entscheidung aus ihrer Zeit heraus prognostiziert), Orakel vs. Kern, Prüfstand.",
@@ -133,7 +134,7 @@ const de: HelpTopic[] = [
       "Prüfungen und Backtests werden signiert gespeichert; außerhalb geänderte Dateien werden erkannt und ignoriert.",
       "KI-Prüfung und Orakel-Backtest nutzen dein Modell und brauchen den Freigabe-Link (im Terminal: scenaria forecast --audit f3 --deep).",
     ],
-    open: { action: "forecasts", label: "Prognosen öffnen" },
+    open: { action: "audit", label: "Prüf-Bereich öffnen" },
   },
 
   {
@@ -321,9 +322,9 @@ const en: HelpTopic[] = [
     when: "Before every important choice and before you give an agent a big prompt.",
     example: "\"Login with passkeys?\" — the core does not know the word and gives 48 ± 20. The oracle corrects +12 because node n7 names \"passwordless sign-in\" as a goal (evidence n7). New number: 48 + α·12 = 52 — retraceable in \"Why this number?\".",
     how: [
-      "Open \"Forecasts\" at the top (the number shows open decisions) — or click a decision node.",
-      "The quick forecast (the core) is there at once. \"Why this number?\" shows every ingredient and the formula.",
-      "For a deep one: \"Start multiverse\" — the oracle corrects the core, bounded and with evidence.",
+      "Open \"Forecasts\" at the top. The \"Start\" tab shows whether everything is ready (model, approval, main goal) — with the button that fixes what is missing.",
+      "Pick one of three ways: forecast an open decision (none? write one down right there), check a prompt, or check a past decision.",
+      "\"Save and forecast\" or \"Start multiverse\": you see which role is working; then the result is there in plain words. \"Details\" shows every number and the formula.",
       "Read the auditor (reliable / with caution / not reliable); start the AI check if needed.",
       "Choose — with the forecast as your rationale. The \"Quality\" tab shows how good the forecasts have been on this project.",
     ],
@@ -355,6 +356,7 @@ const en: HelpTopic[] = [
     when: "Before you choose based on a forecast — especially when the oracle corrected the core a lot.",
     example: "The passkey option: the core had warned (own words without connection), the oracle corrects with evidence n7. Auditor: \"with caution\" — until the AI check. The skeptic reads n7 and confirms the link → \"reliable\". Had it disagreed, the correction would be removed in the audited forecast.",
     how: [
+      "Open \"Audit\" at the top: every forecast with a traffic light (reliable / with caution / not reliable), key figures and the audit report to download (Markdown or JSON).",
       "Below every saved forecast: \"Show checks\" — the checklist runs at once, without AI.",
       "\"AI check of the oracle's claims\": a skeptical model checks each claim ONLY against the cited evidence (as it was when the forecast was made). Unsupported corrections are removed in the \"audited forecast\".",
       "In the \"Quality\" tab: backtest (every past decision forecast as of its own time), oracle vs. core, test bench.",
@@ -372,7 +374,7 @@ const en: HelpTopic[] = [
       "Audits and backtests are stored signed; files changed outside are detected and ignored.",
       "The AI check and the oracle backtest use your model and need the approval link (terminal: scenaria forecast --audit f3 --deep).",
     ],
-    open: { action: "forecasts", label: "Open forecasts" },
+    open: { action: "audit", label: "Open the audit area" },
   },
 
   {
