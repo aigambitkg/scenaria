@@ -183,6 +183,20 @@ Answer ONLY with JSON: {"options": [{"key": "<key>", "outcome": "…", "ownAdjus
 ${langLine(lang)}`,
 };
 
+/** The per-option list of a role's answer: "options", another array field, or the array itself. */
+export function listOf(x: any): any[] {
+  if (Array.isArray(x)) return x;
+  if (!x || typeof x !== "object") return [];
+  if (Array.isArray(x.options)) return x.options;
+  return (Object.values(x).find((v) => Array.isArray(v) && v.some((e) => e && typeof e === "object")) as any[]) ?? [];
+}
+
+export type MultiverseStep = "archivist" | "craftsman" | "oracle" | "done";
+const ROLE_NAME = {
+  de: { archivist: "Archivar", craftsman: "Handwerker", oracle: "Orakel" },
+  en: { archivist: "Archivist", craftsman: "Craftsman", oracle: "Oracle" },
+};
+
 export function parseJson(text: string): any {
   const cands = [text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1], text, text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)];
   for (const c of cands) {
@@ -204,7 +218,8 @@ export interface MvOptionInput {
 
 /** Validate one correction: bounded, backed by a reason and existing evidence; applied = Δ·c·γ. */
 export function adjustOf(raw: any, mat: Pick<Material, "ids" | "generic">, confidence: number, gamma: number): OracleAdjust {
-  const proposed = clamp(Math.round(Number(raw?.delta) || 0), -MAX_DELTA, MAX_DELTA);
+  // "+8", "8 points", 8 — all the same.
+  const proposed = clamp(Math.round(parseFloat(String(raw?.delta ?? "").replace(",", ".")) || 0), -MAX_DELTA, MAX_DELTA);
   const why = one(raw?.why, 300);
   const all = strs(raw?.refs, 8, 12);
   const refs = all.filter((r) => mat.ids.has(r) && !mat.generic.has(r));
@@ -231,7 +246,7 @@ export async function runMultiverse(
   v: View,
   subject: { kind: "decision"; node: string; question: string } | { kind: "prompt"; text: string; at: string | null },
   options: MvOptionInput[],
-  opts: { lang?: Lang; llm?: Partial<LlmRequest>; globalOnly?: boolean; gamma?: number } = {},
+  opts: { lang?: Lang; llm?: Partial<LlmRequest>; globalOnly?: boolean; gamma?: number; onStep?: (step: MultiverseStep) => void } = {},
 ): Promise<MultiverseResult> {
   const lang: Lang = opts.lang === "en" ? "en" : "de";
   const gamma = opts.gamma ?? DEFAULT_GAMMA;
@@ -239,22 +254,36 @@ export async function runMultiverse(
   const mat = material(v, at, subject.kind === "decision" ? { excludeDecisionOptions: subject.node } : {});
   const ups = upstreams(s);
   const models: MultiverseResult["models"] = {};
+  const warnings: string[] = [];
   const ask = async (role: "archivist" | "craftsman" | "oracle", user: string) => {
+    opts.onStep?.(role);
     const cfg = effectiveLlm(s, role, opts.llm, { globalOnly: opts.globalOnly });
-    if (!cfg) throw new Error("No model configured — choose one in Settings.");
-    const out = await callLlm(cfg, ups, ROLE_PROMPTS[role](lang), user);
+    if (!cfg) throw new Error(lang === "de" ? "Kein Modell eingestellt – wähle eines in den Einstellungen (⚙)." : "No model configured — choose one in Settings (⚙).");
+    // Errors of the connection (no model, no key, HTTP) are shown as they are; an answer that is not
+    // the expected JSON is asked again once, then the forecast continues without that role.
+    const out = await callLlm(cfg, ups, ROLE_PROMPTS[role](lang), user, undefined, { json: true });
     models[role] = out.model;
-    return parseJson(out.text);
+    try {
+      return parseJson(out.text);
+    } catch {
+      const again = await callLlm(cfg, ups, ROLE_PROMPTS[role](lang), `${user}\n\nYour previous answer was not valid JSON. Answer ONLY with the JSON object described above, nothing else.`, undefined, { json: true });
+      try {
+        return parseJson(again.text);
+      } catch {
+        warnings.push(lang === "de" ? `${ROLE_NAME.de[role]}: Antwort des Modells (${out.model}) war zweimal kein gültiges JSON – ohne diese Rolle weitergerechnet.` : `${ROLE_NAME.en[role]}: the model's answer (${out.model}) was not valid JSON twice — continued without this role.`);
+        return {};
+      }
+    }
   };
   const optionList = options.map((o) => `- key "${o.key}": ${o.label}${o.text ? ` — ${one(o.text, 500)}` : ""}`).join("\n");
   const question = subject.kind === "decision" ? `DECISION: ${subject.question}` : `PROMPT TO EVALUATE (what happens if an agent gets this on the current line?):`;
 
   // 1. Archivist — the past only.
   const a = await ask("archivist", `${question}\nOPTIONS:\n${optionList}\n\n--- PAST ---\n${mat.past}`);
-  const archNotes = (Array.isArray(a.options) ? a.options : []).map((x: any) => `- ${one(x?.key, 10)}: ${one(x?.past, 400)}${strs(x?.refs, 6, 12).length ? ` (${strs(x?.refs, 6, 12).join(", ")})` : ""}`).join("\n");
+  const archNotes = listOf(a).map((x: any) => `- ${one(x?.key, 10)}: ${one(x?.past, 400)}${strs(x?.refs, 6, 12).length ? ` (${strs(x?.refs, 6, 12).join(", ")})` : ""}`).join("\n");
   // 2. Craftsman — the present only.
   const c = await ask("craftsman", `MAIN GOAL: ${mat.goal}\nTASK: ${mat.task}\n${question}\nOPTIONS:\n${optionList}\n\nWHAT THE PAST SAYS (archivist):\n${archNotes || "(nothing)"}\n\n--- CURRENT LINE ---\n${mat.present}`);
-  const craftNotes = (Array.isArray(c.options) ? c.options : [])
+  const craftNotes = listOf(c)
     .map((x: any) => `- ${one(x?.key, 10)}: ${one(x?.present, 300)} | steps: ${strs(x?.trajectory, 3, 120).join(" → ")} | keeps: ${strs(x?.keeps, 4, 120).join("; ") || "-"} | would drop: ${strs(x?.loses, 4, 120).join("; ") || "-"}`)
     .join("\n");
   // 3. Oracle — the future, and the core's numbers it may correct.
@@ -270,16 +299,29 @@ export async function runMultiverse(
     `MAIN GOAL: ${mat.goal}\n${question}\nOPTIONS:\n${optionList}\n\nCORE (word-based, to correct where wrong):\n${coreTable}\n\nFUTURE FIXED POINTS:\n${mat.future}\nHARD PAST CONSTRAINTS:\n${mat.hardPast}\n\nARCHIVIST:\n${archNotes || "(nothing)"}\nCRAFTSMAN:\n${craftNotes || "(nothing)"}\n\nToday: ${(v.asOf ?? new Date().toISOString()).slice(0, 10)}`,
   );
 
-  const byKey = (arr: any, key: string) => (Array.isArray(arr) ? arr.find((x: any) => one(x?.key, 20) === key) : undefined);
-  const warnings: string[] = [];
+  // Models write keys differently ("A", "a)", the label, or only the order): match leniently.
+  const norm = (x: unknown) => one(x, 200).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  const byKey = (arr: any, key: string) => {
+    const list: any[] = Array.isArray(arr) ? arr : [];
+    const opt = options.find((o) => o.key === key)!;
+    const hit =
+      list.find((x: any) => one(x?.key, 20) === key) ??
+      list.find((x: any) => norm(x?.key) === norm(key)) ??
+      list.find((x: any) => norm(x?.key ?? x?.label ?? x?.option) === norm(opt.label));
+    if (hit) return hit;
+    // Same number of entries and none matched by key: take the order.
+    const keyed = list.some((x: any) => options.some((o) => norm(x?.key) === norm(o.key)));
+    return !keyed && list.length === options.length ? list[options.indexOf(opt)] : undefined;
+  };
   const hard = new Set(v.canon.filter((e) => e.hard).map((e) => e.id));
   const out: OracleOption[] = [];
   for (const opt of options) {
-    const pa = byKey(a.options, opt.key);
-    const pr = byKey(c.options, opt.key);
-    const fu = byKey(o.options, opt.key);
+    const pa = byKey(listOf(a), opt.key);
+    const pr = byKey(listOf(c), opt.key);
+    const fu = byKey(listOf(o), opt.key);
     if (!fu) warnings.push(`${opt.key}: ${lang === "de" ? "vom Orakel nicht bewertet – Kern-Prognose bleibt" : "not assessed by the oracle — core forecast kept"}`);
-    const conf = Number(fu?.confidence);
+    const c0 = parseFloat(String(fu?.confidence ?? ""));
+    const conf = c0 > 1 && c0 <= 100 ? c0 / 100 : c0;
     // Rounded to 2 decimals and computed with exactly that value: what is shown can be recomputed.
     const confidence = Number.isFinite(conf) ? Math.round(clamp(conf, 0, 1) * 100) / 100 : 0.5;
     const own = adjustOf(fu?.ownAdjust, mat, confidence, gamma);
@@ -312,8 +354,10 @@ export async function runMultiverse(
       flagResolved: opt.explain.breakRisk && own.backed && own.applied > 0,
     });
   }
-  const recKey = one(o.recommendation?.key, 20);
-  const rec = recKey && options.some((x) => x.key === recKey) ? { key: recKey, why: one(o.recommendation?.why, 600) } : undefined;
+  opts.onStep?.("done");
+  const recRaw = o.recommendation?.key ?? o.recommendation?.option ?? o.recommendation;
+  const recOpt = typeof recRaw === "string" || typeof recRaw === "number" ? options.find((x) => x.key === one(recRaw, 20)) ?? options.find((x) => norm(x.key) === norm(recRaw) || norm(x.label) === norm(recRaw)) : undefined;
+  const rec = recOpt ? { key: recOpt.key, why: one(o.recommendation?.why, 600) } : undefined;
   const best = [...out].sort((x, y) => y.predicted - x.predicted)[0];
   if (rec && best && rec.key !== best.key) warnings.push(lang === "de" ? `Das Orakel empfiehlt ${rec.key}, die korrigierte Prognose spricht für ${best.key}.` : `The oracle recommends ${rec.key}; the corrected forecast favours ${best.key}.`);
   const unbacked = out.flatMap((x) => [x.own, x.ctx]).filter((a) => a.proposed && !a.backed).length;

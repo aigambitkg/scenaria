@@ -31,11 +31,42 @@ const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.l
 
 // ------------------------------------------------------------------ trust in the oracle
 
-interface BacktestRecord {
+/** One option of a decision re-forecast as of its own time — what the person sees in "check a past decision". */
+export interface PastOption {
+  decision: string;
+  option: string;
+  label: string;
+  /** This option was the one really chosen. */
+  chosen: boolean;
+  core: number;
+  oracle: number;
+  /** Measured afterwards (null: the line is too short or the option was never taken). */
+  actual: number | null;
+  actualNodes: number;
+  own: OracleAdjust;
+  ctx: OracleAdjust;
+  outcome: string;
+  risks: string[];
+  capped: boolean;
+}
+export interface PastDecision {
+  id: string;
+  question: string;
+  at: string;
+  chosen?: string;
+  recommended?: string;
+  why?: string;
+  warnings: string[];
+}
+export interface BacktestRecord {
   id: string;
   createdAt: string;
   model: string | null;
+  /** Measured options only — these teach γ. */
   cases: (OracleCase & { decision: string; option: string; label: string; core: number; oracle: number })[];
+  /** Everything the person sees, measured or not. */
+  decisions?: PastDecision[];
+  options?: PastOption[];
   sig?: string;
   pub?: string;
   verified?: boolean;
@@ -164,40 +195,68 @@ export function oracleQuality(s: Scenaria): OracleQuality {
   };
 }
 
+/** Decided decisions the person can check again: what the oracle would have said then vs. what happened. */
+export function pastDecisions(s: Scenaria): { id: string; question: string; at: string; chosen?: string; chosenLabel?: string; options: number; measurable: number }[] {
+  const { cases } = backtestCases(s);
+  return s.store
+    .listNodes()
+    .filter((n) => n.type === "decision" && n.chosen && (n.options?.length ?? 0) > 1)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .map((d) => ({ id: d.id, question: d.question ?? d.title, at: d.createdAt, chosen: d.chosen, chosenLabel: d.options?.find((o) => o.id === d.chosen)?.label, options: d.options!.length, measurable: cases.filter((c) => c.decision === d.id).length }));
+}
+
+export type BacktestStep = { decision: string; index: number; total: number; role: string };
+
 /**
- * Oracle backtest: the last `limit` decisions whose branches can be measured, forecast again as of
- * their own time — core (weights learned without that decision) and core + oracle (γ = 1). Uses the
- * person's model: 3 calls per decision.
+ * Oracle backtest: decisions forecast again as of their own time — core (weights learned without that
+ * decision) and core + oracle (γ = 1). Default: the last `limit` measurable decisions; `decisions`: these
+ * decided ones (measured or not — e.g. "check this past decision"). Uses the person's model: 3 calls each.
  */
-export async function oracleBacktest(s: Scenaria, opts: { limit?: number; lang?: Lang; llm?: Partial<LlmRequest> } = {}): Promise<BacktestRecord> {
+export async function oracleBacktest(s: Scenaria, opts: { limit?: number; decisions?: string[]; lang?: Lang; llm?: Partial<LlmRequest>; onStep?: (st: BacktestStep) => void } = {}): Promise<BacktestRecord> {
+  const lang: Lang = opts.lang === "en" ? "en" : "de";
   const limit = Math.max(1, Math.min(10, opts.limit ?? 5));
   const h = readHistory(s);
   const { cases } = backtestCases(s, h);
-  const decisions = [...new Set(cases.map((c) => c.decision))].slice(-limit);
-  if (!decisions.length) throw new Error("No past decision with a measurable line yet (each option needs 2 steps after it).");
   const now = viewNow(s);
+  let decisions: string[];
+  if (opts.decisions?.length) {
+    decisions = [...new Set(opts.decisions.map(String))].slice(0, 10);
+    for (const id of decisions) {
+      const d = now.nodes.get(id);
+      if (!d || d.type !== "decision" || (d.options?.length ?? 0) < 2) throw new Error(lang === "de" ? `${id} ist keine Entscheidung mit mindestens zwei Optionen.` : `${id} is not a decision with at least two options.`);
+    }
+  } else {
+    decisions = [...new Set(cases.map((c) => c.decision))].slice(-limit);
+    if (!decisions.length) throw new Error(lang === "de" ? "Noch keine vergangene Entscheidung mit messbarem Verlauf (jede Option braucht 2 Schritte danach). Prüfe eine einzelne Entscheidung unter „Vergangene Entscheidung nachprüfen“." : "No past decision with a measurable line yet (each option needs 2 steps after it). Check a single decision under \"Check a past decision\".");
+  }
   const out: BacktestRecord["cases"] = [];
+  const shown: PastOption[] = [];
+  const decs: PastDecision[] = [];
   let model: string | null = null;
-  for (const id of decisions) {
+  for (const [i, id] of decisions.entries()) {
     const d = now.nodes.get(id)!;
-    const w = fit(cases.filter((c) => c.decision !== id));
-    const cal: Calibration = { ...UNCALIBRATED, alpha: w.alpha, beta: w.beta, n: new Set(cases.filter((c) => c.decision !== id).map((c) => c.decision)).size };
+    const others = cases.filter((c) => c.decision !== id);
+    const w = fit(others);
+    const cal: Calibration = { ...UNCALIBRATED, alpha: w.alpha, beta: w.beta, n: new Set(others.map((c) => c.decision)).size };
     const past = viewAsOf(s, d.createdAt, h, d.id);
     const pd = past.nodes.get(d.id);
     if (!pd) continue;
     // Question and options as they were at the decision's time (field history), not as edited later.
     const opts2 = (pd.options ?? []).map((o) => ({ key: o.id, label: o.label, text: o.description, explain: predictOption(past, pd, o, cal).explain }));
-    const mv = await runMultiverse(s, past, { kind: "decision", node: pd.id, question: pd.question ?? pd.title }, opts2, { lang: opts.lang, llm: opts.llm, gamma: 1 });
+    const mv = await runMultiverse(s, past, { kind: "decision", node: pd.id, question: pd.question ?? pd.title }, opts2, { lang, llm: opts.llm, gamma: 1, onStep: (role) => opts.onStep?.({ decision: id, index: i, total: decisions.length, role }) });
     model = mv.models.oracle ?? model;
-    for (const c of cases.filter((x) => x.decision === id)) {
-      const u = mv.options.find((x) => x.key === c.option);
-      const e = opts2.find((x) => x.key === c.option)?.explain;
-      if (!u || !e) continue;
-      out.push({ decision: id, option: c.option, label: c.label, own: e.own.score, inContext: e.inContext.score, line: e.line, risk: e.risk.lessons + e.risk.canon, alpha: e.alpha, beta: e.beta, rawOwn: raw(u.own, u.confidence), rawCtx: raw(u.ctx, u.confidence), capped: u.capped, actual: c.actual, core: e.predicted, oracle: u.predicted });
+    decs.push({ id, question: pd.question ?? pd.title, at: d.createdAt, chosen: d.chosen, recommended: mv.recommended?.key, why: mv.recommended?.why, warnings: mv.warnings });
+    for (const o of opts2) {
+      const u = mv.options.find((x) => x.key === o.key);
+      const c = cases.find((x) => x.decision === id && x.option === o.key);
+      const e = o.explain;
+      if (!u) continue;
+      shown.push({ decision: id, option: o.key, label: o.label, chosen: d.chosen === o.key, core: e.predicted, oracle: u.predicted, actual: c ? c.actual : null, actualNodes: c ? c.actualNodes : 0, own: u.own, ctx: u.ctx, outcome: u.outcome, risks: u.risks.map((r) => r.text), capped: u.capped });
+      if (c) out.push({ decision: id, option: c.option, label: c.label, own: e.own.score, inContext: e.inContext.score, line: e.line, risk: e.risk.lessons + e.risk.canon, alpha: e.alpha, beta: e.beta, rawOwn: raw(u.own, u.confidence), rawCtx: raw(u.ctx, u.confidence), capped: u.capped, actual: c.actual, core: e.predicted, oracle: u.predicted });
     }
   }
-  const rec = saveSigned<BacktestRecord>(s, btDir(s), "b", "forecast-backtest/v1", { createdAt: new Date().toISOString(), model, cases: out });
-  s.store.appendEvent({ type: "analysis", data: { message: `oracle backtest ${rec.id}: ${out.length} options from ${decisions.length} decisions`, id: rec.id } });
+  const rec = saveSigned<BacktestRecord>(s, btDir(s), "b", "forecast-backtest/v1", { createdAt: new Date().toISOString(), model, cases: out, decisions: decs, options: shown });
+  s.store.appendEvent({ type: "analysis", data: { message: `oracle backtest ${rec.id}: ${decisions.length} decision(s), ${out.length} measured option(s)`, id: rec.id } });
   return rec;
 }
 

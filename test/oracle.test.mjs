@@ -318,3 +318,99 @@ test("a warning is never resolved when the skeptic does not confirm the evidence
     f0.close();
   }
 });
+
+test("robust oracle: a broken answer is asked again, then the forecast continues; keys, labels, order and '75' confidence are understood", async () => {
+  const { s } = project();
+  const d = decision(s);
+  let oracleCalls = 0;
+  const steps = [];
+  const f0 = await fakeLlm((body) => {
+    if (/ARCHIVIST of a multiverse/.test(sys(body))) return "Sorry, I cannot answer in JSON."; // twice broken
+    if (/CRAFTSMAN of a multiverse/.test(sys(body))) return JSON.stringify({ results: [{ key: "A", present: "quests", trajectory: ["x"] }, { key: "B", present: "wallet", trajectory: ["y"] }] });
+    oracleCalls++;
+    if (oracleCalls === 1) return "```\nnot json";
+    return JSON.stringify({ options: [{ key: "Streak reminder", ownAdjust: { delta: "+10", why: "continues the daily quest backend", refs: ["n2"] }, confidence: 75 }, { outcome: "stall", confidence: "0.5" }], recommendation: "Streak reminder" });
+  });
+  try {
+    const f = await forecast(s, { node: d.id, llm: f0.llm, onStep: (st) => steps.push(st) });
+    assert.deepEqual(steps, ["archivist", "craftsman", "oracle", "done"]);
+    assert.ok(f.warnings.some((w) => /Archivar.*kein gültiges JSON/.test(w)), JSON.stringify(f.warnings));
+    const a = f.options.find((o) => o.key === "a");
+    const b = f.options.find((o) => o.key === "b");
+    assert.equal(a.universe.present, "quests", "upper-case key matched");
+    assert.equal(a.universe.confidence, 0.75, "75 → 0.75");
+    assert.equal(a.universe.own.proposed, 10, "'+10' understood");
+    assert.equal(a.universe.own.applied, 8);
+    assert.equal(b.universe.outcome, "stall", "no key at all, same count → by order");
+    assert.equal(b.universe.confidence, 0.5);
+    assert.equal(f.recommended.key, "a", "recommendation by label");
+  } finally {
+    f0.close();
+  }
+});
+
+test("person: write down a decision, see progress while the model works, check a past decision as of its own time", async () => {
+  const { p, s } = project();
+  let release;
+  const gate = new Promise((r) => (release = r));
+  const f0 = await fakeLlm(replies(ORACLE));
+  // slow model: the oracle waits until the test has seen the progress
+  const slow = createServer(async (req, res) => {
+    let b = "";
+    for await (const c of req) b += c;
+    const body = JSON.parse(b);
+    if (/ORACLE of a multiverse/.test(sys(body))) await gate;
+    const r = await fetch(`${f0.llm.baseUrl}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: b });
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(await r.text());
+  });
+  await new Promise((r) => slow.listen(0, "127.0.0.1", r));
+  const llm = { provider: "fake", model: "m", baseUrl: `http://127.0.0.1:${slow.address().port}/v1` };
+  const app = createApp(s, { approvalCode: "c", approvalSecret: "sess", autoForecast: false });
+  const server = createServer(app.handler);
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const H = { "content-type": "application/json", "x-scenaria": "1", cookie: "scenaria_approval=sess" };
+  try {
+    // agents cannot write a decision through the person's endpoint
+    assert.equal((await fetch(`${base}/api/forecast/decision`, { method: "POST", headers: { "content-type": "application/json", "x-scenaria": "1" }, body: JSON.stringify({ question: "Next?", options: ["A", "B"] }) })).status, 403);
+    const bad = await fetch(`${base}/api/forecast/decision`, { method: "POST", headers: H, body: JSON.stringify({ question: "Next?", options: ["only one"] }) });
+    assert.equal(bad.status, 400);
+    const d = await (await fetch(`${base}/api/forecast/decision`, { method: "POST", headers: H, body: JSON.stringify({ question: "Next feature?", options: [{ label: "Streak reminder", description: "push before a daily quest streak resets" }, "Wallet"] }) })).json();
+    assert.equal(d.type, "decision");
+    assert.equal(d.options.length, 2);
+    const run = fetch(`${base}/api/forecast`, { method: "POST", headers: H, body: JSON.stringify({ node: d.id, llm }) }).then((r) => r.json());
+    let prog;
+    for (let i = 0; i < 50; i++) {
+      prog = await (await fetch(`${base}/api/forecast/progress`)).json();
+      if (prog.job?.step === "oracle") break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.equal(prog.job.kind, "multiverse");
+    assert.equal(prog.job.step, "oracle");
+    release();
+    const f = await run;
+    assert.equal(f.mode, "multiverse");
+    assert.equal((await (await fetch(`${base}/api/forecast/progress`)).json()).job, null);
+    // the decision is chosen and its line goes on: check it as of its own time
+    s.choose(d.id, "a", "on goal");
+    p.write("x1.txt", "1");
+    s.checkpoint({ title: "Streak reminder push for daily quests" });
+    const past = await (await fetch(`${base}/api/forecast/past`)).json();
+    assert.equal(past[0].id, d.id);
+    assert.equal(past[0].chosenLabel, "Streak reminder");
+    assert.equal(past[0].measurable, 0, "one step is not measurable yet");
+    const bt = await (await fetch(`${base}/api/forecast/oracle-backtest`, { method: "POST", headers: H, body: JSON.stringify({ decisions: [d.id], llm }) })).json();
+    assert.equal(bt.run.decisions[0].id, d.id);
+    assert.equal(bt.run.options.length, 2);
+    const a = bt.run.options.find((o) => o.option === "a");
+    assert.equal(a.chosen, true);
+    assert.equal(a.actual, null, "not measurable yet — shown, not scored");
+    assert.equal(bt.run.cases.length, 0, "nothing teaches γ without a measurement");
+  } finally {
+    app.close();
+    server.close();
+    slow.close();
+    f0.close();
+  }
+});

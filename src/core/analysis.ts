@@ -458,7 +458,7 @@ export function llmTimeout(r: { local: boolean; kind: string }) {
   return r.local || r.kind === "ollama" ? 600_000 : 240_000;
 }
 
-export async function callLlm(cfg: LlmRequest, upstreams: Record<string, string>, system: string, user: string, timeoutMs?: number): Promise<{ text: string; model: string; usage?: unknown }> {
+export async function callLlm(cfg: LlmRequest, upstreams: Record<string, string>, system: string, user: string, timeoutMs?: number, opts: { json?: boolean } = {}): Promise<{ text: string; model: string; usage?: unknown }> {
   const r = resolveLlm(cfg, upstreams);
   timeoutMs ??= llmTimeout(r);
   const ctrl = new AbortController();
@@ -476,7 +476,7 @@ export async function callLlm(cfg: LlmRequest, upstreams: Record<string, string>
       res = await fetch(`${r.nativeBase}/api/chat`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ model: r.model, messages: [{ role: "system", content: system }, { role: "user", content: user }], stream: false, options: { num_ctx: OLLAMA_CTX(), temperature: 0.2 } }),
+        body: JSON.stringify({ model: r.model, messages: [{ role: "system", content: system }, { role: "user", content: user }], stream: false, ...(opts.json ? { format: "json" } : {}), options: { num_ctx: OLLAMA_CTX(), temperature: 0.2 } }),
         signal: ctrl.signal,
       });
     } else {

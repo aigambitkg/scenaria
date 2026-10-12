@@ -27,7 +27,7 @@ import { effectiveLlm, listModels, readSettings, upstreams, writeSettings } from
 import { listRelays, runRelay } from "./core/relay.js";
 import { benchmarkInWorker, calibrationFor, forecastQuality } from "./core/predict.js";
 import { autoBudget, evaluateForecasts, forecast, listForecasts, markUsed, openWithoutForecast, quickDecision, quickPrompt } from "./core/forecast.js";
-import { auditForecast, deepAudit, listOracleBacktests, oracleBacktest, oracleQuality } from "./core/auditor.js";
+import { auditForecast, deepAudit, listOracleBacktests, oracleBacktest, oracleQuality, pastDecisions } from "./core/auditor.js";
 import { chat } from "./chat.js";
 import { TARGETS, agentStatus, connectionSnippets, setupAgents, type Target } from "./setup.js";
 import { callLlm } from "./core/analysis.js";
@@ -190,6 +190,20 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
   // switched it on in Settings, only with the model the PERSON chose (never the project file), with a
   // daily limit. One at a time; at most two attempts per decision, then it is reported as failed.
   let forecasting: string | null = null;
+  // What the person's model is doing right now (multiverse, AI check, backtest): shown while it runs.
+  type Job = { kind: "multiverse" | "audit" | "backtest"; subject: string; step: string; index?: number; total?: number; startedAt: string };
+  let job: Job | null = null;
+  const runJob = async <T>(j: Omit<Job, "startedAt" | "step">, fn: (step: (st: Partial<Job>) => void) => Promise<T>): Promise<T> => {
+    if (job) throw new Error(`Läuft gerade: ${job.kind} ${job.subject} — bitte warten. / Already running: ${job.kind} ${job.subject}.`);
+    job = { ...j, step: "start", startedAt: new Date().toISOString() };
+    try {
+      return await fn((st) => {
+        if (job) job = { ...job, ...st };
+      });
+    } finally {
+      job = null;
+    }
+  };
   const attempts = new Map<string, { n: number; at: number; error?: string }>();
   const autoForecast = () => {
     if (forecasting || opts.autoForecast === false) return;
@@ -487,6 +501,19 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           return send(res, 200, { ...evaluateForecasts(s), running: forecasting, open: openWithoutForecast(s), failed, auto: { ...readSettings(s).forecast, usedToday: autoBudget(s).used() } });
         }
         if (req.method === "GET" && p === "/api/forecast/quality") return send(res, 200, forecastQuality(s));
+        if (req.method === "GET" && p === "/api/forecast/progress") return send(res, 200, { job, auto: forecasting });
+        if (req.method === "GET" && p === "/api/forecast/past") return send(res, 200, pastDecisions(s));
+        if (req.method === "POST" && p === "/api/forecast/decision") {
+          // The person writes down a decision to forecast (question + at least two options).
+          const b = await readBody(req);
+          const question = String(b?.question ?? "").trim().slice(0, 400);
+          const options = (Array.isArray(b?.options) ? b.options : [])
+            .map((o: any) => (typeof o === "string" ? { label: o } : { label: String(o?.label ?? ""), description: o?.description ? String(o.description).slice(0, 1000) : undefined }))
+            .map((o: { label: string; description?: string }) => ({ ...o, label: o.label.trim().slice(0, 200) }))
+            .filter((o: { label: string }) => o.label);
+          if (question.length < 3 || options.length < 2) return send(res, 400, { error: "Eine Frage und mindestens zwei Optionen. / A question and at least two options." });
+          return send(res, 200, s.decide({ question, options: options.slice(0, 6), agent: "dashboard", source: "ui", user: token ? ctx.user : defaultUserName() }));
+        }
         if (req.method === "POST" && p === "/api/forecast/benchmark") {
           // Throw-away projects in the temp folder; uses the calibration this project's forecasts use.
           const cal = calibrationFor(s);
@@ -509,7 +536,10 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           if (token && b?.llm?.baseUrl) return send(res, 400, { error: "custom base URLs are disabled in team mode" });
           try {
             const lang = b?.lang === "en" ? "en" : "de";
-            const rec = await deepAudit(s, String(b?.id ?? ""), { lang, llm: b?.llm });
+            const rec = await runJob({ kind: "audit", subject: String(b?.id ?? "") }, (step) => {
+              step({ step: "auditor" });
+              return deepAudit(s, String(b?.id ?? ""), { lang, llm: b?.llm });
+            });
             const f = listForecasts(s).find((x) => x.id === rec.forecast)!;
             return send(res, 200, auditForecast(s, f, lang));
           } catch (err: any) {
@@ -521,7 +551,10 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           const b = await readBody(req);
           if (token && b?.llm?.baseUrl) return send(res, 400, { error: "custom base URLs are disabled in team mode" });
           try {
-            const rec = await oracleBacktest(s, { limit: Number(b?.limit) || 5, lang: b?.lang === "en" ? "en" : "de", llm: b?.llm });
+            const decisions = Array.isArray(b?.decisions) ? b.decisions.map(String) : undefined;
+            const rec = await runJob({ kind: "backtest", subject: decisions?.join(", ") ?? "last decisions" }, (step) =>
+              oracleBacktest(s, { limit: Number(b?.limit) || 5, decisions, lang: b?.lang === "en" ? "en" : "de", llm: b?.llm, onStep: (st) => step({ step: st.role, subject: st.decision, index: st.index + 1, total: st.total }) }),
+            );
             return send(res, 200, { run: rec, ...oracleQuality(s) });
           } catch (err: any) {
             return send(res, 502, { error: err?.message ?? String(err) });
@@ -541,7 +574,9 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           const b = await readBody(req, 200_000);
           if (token && b?.llm?.baseUrl) return send(res, 400, { error: "custom base URLs are disabled in team mode" });
           try {
-            return send(res, 200, await forecast(s, { node: b?.node ? String(b.node) : undefined, prompt: b?.prompt ? String(b.prompt) : undefined, variants: Array.isArray(b?.variants) ? b.variants.map(String) : undefined, quick: b?.quick === true, lang: b?.lang === "en" ? "en" : "de", llm: b?.llm, trigger: "person" }));
+            const fr = { node: b?.node ? String(b.node) : undefined, prompt: b?.prompt ? String(b.prompt) : undefined, variants: Array.isArray(b?.variants) ? b.variants.map(String) : undefined, quick: b?.quick === true, lang: (b?.lang === "en" ? "en" : "de") as "de" | "en", llm: b?.llm, trigger: "person" as const };
+            if (fr.quick) return send(res, 200, await forecast(s, fr));
+            return send(res, 200, await runJob({ kind: "multiverse", subject: fr.node ?? "prompt" }, (step) => forecast(s, { ...fr, onStep: (st) => step({ step: st }) })));
           } catch (err: any) {
             return send(res, 502, { error: err?.message ?? String(err) });
           }
