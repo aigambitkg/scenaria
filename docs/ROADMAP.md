@@ -84,6 +84,7 @@
 - [x] Backtest without knowledge of the future (field history), quality vs. naive persistence, test bench
 - [x] Oracle v2: bounded, evidence-backed corrections of the core; learned trust γ; evidence kept as cited
 - [x] Prüf-Experte: checklist and verdict per forecast, skeptic model, oracle backtest, oracle vs. core
+- [x] 0.9.1: simple start (ready check, three paths, write down a decision), visible progress, plain-language result, check a past decision, robust oracle with local models, auditor's area with report download
 
 ## Next
 
