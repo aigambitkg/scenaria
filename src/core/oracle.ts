@@ -44,6 +44,8 @@ export interface OracleAdjust {
   backed: boolean;
   /** Evidence ids the oracle gave that do not exist in its material (dropped). */
   dropped: string[];
+  /** Existing but too general ids (the project root, the task, the decision itself): not evidence. */
+  ignored?: string[];
 }
 
 export interface OracleOption {
@@ -74,6 +76,9 @@ export interface OracleOption {
 
 export interface MultiverseResult {
   options: OracleOption[];
+  /** The text behind every cited id AS THE ROLES SAW IT — kept with the forecast (signed), so the
+   * auditor later checks against what was cited, not against a text edited afterwards. */
+  evidence: Record<string, string>;
   recommended?: { key: string; why: string };
   models: Partial<Record<LlmRole, string>>;
   warnings: string[];
@@ -112,12 +117,15 @@ export interface Material {
   ids: Set<string>;
   /** Text behind each id (for the auditor and the relevance check). */
   texts: Map<string, string>;
+  /** Ids that exist but say nothing specific (root, task, the decision itself): never evidence alone. */
+  generic: Set<string>;
 }
 
 /** What the three roles may see — from a view, so a backtest sees only its own time. */
 export function material(v: View, at: string | null, opts: { excludeDecisionOptions?: string } = {}): Material {
   const path = at ? pathOf(v, at).map((n) => (n.id === opts.excludeDecisionOptions ? { ...n, chosen: undefined, rationale: undefined } : n)) : [];
   const task = nearestGoal(path);
+  const generic = new Set<string>([...path.filter((n) => !n.parentId || n.type === "mission" || n.type === "goal").map((n) => n.id), ...(opts.excludeDecisionOptions ? [opts.excludeDecisionOptions] : [])]);
   const onPath = new Set(path.map((n) => n.id));
   const earlierDecisions = [...v.nodes.values()]
     .filter((n) => n.type === "decision" && n.chosen && !onPath.has(n.id))
@@ -154,6 +162,7 @@ export function material(v: View, at: string | null, opts: { excludeDecisionOpti
     hardPast: v.canon.filter((e) => e.kind === "past" && e.hard).map((e) => `- ${e.id}: ${one(e.text, 200)}`).join("\n") || "(none)",
     ids,
     texts,
+    generic,
   };
 }
 
@@ -194,13 +203,16 @@ export interface MvOptionInput {
 }
 
 /** Validate one correction: bounded, backed by a reason and existing evidence; applied = Δ·c·γ. */
-export function adjustOf(raw: any, mat: Material, confidence: number, gamma: number): OracleAdjust {
+export function adjustOf(raw: any, mat: Pick<Material, "ids" | "generic">, confidence: number, gamma: number): OracleAdjust {
   const proposed = clamp(Math.round(Number(raw?.delta) || 0), -MAX_DELTA, MAX_DELTA);
   const why = one(raw?.why, 300);
   const all = strs(raw?.refs, 8, 12);
-  const refs = all.filter((r) => mat.ids.has(r));
+  const refs = all.filter((r) => mat.ids.has(r) && !mat.generic.has(r));
+  const ignored = all.filter((r) => mat.ids.has(r) && mat.generic.has(r));
   const backed = Boolean(proposed && why && refs.length);
-  return { proposed, applied: backed ? Math.round(proposed * confidence * gamma) : 0, why, refs, backed, dropped: all.filter((r) => !mat.ids.has(r)) };
+  // The bound holds for what counts, too: γ (up to 1.5) never pushes a correction past ±20.
+  const applied = backed ? clamp(Math.round(proposed * confidence * gamma), -MAX_DELTA, MAX_DELTA) : 0;
+  return { proposed, applied, why, refs, backed, dropped: all.filter((r) => !mat.ids.has(r)), ...(ignored.length ? { ignored } : {}) };
 }
 
 /** The final number of one option from the core derivation and the oracle's corrections. */
@@ -268,7 +280,8 @@ export async function runMultiverse(
     const fu = byKey(o.options, opt.key);
     if (!fu) warnings.push(`${opt.key}: ${lang === "de" ? "vom Orakel nicht bewertet – Kern-Prognose bleibt" : "not assessed by the oracle — core forecast kept"}`);
     const conf = Number(fu?.confidence);
-    const confidence = Number.isFinite(conf) ? clamp(conf, 0, 1) : 0.5;
+    // Rounded to 2 decimals and computed with exactly that value: what is shown can be recomputed.
+    const confidence = Number.isFinite(conf) ? Math.round(clamp(conf, 0, 1) * 100) / 100 : 0.5;
     const own = adjustOf(fu?.ownAdjust, mat, confidence, gamma);
     const ctx = adjustOf(fu?.ctxAdjust, mat, confidence, gamma);
     const canonRisks = strs(fu?.canonRisks, 6, 10).filter((k) => mat.ids.has(k) && v.canon.some((e) => e.id === k));
@@ -294,6 +307,8 @@ export async function runMultiverse(
       predicted: r.predicted,
       capped: r.capped,
       gamma,
+      // Only a CANDIDATE: the oracle raised flagged own words with specific evidence (synonyms, another
+      // language …). The auditor counts the warning as resolved only once the skeptic confirms the evidence.
       flagResolved: opt.explain.breakRisk && own.backed && own.applied > 0,
     });
   }
@@ -303,7 +318,9 @@ export async function runMultiverse(
   if (rec && best && rec.key !== best.key) warnings.push(lang === "de" ? `Das Orakel empfiehlt ${rec.key}, die korrigierte Prognose spricht für ${best.key}.` : `The oracle recommends ${rec.key}; the corrected forecast favours ${best.key}.`);
   const unbacked = out.flatMap((x) => [x.own, x.ctx]).filter((a) => a.proposed && !a.backed).length;
   if (unbacked) warnings.push(lang === "de" ? `${unbacked} Korrektur(en) des Orakels ohne Grund oder gültige Belege – nicht gewertet.` : `${unbacked} oracle correction(s) without a reason or valid evidence — not counted.`);
-  return { options: out, recommended: rec, models, warnings };
+  const cited = new Set(out.flatMap((x) => [...x.own.refs, ...x.ctx.refs, ...x.risks.flatMap((r) => r.refs), ...x.pastRefs, ...x.canonRisks]));
+  const evidence = Object.fromEntries([...cited].map((id) => [id, mat.texts.get(id) ?? ""]));
+  return { options: out, recommended: rec, models, warnings, evidence };
 }
 
 // ------------------------------------------------------------------ trust in the oracle (γ)

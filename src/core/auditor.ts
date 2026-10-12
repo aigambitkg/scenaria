@@ -82,12 +82,16 @@ function saveSigned<T extends { id: string }>(s: Scenaria, dir: string, prefix: 
   return { ...out, verified: true };
 }
 
+/** A correction that counts at least this many points needs the skeptic's agreement for "reliable". */
+const BIG = 10;
+/** Like the core's quality: the oracle-vs-core comparison is meaningful from 10 decisions. */
+const MIN_ORACLE_DECISIONS = 10;
 const raw = (a: OracleAdjust | undefined, confidence: number) => (a?.backed ? a.proposed * confidence : 0);
 
 /** Live multiverse forecasts (oracle v2) that were later checked against reality. */
-function liveOracleCases(s: Scenaria): (OracleCase & { core: number; oracle: number })[] {
+function liveOracleCases(s: Scenaria): (OracleCase & { core: number; oracle: number; decision: string })[] {
   const ev = evaluateForecasts(s);
-  const out: (OracleCase & { core: number; oracle: number })[] = [];
+  const out: (OracleCase & { core: number; oracle: number; decision: string })[] = [];
   for (const f of ev.forecasts) {
     if (!f.verified || f.mode !== "multiverse" || (f.oracle ?? 1) < 2 || !f.actual) continue;
     for (const a of f.actual) {
@@ -95,7 +99,7 @@ function liveOracleCases(s: Scenaria): (OracleCase & { core: number; oracle: num
       const e = o?.quick.explain;
       const u = o?.universe;
       if (!o || !e || !u || u.core === undefined) continue;
-      out.push({ own: e.own.score, inContext: e.inContext.score, line: e.line, risk: e.risk.lessons + e.risk.canon, alpha: e.alpha, beta: e.beta, rawOwn: raw(u.own, u.confidence), rawCtx: raw(u.ctx, u.confidence), capped: Boolean(u.capped), actual: a.measured, core: u.core, oracle: o.score });
+      out.push({ own: e.own.score, inContext: e.inContext.score, line: e.line, risk: e.risk.lessons + e.risk.canon, alpha: e.alpha, beta: e.beta, rawOwn: raw(u.own, u.confidence), rawCtx: raw(u.ctx, u.confidence), capped: Boolean(u.capped), actual: a.measured, core: u.core, oracle: o.score, decision: f.subject.kind === "decision" ? f.subject.node : f.id });
     }
   }
   return out;
@@ -131,6 +135,10 @@ export interface OracleQuality {
   skillVsCore: number | null;
   /** Checked cases in which the oracle changed the number at all. */
   corrected: number;
+  /** Distinct decisions among them, and whether that is enough to trust the comparison (same rule as the core). */
+  decisions: number;
+  minDecisions: number;
+  enough: boolean;
 }
 
 export function oracleQuality(s: Scenaria): OracleQuality {
@@ -150,6 +158,9 @@ export function oracleQuality(s: Scenaria): OracleQuality {
     backtest: { n: bt.length, runs: runs.length, maeCore: mae(bt, "core"), maeOracle: mae(bt, "oracle") },
     skillVsCore: mc && mo !== null ? Math.round((1 - mo / mc) * 100) / 100 : null,
     corrected: all.length,
+    decisions: new Set(all.map((c) => c.decision)).size,
+    minDecisions: MIN_ORACLE_DECISIONS,
+    enough: new Set(all.map((c) => c.decision)).size >= MIN_ORACLE_DECISIONS,
   };
 }
 
@@ -174,8 +185,9 @@ export async function oracleBacktest(s: Scenaria, opts: { limit?: number; lang?:
     const past = viewAsOf(s, d.createdAt, h, d.id);
     const pd = past.nodes.get(d.id);
     if (!pd) continue;
-    const opts2 = (d.options ?? []).map((o) => ({ key: o.id, label: o.label, text: o.description, explain: predictOption(past, pd, o, cal).explain }));
-    const mv = await runMultiverse(s, past, { kind: "decision", node: d.id, question: d.question ?? d.title }, opts2, { lang: opts.lang, llm: opts.llm, gamma: 1 });
+    // Question and options as they were at the decision's time (field history), not as edited later.
+    const opts2 = (pd.options ?? []).map((o) => ({ key: o.id, label: o.label, text: o.description, explain: predictOption(past, pd, o, cal).explain }));
+    const mv = await runMultiverse(s, past, { kind: "decision", node: pd.id, question: pd.question ?? pd.title }, opts2, { lang: opts.lang, llm: opts.llm, gamma: 1 });
     model = mv.models.oracle ?? model;
     for (const c of cases.filter((x) => x.decision === id)) {
       const u = mv.options.find((x) => x.key === c.option);
@@ -223,7 +235,10 @@ const T = {
     calibBad: (n: number, sk: number) => `Kern auf diesem Projekt bisher NICHT besser als die naive Fortschreibung (${n} Entscheidungen, Skill ${sk}).`,
     calibFew: (n: number, min: number) => `Erst ${n} auswertbare Entscheidungen (aussagekräftig ab ${min}) – Zahlen als Tendenz lesen.`,
     flagOpen: (k: string) => `Warnflagge offen bei ${k}: eigene Worte ohne Bezug zum Kontext – Multiversum oder Mensch prüfen lassen.`,
-    flagResolved: (k: string) => `Warnflagge bei ${k} vom Orakel mit Belegen entkräftet.`,
+    flagResolved: (k: string) => `Warnflagge bei ${k} vom Orakel mit Belegen entkräftet – von der KI-Prüfung bestätigt.`,
+    flagPending: (k: string) => `Warnflagge bei ${k}: das Orakel nennt passende Belege – erst entkräftet, wenn die KI-Prüfung sie bestätigt.`,
+    generic: (k: string) => `Zu allgemeine Verweise (Projekt, Aufgabe, die Entscheidung selbst) zählen nicht als Beleg: ${k}.`,
+    bigUnchecked: (k: string) => `Große Korrektur(en) ohne KI-Prüfung: ${k} – vor dem Verlassen darauf die KI-Prüfung starten.`,
     backedOk: (n: number) => `Alle ${n} Korrekturen des Orakels mit Grund und gültigen Belegen.`,
     backedWarn: (u: number, n: number, dr: number) => `${u} von ${n} Korrekturen ohne Grund/gültige Belege (nicht gewertet)${dr ? `, ${dr} erfundene Belege verworfen` : ""}.`,
     noCorrections: "Das Orakel hat den Kern nicht korrigiert.",
@@ -235,7 +250,7 @@ const T = {
     canon: (k: string) => `Harter Fixpunkt in Gefahr (${k}) – Prognose auf ${40} gedeckelt.`,
     deepOk: (n: number) => `KI-Prüfung: alle ${n} Aussagen des Orakels von ihren Belegen getragen.`,
     deepWarn: (bad: string) => `KI-Prüfung: nicht belegt/widerlegt – ${bad}. Die geprüfte Prognose ohne diese Korrekturen verwenden.`,
-    deepUnsigned: "KI-Prüfung nicht von Scenaria signiert (außerhalb geändert) – ignoriert.",
+    deepUnsigned: (n: number) => `${n} KI-Prüfung(en) nicht von Scenaria signiert (außerhalb geschrieben/geändert) – ignoriert.`,
   },
   en: {
     timingOk: "Made before the choice — a fair test.",
@@ -255,7 +270,10 @@ const T = {
     calibBad: (n: number, sk: number) => `Core NOT better than the naive forecast on this project so far (${n} decisions, skill ${sk}).`,
     calibFew: (n: number, min: number) => `Only ${n} measurable decisions (meaningful from ${min}) — read the numbers as a tendency.`,
     flagOpen: (k: string) => `Warning open for ${k}: own words without connection to the context — have the multiverse or a person check it.`,
-    flagResolved: (k: string) => `Warning for ${k} resolved by the oracle with evidence.`,
+    flagResolved: (k: string) => `Warning for ${k} resolved by the oracle with evidence — confirmed by the AI check.`,
+    flagPending: (k: string) => `Warning for ${k}: the oracle cites fitting evidence — resolved only once the AI check confirms it.`,
+    generic: (k: string) => `Too general references (project, task, the decision itself) do not count as evidence: ${k}.`,
+    bigUnchecked: (k: string) => `Large correction(s) without an AI check: ${k} — run the AI check before relying on them.`,
     backedOk: (n: number) => `All ${n} corrections of the oracle with a reason and valid evidence.`,
     backedWarn: (u: number, n: number, dr: number) => `${u} of ${n} corrections without a reason/valid evidence (not counted)${dr ? `, ${dr} invented evidence ids dropped` : ""}.`,
     noCorrections: "The oracle did not correct the core.",
@@ -267,13 +285,28 @@ const T = {
     canon: (k: string) => `Hard fixed point at risk (${k}) — forecast capped at ${40}.`,
     deepOk: (n: number) => `AI check: all ${n} claims of the oracle carried by their evidence.`,
     deepWarn: (bad: string) => `AI check: not supported/contradicted — ${bad}. Use the audited forecast without these corrections.`,
-    deepUnsigned: "AI check not signed by Scenaria (changed outside) — ignored.",
+    deepUnsigned: (n: number) => `${n} AI check(s) not signed by Scenaria (written/changed outside) — ignored.`,
   },
 };
 
 function choiceTime(s: Scenaria, node: string): string | null {
   const ev = s.store.readEvents().filter((e) => e.type === "choose" && e.nodeId === node);
   return ev.length ? ev[0].ts : null;
+}
+
+/**
+ * What the oracle's evidence said WHEN the forecast was made: the texts kept (signed) with the forecast;
+ * for older forecasts the material rebuilt as of the forecast's time — never today's (edited) texts.
+ */
+function evidenceOf(s: Scenaria, f: Forecast): { texts: Map<string, string>; goal: string } {
+  const at = f.subject.kind === "decision" ? f.subject.node : f.subject.at;
+  const past = material(viewAsOf(s, f.createdAt, undefined, at ?? undefined), at, f.subject.kind === "decision" ? { excludeDecisionOptions: f.subject.node } : {});
+  return { texts: f.evidence ? new Map(Object.entries(f.evidence)) : past.texts, goal: past.goal };
+}
+
+/** The newest deep audit signed by Scenaria (an unsigned file never hides it). */
+function latestDeep(deep: DeepAudit[]): { ok?: DeepAudit; unsigned: number } {
+  return { ok: deep.find((d) => d.verified), unsigned: deep.filter((d) => !d.verified).length };
 }
 
 /** The checklist of one forecast (deterministic, nothing stored). */
@@ -307,11 +340,16 @@ export function auditForecast(s: Scenaria, f: Forecast, lang: Lang = "de"): Audi
   const q = forecastQuality(s);
   if (!q.enough) add("calibration", "warn", t.calibFew(q.decisions, q.minDecisions));
   else add("calibration", (q.skill ?? 0) > 0 ? "ok" : "warn", (q.skill ?? 0) > 0 ? t.calibOk(q.decisions, q.skill!) : t.calibBad(q.decisions, q.skill ?? 0));
-  // 6. warning flags
+  const deep = listDeepAudits(s, f.id);
+  const { ok: d0, unsigned } = latestDeep(deep);
+  const supported = (claim: string) => Boolean(d0?.verdicts.some((v) => v.claim === claim && v.verdict === "supported"));
+  // 6. warning flags — resolved only when the skeptic agrees with the oracle's evidence.
   const flagged = f.options.filter((o) => o.quick.explain?.breakRisk);
-  const resolved = flagged.filter((o) => o.universe?.flagResolved).map((o) => o.key);
+  const resolved = flagged.filter((o) => o.universe?.flagResolved && supported(`${o.key}.own`)).map((o) => o.key);
+  const pending = flagged.filter((o) => o.universe?.flagResolved && !supported(`${o.key}.own`)).map((o) => o.key);
   const open = flagged.filter((o) => !o.universe?.flagResolved).map((o) => o.key);
   if (resolved.length) add("flags", "ok", t.flagResolved(resolved.join(", ")));
+  if (pending.length) add("flags", "warn", t.flagPending(pending.join(", ")));
   if (open.length) add("flags", "warn", t.flagOpen(open.join(", ")));
   // 7. the oracle
   if (f.mode === "multiverse" && (f.oracle ?? 1) >= 2) {
@@ -320,8 +358,13 @@ export function auditForecast(s: Scenaria, f: Forecast, lang: Lang = "de"): Audi
     const dropped = adj.reduce((n, x) => n + x.a.dropped.length, 0);
     if (!adj.length) add("evidence", "info", t.noCorrections);
     else add("evidence", unbacked || dropped ? "warn" : "ok", unbacked || dropped ? t.backedWarn(unbacked, adj.length, dropped) : t.backedOk(adj.length));
+    const ignored = adj.flatMap((x) => x.a.ignored ?? []);
+    if (ignored.length) add("generic", "info", t.generic([...new Set(ignored)].join(", ")));
+    // Large corrections move the number a lot: without the skeptic's agreement, at most "with caution".
+    const big = adj.filter((x) => x.a.backed && Math.abs(x.a.applied) >= BIG && !supported(`${x.o.key}.${x.o.universe!.own === x.a ? "own" : "ctx"}`)).map((x) => `${x.o.key} (${x.a.applied > 0 ? "+" : ""}${x.a.applied})`);
+    if (big.length) add("unchecked", "warn", t.bigUnchecked(big.join(", ")));
     if (adj.some((x) => x.a.backed)) {
-      const mat = material(viewNow(s), f.subject.kind === "decision" ? f.subject.node : f.subject.at);
+      const mat = evidenceOf(s, f);
       const off = adj.filter((x) => x.a.backed && !reasonFitsEvidence(x.a.why, x.a.refs, mat)).map((x) => `${x.o.key} (${x.a.refs.join(", ")})`);
       // A weak, word-based hint (another language or synonyms also share no words): info, not a warning.
       add("relevance", off.length ? "info" : "ok", off.length ? t.relevanceWarn(off.join("; ")) : t.relevanceOk);
@@ -333,10 +376,8 @@ export function auditForecast(s: Scenaria, f: Forecast, lang: Lang = "de"): Audi
     const tr = oracleTrust(s);
     add("trust", tr.n >= 5 && tr.gamma < 0.5 ? "warn" : "info", tr.n >= 5 && tr.gamma < 0.5 ? t.trustLow(tr.gamma, tr.n) : t.trustInfo(tr.gamma, tr.n));
   }
-  const deep = listDeepAudits(s, f.id);
-  const d0 = deep[0];
-  if (d0 && !d0.verified) add("deep", "warn", t.deepUnsigned);
-  else if (d0 && d0.verdicts.length) {
+  if (unsigned) add("deepUnsigned", "info", t.deepUnsigned(unsigned));
+  if (d0 && d0.verdicts.length) {
     // Only corrections and risks decide; the recommendation is checked against the numbers above.
     // Corrections that did not count anyway (unbacked) change nothing.
     const counted = (v: DeepAudit["verdicts"][number]) => v.part === "risk" || ((v.part === "own" || v.part === "ctx") && Boolean(f.options.find((o) => o.key === v.option)?.universe?.[v.part]?.backed));
@@ -345,7 +386,8 @@ export function auditForecast(s: Scenaria, f: Forecast, lang: Lang = "de"): Audi
   }
   const fails = checks.filter((c) => c.status === "fail").length;
   const warns = checks.filter((c) => c.status === "warn").length;
-  return { forecast: f.id, verdict: fails ? "unreliable" : warns ? "caution" : "reliable", checks, deep };
+  // The verified audit first; unsigned files only as a hint (they are flagged in the list).
+  return { forecast: f.id, verdict: fails ? "unreliable" : warns ? "caution" : "reliable", checks, deep: d0 ? [d0, ...deep.filter((d) => d !== d0)] : deep };
 }
 
 // ------------------------------------------------------------------ the skeptic (model)
@@ -383,7 +425,7 @@ export async function deepAudit(s: Scenaria, forecastId: string, opts: { lang?: 
   if (!f) throw new Error(`Unknown forecast ${forecastId}`);
   if (!f.verified) throw new Error(`${forecastId} is not signed by Scenaria — it is not audited.`);
   if (f.mode !== "multiverse" || (f.oracle ?? 1) < 2) throw new Error(lang === "de" ? "Nur Multiversum-Prognosen (Orakel v2) haben Aussagen zum Prüfen — die Schnellprognose prüft die Checkliste." : "Only multiverse forecasts (oracle v2) have claims to check — the quick forecast is covered by the checklist.");
-  const mat = material(viewNow(s), f.subject.kind === "decision" ? f.subject.node : f.subject.at);
+  const mat = evidenceOf(s, f);
   const claims: DeepAudit["verdicts"] = [];
   for (const o of f.options) {
     const u = o.universe;
@@ -393,7 +435,7 @@ export async function deepAudit(s: Scenaria, forecastId: string, opts: { lang?: 
       if (a && a.proposed) claims.push({ claim: `${o.key}.${part}`, option: o.key, part, text: `${part === "own" ? "The option's own words" : "The next step in context"} ${a.proposed > 0 ? "connect better" : "connect worse"} than the word count shows (${a.proposed > 0 ? "+" : ""}${a.proposed}): ${a.why}`, refs: a.refs, verdict: "unsupported", reason: "" });
     }
     u.risks.slice(0, 3).forEach((r, i) => {
-      const refs = (r.match(/\b[nk]\d+\b/g) ?? []).filter((x) => mat.ids.has(x));
+      const refs = (r.match(/\b[nk]\d+\b/g) ?? []).filter((x) => mat.texts.has(x));
       if (refs.length) claims.push({ claim: `${o.key}.risk${i}`, option: o.key, part: "risk", text: r, refs, verdict: "unsupported", reason: "" });
     });
   }

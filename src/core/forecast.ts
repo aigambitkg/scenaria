@@ -115,6 +115,8 @@ export interface Forecast {
   model?: number;
   /** Oracle version of a multiverse forecast (2 = bounded, evidence-backed corrections of the core). */
   oracle?: number;
+  /** The text behind every id the oracle cited, as it was when the forecast was made (signed with it). */
+  evidence?: Record<string, string>;
   trigger: "person" | "auto" | "chat";
   models: Partial<Record<LlmRole, string>>;
   options: ForecastOption[];
@@ -313,7 +315,7 @@ export async function forecast(s: Scenaria, req: ForecastRequest): Promise<Forec
     opt.score = u.predicted;
   }
   const best = [...options].sort((x, y) => y.score - x.score)[0];
-  return save(s, { subject, createdAt: new Date().toISOString(), mode: "multiverse", oracle: ORACLE_VERSION, trigger: req.trigger ?? "person", models: mv.models, options, recommended: mv.recommended ?? (best ? { key: best.key, why: lang === "de" ? "höchste korrigierte Prognose" : "highest corrected forecast" } : undefined), warnings: mv.warnings });
+  return save(s, { subject, createdAt: new Date().toISOString(), mode: "multiverse", oracle: ORACLE_VERSION, evidence: mv.evidence, trigger: req.trigger ?? "person", models: mv.models, options, recommended: mv.recommended ?? (best ? { key: best.key, why: lang === "de" ? "höchste korrigierte Prognose" : "highest corrected forecast" } : undefined), warnings: mv.warnings });
 }
 
 // ------------------------------------------------------------------ evaluation

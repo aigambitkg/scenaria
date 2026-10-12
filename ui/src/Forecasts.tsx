@@ -87,8 +87,9 @@ export function Derivation({ t, e, u }: { t: Dict; e: Explain; u?: Universe }) {
             {t.fcFormulaOracle} {e.line} + {e.alpha}·({u.ownAfter} − {e.line}) + {e.beta}·({u.ctxAfter} − {e.line}) − {risk} = <strong>{u.capped ? Math.round(e.line + e.alpha * (u.ownAfter - e.line) + e.beta * (u.ctxAfter - e.line) - risk) : u.context}</strong>
             {u.capped ? <> → <strong>{u.context}</strong></> : null}
           </p>
+          <p className="muted small">{t.fcCapNote}</p>
           {u.capped && <p className="qnote q-warn">⚑ {t.fcCapped(u.canonRisks.join(", "))}</p>}
-          {u.flagResolved && <p className="qnote q-good">{t.fcFlagResolved}</p>}
+          {u.flagResolved && <p className="qnote q-info">{t.fcFlagResolved}</p>}
         </div>
       )}
       <p className="muted small">
@@ -105,7 +106,7 @@ function OracleRow({ t, name, a, conf, gamma }: { t: Dict; name: string; a: Orac
   return (
     <div className={`fc-adj ${a.backed ? "" : "unbacked"}`}>
       <strong>{name}</strong> <span className="fc-adj-num">{a.backed ? signed(a.applied) : "0"}</span>
-      <span className="muted small"> · {a.backed ? t.fcOracleApplied(a.proposed, Math.round(conf * 100) / 100, gamma, a.applied) : `${signed(a.proposed)} → ${t.fcUnbacked}`}</span>
+      <span className="muted small"> · {a.backed ? t.fcOracleApplied(a.proposed, conf, gamma, Math.round(a.proposed * conf * gamma), a.applied) : `${signed(a.proposed)} → ${t.fcUnbacked}`}</span>
       {a.why && <div className="small">„{a.why}“</div>}
       {a.refs.length > 0 && (
         <div className="fchips">
@@ -117,6 +118,7 @@ function OracleRow({ t, name, a, conf, gamma }: { t: Dict; name: string; a: Orac
         </div>
       )}
       {a.dropped.length > 0 && <div className="muted small">✘ {t.fcDropped(a.dropped.join(", "))}</div>}
+      {(a.ignored?.length ?? 0) > 0 && <div className="muted small">· {t.fcIgnored(a.ignored!.join(", "))}</div>}
     </div>
   );
 }
@@ -939,6 +941,7 @@ function OracleQualitySection({ t, approval, llm }: { t: Dict; approval: boolean
               {q.skillVsCore > 0 ? t.fcqOracleBetter(q.skillVsCore) : t.fcqOracleWorse(q.skillVsCore)} <span className="muted small">({t.fcqOracleCorrected(q.corrected)})</span>
             </p>
           )}
+          {q.skillVsCore !== null && !q.enough && <p className="qnote q-info">{t.fcqOracleFew(q.decisions, q.minDecisions)}</p>}
           <p className="small">{t.fcqOracleGamma(q.gamma, q.gammaN)}</p>
           <p className="muted small">{t.fcqOracleRow(t.fcqOracleLive, q.live.n, q.live.maeCore, q.live.maeOracle)}</p>
           <p className="muted small">

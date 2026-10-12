@@ -43,11 +43,11 @@ async function fakeLlm(handler) {
 const roles = (body) => body.messages[0].content;
 const multiverseReplies = (body) => {
   const sys = roles(body);
-  if (/ARCHIVIST of a multiverse/.test(sys)) return JSON.stringify({ options: [{ key: "a", past: "continues the quest backend (n3)", refs: ["n3"] }, { key: "b", past: "nothing in the history points to NFTs" }] });
+  if (/ARCHIVIST of a multiverse/.test(sys)) return JSON.stringify({ options: [{ key: "a", past: "continues the quest backend (n3)", refs: ["n2"] }, { key: "b", past: "nothing in the history points to NFTs" }] });
   if (/CRAFTSMAN of a multiverse/.test(sys)) return JSON.stringify({ options: [{ key: "a", present: "extend quests", trajectory: ["quest UI", "streak reminder", "push"], loses: [] }, { key: "b", present: "new wallet integration", trajectory: ["wallet SDK", "smart contract"], loses: ["daily quest focus", "streak logic"] }] });
   return JSON.stringify({
     options: [
-      { key: "a", outcome: "players return daily", ownAdjust: { delta: 10, why: "the reminder continues the streak counter of the daily quest backend", refs: ["n3"] }, ctxAdjust: { delta: 0 }, risks: [{ text: "notification fatigue", refs: [] }], canonRisks: [], confidence: 0.8 },
+      { key: "a", outcome: "players return daily", ownAdjust: { delta: 10, why: "the reminder continues the streak counter of the daily quest backend", refs: ["n2"] }, ctxAdjust: { delta: 0 }, risks: [{ text: "notification fatigue", refs: [] }], canonRisks: [], confidence: 0.8 },
       { key: "b", outcome: "quests stall", ownAdjust: { delta: -10, why: "tokens on a blockchain are excluded", refs: ["k1", "n99"] }, ctxAdjust: { delta: 15, why: "trust me" }, risks: [{ text: "legal", refs: ["k1"] }], canonRisks: ["k1"], confidence: 0.7 },
     ],
     recommendation: { key: "a", why: "keeps the daily-quest line" },
@@ -136,7 +136,7 @@ test("multiverse for a prompt with variants: which wording keeps the context", a
     const sys = roles(body);
     if (/ARCHIVIST/.test(sys)) return JSON.stringify({ options: [{ key: "p", past: "-" }, { key: "v1", past: "-" }] });
     if (/CRAFTSMAN/.test(sys)) return JSON.stringify({ options: [{ key: "p", present: "agent guesses", trajectory: ["rewrite everything"], loses: ["streak logic"] }, { key: "v1", present: "agent continues n3", trajectory: ["add reminder"], loses: [] }] });
-    return JSON.stringify({ options: [{ key: "p", outcome: "drifts", ownAdjust: { delta: -5, why: "make better is not tied to the daily quest backend", refs: ["n3"] }, confidence: 0.6 }, { key: "v1", outcome: "stays on track", ctxAdjust: { delta: 5, why: "continues the daily quest backend n3", refs: ["n3"] }, confidence: 0.7 }], recommendation: { key: "v1", why: "references the line" } });
+    return JSON.stringify({ options: [{ key: "p", outcome: "drifts", ownAdjust: { delta: -5, why: "make better is not tied to the daily quest backend", refs: ["n2"] }, confidence: 0.6 }, { key: "v1", outcome: "stays on track", ctxAdjust: { delta: 5, why: "continues the daily quest backend n3", refs: ["n2"] }, confidence: 0.7 }], recommendation: { key: "v1", why: "references the line" } });
   });
   try {
     const f = await forecast(s, { prompt: "make the app better", variants: ["Continue n3: add the streak reminder for daily quests"], llm: { provider: "fake", model: "m", baseUrl: llm.base } });
