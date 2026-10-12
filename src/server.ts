@@ -193,15 +193,18 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
   // What the person's model is doing right now (multiverse, AI check, backtest): shown while it runs.
   type Job = { kind: "multiverse" | "audit" | "backtest"; subject: string; step: string; index?: number; total?: number; startedAt: string };
   let job: Job | null = null;
-  const runJob = async <T>(j: Omit<Job, "startedAt" | "step">, fn: (step: (st: Partial<Job>) => void) => Promise<T>): Promise<T> => {
+  let jobCtrl: AbortController | null = null;
+  const runJob = async <T>(j: Omit<Job, "startedAt" | "step">, fn: (step: (st: Partial<Job>) => void, signal: AbortSignal) => Promise<T>): Promise<T> => {
     if (job) throw new Error(`Läuft gerade: ${job.kind} ${job.subject} — bitte warten. / Already running: ${job.kind} ${job.subject}.`);
     job = { ...j, step: "start", startedAt: new Date().toISOString() };
+    jobCtrl = new AbortController();
     try {
       return await fn((st) => {
         if (job) job = { ...job, ...st };
-      });
+      }, jobCtrl.signal);
     } finally {
       job = null;
+      jobCtrl = null;
     }
   };
   const attempts = new Map<string, { n: number; at: number; error?: string }>();
@@ -512,6 +515,12 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           return res.end(md ? auditReportMarkdown(o, lang) : JSON.stringify(o, null, 2));
         }
         if (req.method === "GET" && p === "/api/forecast/progress") return send(res, 200, { job, auto: forecasting });
+        if (req.method === "POST" && p === "/api/forecast/cancel") {
+          // The person stops a running model call (person-only like every POST under /api/forecast).
+          const was = job;
+          jobCtrl?.abort();
+          return send(res, 200, { cancelled: Boolean(was), job: was });
+        }
         if (req.method === "GET" && p === "/api/forecast/past") return send(res, 200, pastDecisions(s));
         if (req.method === "POST" && p === "/api/forecast/decision") {
           // The person writes down a decision to forecast (question + at least two options).
@@ -546,9 +555,9 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           if (token && b?.llm?.baseUrl) return send(res, 400, { error: "custom base URLs are disabled in team mode" });
           try {
             const lang = b?.lang === "en" ? "en" : "de";
-            const rec = await runJob({ kind: "audit", subject: String(b?.id ?? "") }, (step) => {
+            const rec = await runJob({ kind: "audit", subject: String(b?.id ?? "") }, (step, signal) => {
               step({ step: "auditor" });
-              return deepAudit(s, String(b?.id ?? ""), { lang, llm: b?.llm });
+              return deepAudit(s, String(b?.id ?? ""), { lang, llm: b?.llm, signal });
             });
             const f = listForecasts(s).find((x) => x.id === rec.forecast)!;
             return send(res, 200, auditForecast(s, f, lang));
@@ -562,8 +571,8 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           if (token && b?.llm?.baseUrl) return send(res, 400, { error: "custom base URLs are disabled in team mode" });
           try {
             const decisions = Array.isArray(b?.decisions) ? b.decisions.map(String) : undefined;
-            const rec = await runJob({ kind: "backtest", subject: decisions?.join(", ") ?? "last decisions" }, (step) =>
-              oracleBacktest(s, { limit: Number(b?.limit) || 5, decisions, lang: b?.lang === "en" ? "en" : "de", llm: b?.llm, onStep: (st) => step({ step: st.role, subject: st.decision, index: st.index + 1, total: st.total }) }),
+            const rec = await runJob({ kind: "backtest", subject: decisions?.join(", ") ?? "last decisions" }, (step, signal) =>
+              oracleBacktest(s, { limit: Number(b?.limit) || 5, decisions, lang: b?.lang === "en" ? "en" : "de", llm: b?.llm, signal, onStep: (st) => step({ step: st.role, subject: st.decision, index: st.index + 1, total: st.total }) }),
             );
             return send(res, 200, { run: rec, ...oracleQuality(s) });
           } catch (err: any) {
@@ -586,7 +595,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           try {
             const fr = { node: b?.node ? String(b.node) : undefined, prompt: b?.prompt ? String(b.prompt) : undefined, variants: Array.isArray(b?.variants) ? b.variants.map(String) : undefined, quick: b?.quick === true, lang: (b?.lang === "en" ? "en" : "de") as "de" | "en", llm: b?.llm, trigger: "person" as const };
             if (fr.quick) return send(res, 200, await forecast(s, fr));
-            return send(res, 200, await runJob({ kind: "multiverse", subject: fr.node ?? "prompt" }, (step) => forecast(s, { ...fr, onStep: (st) => step({ step: st }) })));
+            return send(res, 200, await runJob({ kind: "multiverse", subject: fr.node ?? "prompt" }, (step, signal) => forecast(s, { ...fr, signal, onStep: (st) => step({ step: st }) })));
           } catch (err: any) {
             return send(res, 502, { error: err?.message ?? String(err) });
           }

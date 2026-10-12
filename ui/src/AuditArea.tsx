@@ -14,7 +14,7 @@ import type { Dict } from "./i18n";
 type Filter = "all" | "unreliable" | "caution" | "reliable";
 const LIGHT: Record<string, string> = { reliable: "v-passed", caution: "v-warning", unreliable: "v-failed" };
 
-export function AuditDialog(props: { t: Dict; lang: "de" | "en"; onClose: () => void; onNode: (id: string) => void }) {
+export function AuditDialog(props: { t: Dict; lang: "de" | "en"; onClose: () => void; onNode: (id: string) => void; onOpenForecasts: () => void }) {
   const { t } = props;
   const [o, setO] = useState<AuditOverview | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -87,15 +87,24 @@ export function AuditDialog(props: { t: Dict; lang: "de" | "en"; onClose: () => 
             </div>
             {!o.core.enough && <p className="qnote q-info">{t.fcQualityFew(o.core.decisions, o.core.minDecisions)}</p>}
             <div className="row">
-              <a className="btn primary" href={`/api/audit/report?format=md&lang=${props.lang}`} download>
+              <button className="btn primary" onClick={() => api.downloadReport("md", props.lang).catch((e) => setErr(String(e?.message ?? e)))}>
                 ⤓ {t.adReportMd}
-              </a>
-              <a className="btn" href={`/api/audit/report?format=json&lang=${props.lang}`} download>
+              </button>
+              <button className="btn" onClick={() => api.downloadReport("json", props.lang).catch((e) => setErr(String(e?.message ?? e)))}>
                 ⤓ {t.adReportJson}
-              </a>
+              </button>
               <span className="muted small">{t.adReportHint}</span>
             </div>
-            {!rows.length && <p className="muted">{o.rows.length ? t.adNoneFilter : t.adNone}</p>}
+            {!rows.length && (
+              <p className="muted">
+                {o.rows.length ? t.adNoneFilter : t.adNone}{" "}
+                {!o.rows.length && (
+                  <button className="btn" onClick={props.onOpenForecasts}>
+                    {t.adToForecasts}
+                  </button>
+                )}
+              </p>
+            )}
             {rows.length > 0 && (
               <div className="table-wrap">
                 <table className="log ad-table">

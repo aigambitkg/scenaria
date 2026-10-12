@@ -554,12 +554,12 @@ export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessi
             )}
           </section>
         )}
+        {tab !== "start" && tab !== "history" && tab !== "quality" && !canRun && <ReadyCheck t={t} r={ready} onOpenSettings={props.onOpenSettings} onEditGoal={props.onEditGoal} />}
         {tab === "past" && <PastCheck t={t} lang={props.lang} approval={approval} ready={canRun} focus={focusNode?.chosen ? focusNode.id : null} llm={llm} onNode={props.onNode} onBusy={() => {}} onOpenSettings={props.onOpenSettings} />}
 
         {tab === "open" && (
           <>
-            {!approval && <p className="qnote q-warn">🔒 {t.rdNoApproval}</p>}
-            {!hasGoal && <NoGoalNote t={t} onEditGoal={props.onEditGoal} />}
+            {canRun && !hasGoal && <NoGoalNote t={t} onEditGoal={props.onEditGoal} />}
             {writing || !decisions.length ? (
               <NewDecisionForm
                 t={t}
@@ -862,7 +862,7 @@ export function DecisionForecast(props: { t: Dict; node: ScenariaNode; graphVers
       </div>
       {mv && <AuditBox t={t} id={mv.id} compact version={String(props.graphVersion ?? "")} />}
       <button className="btn link" onClick={props.onOpen}>
-        {props.node.chosen ? `${t.stPast} →` : t.fcOpen}
+        {props.node.chosen ? t.fcPastLink : t.fcOpen}
       </button>
     </section>
   );

@@ -341,8 +341,8 @@ test("robust oracle: a broken answer is asked again, then the forecast continues
     assert.equal(a.universe.confidence, 0.75, "75 → 0.75");
     assert.equal(a.universe.own.proposed, 10, "'+10' understood");
     assert.equal(a.universe.own.applied, 8);
-    assert.equal(b.universe.outcome, "stall", "no key at all, same count → by order");
-    assert.equal(b.universe.confidence, 0.5);
+    assert.equal(b.universe.outcome, "", "an entry without a name is never guessed when others are named");
+    assert.ok(f.warnings.some((w) => /Orakel: 1 Antwort\(en\) ließen sich keiner Option sicher zuordnen/.test(w)), JSON.stringify(f.warnings));
     assert.equal(f.recommended.key, "a", "recommendation by label");
   } finally {
     f0.close();
@@ -454,5 +454,74 @@ test("auditor's area: overview with verdicts, signed/before-choice counts, and a
   } finally {
     app.close();
     server.close();
+  }
+});
+
+test("review 0.9.1: answers never land on the wrong option; no usable oracle → no fake result; errors are classified; the person can stop a run", async () => {
+  // K1: shortened labels in swapped order
+  const opts = [{ key: "a", label: "Passkeys" }, { key: "b", label: "Magic link" }];
+  let m = O.assignEntries([{ key: "Magic link", x: 1 }, { key: "Passkey", x: 2 }], opts);
+  assert.equal(m.get("a").x, 2);
+  assert.equal(m.get("b").x, 1);
+  m = O.assignEntries([{ key: "Magic link", x: 1 }, { key: "Something else", x: 2 }], opts);
+  assert.equal(m.get("b").x, 1);
+  assert.equal(m.has("a"), false, "a named but unmatched entry is not given to a by order");
+  m = O.assignEntries([{ x: 1 }, { x: 2 }], opts);
+  assert.equal(m.get("a").x, 1, "nothing named at all → by order");
+  m = O.assignEntries([{ key: "a", x: 1 }, { key: "A", x: 2 }], opts);
+  assert.equal(m.get("a").x, 1);
+  assert.equal(m.has("b"), false, "one entry never serves two options");
+  // K3: an oracle without a usable answer → an error, nothing saved
+  const { s } = project();
+  const d = decision(s);
+  const f0 = await fakeLlm((body) => (/ORACLE of a multiverse/.test(sys(body)) ? "I think a is better." : replies(ORACLE)(body)));
+  try {
+    await assert.rejects(forecast(s, { node: d.id, llm: f0.llm }), /keine brauchbare Antwort des Orakels/);
+    assert.equal(listForecasts(s).filter((f) => f.mode === "multiverse").length, 0);
+  } finally {
+    f0.close();
+  }
+  // K2: classification of our own messages
+  const L = await import("../dist/core/llm-errors.js");
+  assert.equal(L.llmErrorCode("ollama not reachable at http://127.0.0.1:11499/v1 (is it running?)"), "unreachable");
+  assert.equal(L.errorProvider("ollama not reachable at http://x (is it running?)"), "ollama");
+  assert.equal(L.llmErrorCode("lmstudio did not answer within 600 s"), "timeout");
+  assert.equal(L.llmErrorCode(`ollama answered HTTP 404: {"error":"model 'qwen3.5:9b' not found, try pulling it first"}`), "model_missing");
+  assert.equal(L.missingModel(`model 'qwen3.5:9b' not found`), "qwen3.5:9b");
+  assert.equal(L.llmErrorCode("openai answered HTTP 401: Incorrect API key provided"), "auth");
+  assert.equal(L.llmErrorCode("Kein Modell eingestellt – wähle eines"), "no_model");
+  assert.equal(L.llmErrorCode("Abgebrochen / cancelled by the person."), "cancelled");
+  // K5: stop a running multiverse
+  const { s: s2 } = project();
+  const d2 = decision(s2);
+  let release;
+  const gate = new Promise((r) => (release = r));
+  const hang = createServer(async (req, res) => {
+    for await (const _ of req);
+    await gate;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ model: "m", choices: [{ message: { content: "{}" } }] }));
+  });
+  await new Promise((r) => hang.listen(0, "127.0.0.1", r));
+  const app = createApp(s2, { approvalCode: "c", approvalSecret: "sess", autoForecast: false });
+  const server = createServer(app.handler);
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const H = { "content-type": "application/json", "x-scenaria": "1", cookie: "scenaria_approval=sess" };
+  try {
+    const run = fetch(`${base}/api/forecast`, { method: "POST", headers: H, body: JSON.stringify({ node: d2.id, llm: { provider: "fake", model: "m", baseUrl: `http://127.0.0.1:${hang.address().port}/v1` } }) });
+    for (let i = 0; i < 50 && !(await (await fetch(`${base}/api/forecast/progress`)).json()).job; i++) await new Promise((r) => setTimeout(r, 30));
+    assert.equal((await fetch(`${base}/api/forecast/cancel`, { method: "POST", headers: { "content-type": "application/json", "x-scenaria": "1" }, body: "{}" })).status, 403, "only the person stops");
+    const c = await (await fetch(`${base}/api/forecast/cancel`, { method: "POST", headers: H, body: "{}" })).json();
+    assert.equal(c.cancelled, true);
+    const r = await run;
+    assert.equal(r.status, 502);
+    assert.match((await r.json()).error, /Abgebrochen/);
+    assert.equal((await (await fetch(`${base}/api/forecast/progress`)).json()).job, null, "the lock is free again");
+  } finally {
+    release();
+    app.close();
+    server.close();
+    hang.close();
   }
 });

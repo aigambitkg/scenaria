@@ -458,11 +458,15 @@ export function llmTimeout(r: { local: boolean; kind: string }) {
   return r.local || r.kind === "ollama" ? 600_000 : 240_000;
 }
 
-export async function callLlm(cfg: LlmRequest, upstreams: Record<string, string>, system: string, user: string, timeoutMs?: number, opts: { json?: boolean } = {}): Promise<{ text: string; model: string; usage?: unknown }> {
+export async function callLlm(cfg: LlmRequest, upstreams: Record<string, string>, system: string, user: string, timeoutMs?: number, opts: { json?: boolean; signal?: AbortSignal } = {}): Promise<{ text: string; model: string; usage?: unknown }> {
   const r = resolveLlm(cfg, upstreams);
   timeoutMs ??= llmTimeout(r);
+  if (opts.signal?.aborted) throw new Error("Abgebrochen / cancelled by the person.");
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  // The person can cancel a running forecast from the dashboard.
+  const onCancel = () => ctrl.abort();
+  opts.signal?.addEventListener("abort", onCancel, { once: true });
   try {
     let res: Response;
     if (r.kind === "anthropic") {
@@ -501,11 +505,14 @@ export async function callLlm(cfg: LlmRequest, upstreams: Record<string, string>
     ).replace(/<think>[\s\S]*?<\/think>/g, "");
     return { text, model: json.model ?? r.model, usage: json.usage };
   } catch (err: any) {
+    if (opts.signal?.aborted) throw new Error("Abgebrochen / cancelled by the person.");
     if (ctrl.signal.aborted) throw new Error(`${r.provider} did not answer within ${Math.round(timeoutMs / 1000)} s`);
-    if (err?.cause?.code === "ECONNREFUSED") throw new Error(`${r.provider} not reachable at ${r.base} (is it running?)`);
+    const code = err?.cause?.code;
+    if (code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "EHOSTUNREACH" || code === "EAI_AGAIN") throw new Error(`${r.provider} not reachable at ${r.base} (is it running?)`);
     throw err;
   } finally {
     clearTimeout(timer);
+    opts.signal?.removeEventListener("abort", onCancel);
   }
 }
 

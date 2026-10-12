@@ -601,6 +601,10 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
           t={t}
           lang={lang}
           onClose={() => setAuditOpen(false)}
+          onOpenForecasts={() => {
+            setAuditOpen(false);
+            setForecastFocus(null);
+          }}
           onNode={(id) => {
             if (graph?.nodes.some((x) => x.id === id)) setSelected(id);
             setAuditOpen(false);

@@ -253,6 +253,8 @@ export interface ForecastRequest {
   globalOnly?: boolean;
   /** Progress: which role is working (shown in the dashboard while it runs). */
   onStep?: (step: MultiverseStep) => void;
+  /** The person cancelled in the dashboard. */
+  signal?: AbortSignal;
 }
 
 /** Create a forecast. Multiverse (three roles) unless `quick`; the quick layer is always included. */
@@ -287,7 +289,7 @@ export async function forecast(s: Scenaria, req: ForecastRequest): Promise<Forec
   // The multiverse: three roles correct the core — bounded, with reasons and evidence (core/oracle.ts).
   const v = viewNow(s);
   const gamma = oracleTrust(s).gamma;
-  const mv = await runMultiverse(s, v, subject, options.filter((o) => o.quick.explain).map((o) => ({ key: o.key, label: o.label, text: o.text, explain: o.quick.explain! })), { lang, llm: req.llm, globalOnly: req.globalOnly, gamma, onStep: req.onStep });
+  const mv = await runMultiverse(s, v, subject, options.filter((o) => o.quick.explain).map((o) => ({ key: o.key, label: o.label, text: o.text, explain: o.quick.explain! })), { lang, llm: req.llm, globalOnly: req.globalOnly, gamma, onStep: req.onStep, signal: req.signal });
   for (const opt of options) {
     const u = mv.options.find((x) => x.key === opt.key);
     if (!u) continue;

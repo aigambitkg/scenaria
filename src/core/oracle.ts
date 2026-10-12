@@ -183,6 +183,41 @@ Answer ONLY with JSON: {"options": [{"key": "<key>", "outcome": "…", "ownAdjus
 ${langLine(lang)}`,
 };
 
+const normKey = (x: unknown) => one(x, 200).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+
+/**
+ * Which answer entry belongs to which option — each entry to at most one option, each option at most one
+ * entry: exact key, then key ignoring case/punctuation, then the full label, then a shortened label that
+ * fits exactly one option ("Passkey" ~ "Passkeys"). The order is used only if NO entry names anything.
+ */
+export function assignEntries(list: any[], options: { key: string; label: string }[]): Map<string, any> {
+  const out = new Map<string, any>();
+  const used = new Set<number>();
+  const name = (x: any) => x?.key ?? x?.label ?? x?.option ?? x?.name;
+  const pass = (match: (x: any, o: { key: string; label: string }) => boolean) => {
+    for (const opt of options) {
+      if (out.has(opt.key)) continue;
+      const hits = list.map((x, i) => ({ x, i })).filter(({ x, i }) => !used.has(i) && match(x, opt));
+      if (hits.length !== 1) continue;
+      // The entry must not fit another unassigned option just as well.
+      const rivals = options.filter((o2) => o2 !== opt && !out.has(o2.key) && match(hits[0].x, o2));
+      if (rivals.length) continue;
+      out.set(opt.key, hits[0].x);
+      used.add(hits[0].i);
+    }
+  };
+  pass((x, o) => one(x?.key, 40) === o.key);
+  pass((x, o) => normKey(x?.key) !== "" && normKey(x?.key) === normKey(o.key));
+  pass((x, o) => normKey(name(x)) !== "" && normKey(name(x)) === normKey(o.label));
+  pass((x, o) => {
+    const n = normKey(name(x));
+    const l = normKey(o.label);
+    return n.length >= 4 && l.length >= 4 && (l.startsWith(n) || n.startsWith(l));
+  });
+  if (!out.size && list.length === options.length && list.every((x) => !normKey(name(x)))) options.forEach((o, i) => out.set(o.key, list[i]));
+  return out;
+}
+
 /** The per-option list of a role's answer: "options", another array field, or the array itself. */
 export function listOf(x: any): any[] {
   if (Array.isArray(x)) return x;
@@ -246,7 +281,7 @@ export async function runMultiverse(
   v: View,
   subject: { kind: "decision"; node: string; question: string } | { kind: "prompt"; text: string; at: string | null },
   options: MvOptionInput[],
-  opts: { lang?: Lang; llm?: Partial<LlmRequest>; globalOnly?: boolean; gamma?: number; onStep?: (step: MultiverseStep) => void } = {},
+  opts: { lang?: Lang; llm?: Partial<LlmRequest>; globalOnly?: boolean; gamma?: number; onStep?: (step: MultiverseStep) => void; signal?: AbortSignal } = {},
 ): Promise<MultiverseResult> {
   const lang: Lang = opts.lang === "en" ? "en" : "de";
   const gamma = opts.gamma ?? DEFAULT_GAMMA;
@@ -255,21 +290,23 @@ export async function runMultiverse(
   const ups = upstreams(s);
   const models: MultiverseResult["models"] = {};
   const warnings: string[] = [];
+  const failed = new Set<string>();
   const ask = async (role: "archivist" | "craftsman" | "oracle", user: string) => {
     opts.onStep?.(role);
     const cfg = effectiveLlm(s, role, opts.llm, { globalOnly: opts.globalOnly });
     if (!cfg) throw new Error(lang === "de" ? "Kein Modell eingestellt – wähle eines in den Einstellungen (⚙)." : "No model configured — choose one in Settings (⚙).");
     // Errors of the connection (no model, no key, HTTP) are shown as they are; an answer that is not
     // the expected JSON is asked again once, then the forecast continues without that role.
-    const out = await callLlm(cfg, ups, ROLE_PROMPTS[role](lang), user, undefined, { json: true });
+    const out = await callLlm(cfg, ups, ROLE_PROMPTS[role](lang), user, undefined, { json: true, signal: opts.signal });
     models[role] = out.model;
     try {
       return parseJson(out.text);
     } catch {
-      const again = await callLlm(cfg, ups, ROLE_PROMPTS[role](lang), `${user}\n\nYour previous answer was not valid JSON. Answer ONLY with the JSON object described above, nothing else.`, undefined, { json: true });
+      const again = await callLlm(cfg, ups, ROLE_PROMPTS[role](lang), `${user}\n\nYour previous answer was not valid JSON. Answer ONLY with the JSON object described above, nothing else.`, undefined, { json: true, signal: opts.signal });
       try {
         return parseJson(again.text);
       } catch {
+        failed.add(role);
         warnings.push(lang === "de" ? `${ROLE_NAME.de[role]}: Antwort des Modells (${out.model}) war zweimal kein gültiges JSON – ohne diese Rolle weitergerechnet.` : `${ROLE_NAME.en[role]}: the model's answer (${out.model}) was not valid JSON twice — continued without this role.`);
         return {};
       }
@@ -299,26 +336,26 @@ export async function runMultiverse(
     `MAIN GOAL: ${mat.goal}\n${question}\nOPTIONS:\n${optionList}\n\nCORE (word-based, to correct where wrong):\n${coreTable}\n\nFUTURE FIXED POINTS:\n${mat.future}\nHARD PAST CONSTRAINTS:\n${mat.hardPast}\n\nARCHIVIST:\n${archNotes || "(nothing)"}\nCRAFTSMAN:\n${craftNotes || "(nothing)"}\n\nToday: ${(v.asOf ?? new Date().toISOString()).slice(0, 10)}`,
   );
 
-  // Models write keys differently ("A", "a)", the label, or only the order): match leniently.
-  const norm = (x: unknown) => one(x, 200).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
-  const byKey = (arr: any, key: string) => {
-    const list: any[] = Array.isArray(arr) ? arr : [];
-    const opt = options.find((o) => o.key === key)!;
-    const hit =
-      list.find((x: any) => one(x?.key, 20) === key) ??
-      list.find((x: any) => norm(x?.key) === norm(key)) ??
-      list.find((x: any) => norm(x?.key ?? x?.label ?? x?.option) === norm(opt.label));
-    if (hit) return hit;
-    // Same number of entries and none matched by key: take the order.
-    const keyed = list.some((x: any) => options.some((o) => norm(x?.key) === norm(o.key)));
-    return !keyed && list.length === options.length ? list[options.indexOf(opt)] : undefined;
+  // Models write keys differently ("A", "a)", the full or a shortened label, or only the order). Each
+  // answer entry goes to AT MOST one option; the order is used only when no entry names any option.
+  const pa_ = assignEntries(listOf(a), options);
+  const pr_ = assignEntries(listOf(c), options);
+  const fu_ = assignEntries(listOf(o), options);
+  if (failed.has("oracle") || (listOf(o).length > 0 && fu_.size === 0) || listOf(o).length === 0)
+    // Without a usable oracle answer the multiverse adds nothing: do not dress the core up as a result.
+    throw new Error(lang === "de" ? `Das Modell hat keine brauchbare Antwort des Orakels geliefert (${models.oracle ?? "?"}) – kein Ergebnis gespeichert. Ein größeres Modell wählen oder erneut versuchen.` : `The model gave no usable oracle answer (${models.oracle ?? "?"}) — nothing saved. Choose a larger model or try again.`);
+  const unmatched = (m: Map<string, any>, list: any[], role: "archivist" | "craftsman" | "oracle") => {
+    if (list.length && m.size < Math.min(list.length, options.length)) warnings.push(lang === "de" ? `${ROLE_NAME.de[role]}: ${list.length - m.size} Antwort(en) ließen sich keiner Option sicher zuordnen – nicht verwendet.` : `${ROLE_NAME.en[role]}: ${list.length - m.size} answer(s) could not be matched to an option for sure — not used.`);
   };
+  unmatched(pa_, listOf(a), "archivist");
+  unmatched(pr_, listOf(c), "craftsman");
+  unmatched(fu_, listOf(o), "oracle");
   const hard = new Set(v.canon.filter((e) => e.hard).map((e) => e.id));
   const out: OracleOption[] = [];
   for (const opt of options) {
-    const pa = byKey(listOf(a), opt.key);
-    const pr = byKey(listOf(c), opt.key);
-    const fu = byKey(listOf(o), opt.key);
+    const pa = pa_.get(opt.key);
+    const pr = pr_.get(opt.key);
+    const fu = fu_.get(opt.key);
     if (!fu) warnings.push(`${opt.key}: ${lang === "de" ? "vom Orakel nicht bewertet – Kern-Prognose bleibt" : "not assessed by the oracle — core forecast kept"}`);
     const c0 = parseFloat(String(fu?.confidence ?? ""));
     const conf = c0 > 1 && c0 <= 100 ? c0 / 100 : c0;
@@ -356,7 +393,7 @@ export async function runMultiverse(
   }
   opts.onStep?.("done");
   const recRaw = o.recommendation?.key ?? o.recommendation?.option ?? o.recommendation;
-  const recOpt = typeof recRaw === "string" || typeof recRaw === "number" ? options.find((x) => x.key === one(recRaw, 20)) ?? options.find((x) => norm(x.key) === norm(recRaw) || norm(x.label) === norm(recRaw)) : undefined;
+  const recOpt = typeof recRaw === "string" || typeof recRaw === "number" ? options.find((x) => x.key === one(recRaw, 20)) ?? options.find((x) => normKey(x.key) === normKey(recRaw) || normKey(x.label) === normKey(recRaw)) : undefined;
   const rec = recOpt ? { key: recOpt.key, why: one(o.recommendation?.why, 600) } : undefined;
   const best = [...out].sort((x, y) => y.predicted - x.predicted)[0];
   if (rec && best && rec.key !== best.key) warnings.push(lang === "de" ? `Das Orakel empfiehlt ${rec.key}, die korrigierte Prognose spricht für ${best.key}.` : `The oracle recommends ${rec.key}; the corrected forecast favours ${best.key}.`);

@@ -159,6 +159,21 @@ export const api = {
   deepAudit: (id: string, lang: string, llm?: Partial<LlmCall>) => req<Audit>("/api/forecast/audit", { id, lang, llm }),
   oracleQuality: () => req<OracleQuality & { runs: OracleBacktestRun[] }>("/api/forecast/oracle"),
   oracleBacktest: (limit: number, lang: string, llm?: Partial<LlmCall>) => req<OracleQuality & { run: OracleBacktestRun }>("/api/forecast/oracle-backtest", { limit, lang, llm }),
+  cancelForecast: () => req<{ cancelled: boolean }>("/api/forecast/cancel", {}),
+  /** Download through fetch, so the request carries the dashboard's mark (follows a project switch). */
+  downloadReport: async (format: "md" | "json", lang: string) => {
+    const res = await fetch(`/api/audit/report?format=${format}&lang=${lang}`, { headers: { "x-scenaria-view": "dashboard" } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const name = res.headers.get("content-disposition")?.match(/filename="([^"]+)"/)?.[1] ?? `scenaria-report.${format}`;
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  },
   auditOverview: (lang: string) => req<AuditOverview>(`/api/audit/overview?lang=${lang}`),
   forecastProgress: () => req<{ job: ForecastJob | null; auto: string | null }>("/api/forecast/progress"),
   pastDecisions: () => req<{ id: string; question: string; at: string; chosen?: string; chosenLabel?: string; options: number; measurable: number }[]>("/api/forecast/past"),

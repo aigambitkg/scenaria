@@ -809,3 +809,7 @@ table.gate tr.current td:first-child { box-shadow: inset 4px 0 0 var(--marker-so
 .audit-box p, .audit-box .row { overflow-wrap: anywhere; flex-wrap: wrap; }
 @media (max-width: 640px) { .ad-table { table-layout: auto; min-width: 560px; } }
 .ad-table td:first-child, .result-card table.fc-cases td:first-child { white-space: normal; }
+.err-box.soft { border-color: var(--rule); border-left-color: var(--ink-3); }
+.err-box.soft > strong { color: var(--ink-2); }
+.err-box details { margin-top: 6px; }
+.err-box code { font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; }

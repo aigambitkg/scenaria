@@ -212,7 +212,7 @@ export type BacktestStep = { decision: string; index: number; total: number; rol
  * decision) and core + oracle (γ = 1). Default: the last `limit` measurable decisions; `decisions`: these
  * decided ones (measured or not — e.g. "check this past decision"). Uses the person's model: 3 calls each.
  */
-export async function oracleBacktest(s: Scenaria, opts: { limit?: number; decisions?: string[]; lang?: Lang; llm?: Partial<LlmRequest>; onStep?: (st: BacktestStep) => void } = {}): Promise<BacktestRecord> {
+export async function oracleBacktest(s: Scenaria, opts: { limit?: number; decisions?: string[]; lang?: Lang; llm?: Partial<LlmRequest>; onStep?: (st: BacktestStep) => void; signal?: AbortSignal } = {}): Promise<BacktestRecord> {
   const lang: Lang = opts.lang === "en" ? "en" : "de";
   const limit = Math.max(1, Math.min(10, opts.limit ?? 5));
   const h = readHistory(s);
@@ -243,7 +243,7 @@ export async function oracleBacktest(s: Scenaria, opts: { limit?: number; decisi
     if (!pd) continue;
     // Question and options as they were at the decision's time (field history), not as edited later.
     const opts2 = (pd.options ?? []).map((o) => ({ key: o.id, label: o.label, text: o.description, explain: predictOption(past, pd, o, cal).explain }));
-    const mv = await runMultiverse(s, past, { kind: "decision", node: pd.id, question: pd.question ?? pd.title }, opts2, { lang, llm: opts.llm, gamma: 1, onStep: (role) => opts.onStep?.({ decision: id, index: i, total: decisions.length, role }) });
+    const mv = await runMultiverse(s, past, { kind: "decision", node: pd.id, question: pd.question ?? pd.title }, opts2, { lang, llm: opts.llm, gamma: 1, signal: opts.signal, onStep: (role) => opts.onStep?.({ decision: id, index: i, total: decisions.length, role }) });
     model = mv.models.oracle ?? model;
     decs.push({ id, question: pd.question ?? pd.title, at: d.createdAt, chosen: d.chosen, recommended: mv.recommended?.key, why: mv.recommended?.why, warnings: mv.warnings });
     for (const o of opts2) {
@@ -478,7 +478,7 @@ Give a one-sentence reason each. Answer ONLY with JSON: {"verdicts": [{"claim": 
 Write the reasons in ${lang === "de" ? "German" : "English"}.`;
 
 /** The skeptic: each oracle claim against its evidence; unsupported corrections are removed. */
-export async function deepAudit(s: Scenaria, forecastId: string, opts: { lang?: Lang; llm?: Partial<LlmRequest> } = {}): Promise<DeepAudit> {
+export async function deepAudit(s: Scenaria, forecastId: string, opts: { lang?: Lang; llm?: Partial<LlmRequest>; signal?: AbortSignal } = {}): Promise<DeepAudit> {
   const lang: Lang = opts.lang === "en" ? "en" : "de";
   const f = listForecasts(s).find((x) => x.id === forecastId);
   if (!f) throw new Error(`Unknown forecast ${forecastId}`);
@@ -505,7 +505,7 @@ export async function deepAudit(s: Scenaria, forecastId: string, opts: { lang?: 
     if (!cfg) throw new Error(lang === "de" ? "Kein Modell für den Prüf-Experten eingestellt." : "No model set for the auditor.");
     const evidence = [...new Set(claims.flatMap((c) => c.refs))].map((id) => `- ${id}: ${one(mat.texts.get(id), 400)}`).join("\n");
     const user = `CLAIMS:\n${claims.map((c) => `- ${c.claim}: ${c.text}${c.refs.length ? ` [evidence: ${c.refs.join(", ")}]` : " [no evidence given]"}`).join("\n")}\n\nEVIDENCE:\n${evidence || "(none)"}\n\nMAIN GOAL: ${mat.goal}`;
-    const out = await callLlm(cfg, upstreams(s), SKEPTIC(lang), user);
+    const out = await callLlm(cfg, upstreams(s), SKEPTIC(lang), user, undefined, { json: true, signal: opts.signal });
     model = out.model;
     const x = parseJson(out.text);
     for (const v of Array.isArray(x.verdicts) ? x.verdicts : []) {

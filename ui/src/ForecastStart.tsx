@@ -10,6 +10,7 @@ import { api, type Audit, type Forecast, type OracleBacktestRun, type SettingsPa
 import { NodeId } from "./Map";
 import type { Dict } from "./i18n";
 import type { SessionKeys } from "./Control";
+import { errorProvider, llmErrorCode, missingModel } from "../../src/core/llm-errors";
 
 const errText = (e: any) => String(e?.message ?? e);
 const LOCAL = new Set(["ollama", "lmstudio", "custom"]);
@@ -110,7 +111,7 @@ export function NewDecisionForm({ t, approval, ready, onCreated, onCancel }: { t
   return (
     <div className="new-decision">
       <h4>{t.ndTitle}</h4>
-      <p className="muted small">{t.ndHint}</p>
+      <p className="muted small">{t.ndHint} {t.ndWhere}</p>
       <label className="fc-field">
         <span>{t.ndQuestion}</span>
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t.ndQuestionPh} />
@@ -158,7 +159,8 @@ const STEPS: Record<string, string[]> = {
 };
 
 /** While the person's model works: which role, how long. Polls the server. */
-export function RunProgress({ t, kind }: { t: Dict; kind: "multiverse" | "audit" | "backtest" }) {
+export function RunProgress({ t, kind, canCancel = true }: { t: Dict; kind: "multiverse" | "audit" | "backtest"; canCancel?: boolean }) {
+  const [stopping, setStopping] = useState(false);
   const [p, setP] = useState<{ step: string; subject: string; index?: number; total?: number; startedAt: string } | null>(null);
   const [now, setNow] = useState(Date.now());
   const start = useRef(Date.now());
@@ -188,6 +190,18 @@ export function RunProgress({ t, kind }: { t: Dict; kind: "multiverse" | "audit"
         <span className="spinner" aria-hidden /> <strong>{t.pgRunning[kind]}</strong>
         {p?.total ? <span className="chip">{t.pgDecision(p.index ?? 1, p.total, p.subject)}</span> : null}
         <span className="muted small">{t.pgElapsed(secs)}</span>
+        {canCancel && (
+          <button
+            className="btn"
+            disabled={stopping}
+            onClick={() => {
+              setStopping(true);
+              api.cancelForecast().catch(() => setStopping(false));
+            }}
+          >
+            {stopping ? "…" : t.pgCancel}
+          </button>
+        )}
       </div>
       <ol className="pg-steps">
         {steps.map((st, i) => (
@@ -203,31 +217,47 @@ export function RunProgress({ t, kind }: { t: Dict; kind: "multiverse" | "audit"
 
 /** An error with what to do about it. */
 export function ErrorBox({ t, message, onOpenSettings }: { t: Dict; message: string; onOpenSettings?: () => void }) {
-  const m = message.toLowerCase();
-  const hint = /kein modell|no model/.test(m)
-    ? t.erNoModel
-    : /approval|freigabe/.test(m)
-      ? t.erApproval
-      : /401|403|api key|apikey|x-api-key|unauthorized|invalid.*key/.test(m)
-        ? t.erKey
-        : /econnrefused|fetch failed|11434|connect/.test(m)
-          ? t.erConnect
-          : /abort|timeout|timed out/.test(m)
-            ? t.erTimeout
-            : /läuft gerade|already running/.test(m)
-              ? t.erBusy
-              : /json/.test(m)
-                ? t.erJson
-                : null;
+  const code = llmErrorCode(message);
+  const provider = errorProvider(message);
+  const hint =
+    code === "no_model"
+      ? t.erNoModel
+      : code === "approval"
+        ? t.erApproval
+        : code === "auth"
+          ? t.erKey
+          : code === "unreachable"
+            ? provider === "ollama"
+              ? t.erOllama
+              : provider === "lmstudio"
+                ? t.erLmStudio
+                : t.erConnect
+            : code === "timeout"
+              ? t.erTimeout
+              : code === "model_missing"
+                ? t.erModelMissing(missingModel(message), provider)
+                : code === "busy"
+                  ? t.erBusy
+                  : code === "bad_json"
+                    ? t.erJson
+                    : code === "cancelled"
+                      ? t.erCancelled
+                      : code === "http"
+                        ? t.erHttp
+                        : t.erOther;
+  const settings = ["no_model", "auth", "unreachable", "model_missing", "bad_json", "timeout"].includes(code);
   return (
-    <div className="err-box" role="alert">
-      <strong>{t.erTitle}</strong> <span>{message}</span>
-      {hint && <p className="small">→ {hint}</p>}
-      {onOpenSettings && /kein modell|no model|401|403|key|connect|11434/.test(m) && (
+    <div className={`err-box ${code === "cancelled" ? "soft" : ""}`} role="alert">
+      <strong>{code === "cancelled" ? t.erCancelledTitle : t.erTitle}</strong> <span>{hint}</span>
+      {onOpenSettings && settings && (
         <button className="btn" onClick={onOpenSettings}>
           {t.rdOpenSettings}
         </button>
       )}
+      <details className="small">
+        <summary>{t.erTechnical}</summary>
+        <code>{message}</code>
+      </details>
     </div>
   );
 }
@@ -238,6 +268,9 @@ export function ResultCard({ t, f, audit, onDetails }: { t: Dict; f: Forecast; a
   const rec = f.options.find((o) => o.key === f.recommended?.key) ?? sorted[0];
   const band = rec?.quick.explain?.band;
   const open = audit?.checks.filter((c) => c.status === "warn" || c.status === "fail") ?? [];
+  // Options closer together than the uncertainty: say so instead of crowning one.
+  const gap = sorted.length > 1 ? sorted[0].score - sorted[sorted.length - 1].score : Infinity;
+  const unclear = band !== undefined && gap < band;
   return (
     <div className={`result-card ${audit?.verdict ?? ""}`}>
       <div className="row">
@@ -245,7 +278,8 @@ export function ResultCard({ t, f, audit, onDetails }: { t: Dict; f: Forecast; a
         {audit && <span className={`chip ${audit.verdict === "reliable" ? "v-passed" : audit.verdict === "caution" ? "v-warning" : "v-failed"}`}>{t.auTitle}: {t.auVerdict[audit.verdict]}</span>}
         <span className="muted small">{f.mode === "multiverse" ? t.fcMultiverse : t.fcQuick} · {new Date(f.createdAt).toLocaleString()}</span>
       </div>
-      {rec && (
+      {rec && unclear && <p className="result-main">{t.rsUnclear(gap, band!)}</p>}
+      {rec && !unclear && (
         <p className="result-main">
           ★ {t.rsRecommend(rec.key, rec.label, rec.score, band)}
           {rec.universe?.core !== undefined && rec.universe.core !== rec.score ? ` ${t.rsCorrected(rec.universe.core, rec.score)}` : ""}
@@ -259,7 +293,7 @@ export function ResultCard({ t, f, audit, onDetails }: { t: Dict; f: Forecast; a
           </li>
         ))}
       </ul>
-      {f.recommended?.why && <p className="small">{t.rsWhy}: {f.recommended.why}</p>}
+      {f.recommended?.why && !unclear && <p className="small">{t.rsWhy}: {f.recommended.why}</p>}
       {f.warnings.map((w, i) => (
         <p key={i} className="qnote q-warn">
           {w}
