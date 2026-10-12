@@ -126,9 +126,16 @@ How canon events are enforced:
 
 Settings, chat and relay act for you and use your keys, so they need the approval session (the approval link from `scenaria start`), like canon approvals.
 
-## Forecasts and the multiverse: see before you choose (v0.8)
+## Forecasts, the oracle and the auditor: see before you choose (v0.9)
 
-Every open decision gets a **forecast before anyone chooses**: how much of the context and the main goal each option keeps. The quick forecast is instant and needs no model. The **multiverse** runs three isolated roles per option: the archivist reads the past, the craftsman plays the present forward (and names what would be lost), the oracle judges the future against the goal and the fixed points. Prompts and plans can be checked the same way, with variants side by side. Later Scenaria measures how faithful the line really stayed, so the hit rate of the forecasts is visible. Automatic forecasts are opt-in, use only your model and have a daily limit across all projects. Dashboard → **Forecasts**, CLI `scenaria forecast n12`, chat, or the `scenaria_forecast` tool for agents.
+Every open decision gets a **forecast before anyone chooses**: how faithful the line will stay to its context and the main goal after each option. It is the same quantity Scenaria measures afterwards, so every forecast can be checked against reality.
+
+- **Core** (instant, no model): a small formula you can retrace by hand. "Why this number?" shows every part, the weights learned from your own past decisions and an honest uncertainty band.
+- **Oracle** (multiverse, your model): archivist (past), craftsman (present) and oracle (future) may only **correct** the core, by at most ±20 points per part, each correction with a reason and existing evidence. Corrections without evidence count 0; how much the oracle is trusted (γ) is learned from how its corrections really went.
+- **Auditor (Prüf-Experte)**: a checklist on every forecast (fair timing, signature, data basis, options distinguishable, track record, evidence) → reliable / with caution / not reliable. On request a skeptical model checks each oracle claim against the evidence as it was cited and removes unsupported corrections.
+- **Quality**: a backtest of every past decision as of its own time, oracle vs. core, and a test bench. Honest: meaningful from 10 decisions, shown as a tendency before.
+
+Prompts and plans can be checked the same way, with variants side by side. Automatic forecasts are opt-in, use only your model and have a daily limit across all projects. Dashboard → **Forecasts**, CLI `scenaria forecast n12` / `--quality` / `--audit f3 [--deep]`, chat, or the `scenaria_forecast` tool for agents.
 
 ## The expert analyst: a report to optimise with (v0.8)
 

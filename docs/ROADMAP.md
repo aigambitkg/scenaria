@@ -72,6 +72,19 @@
 - [x] Relay archivist → craftsman → oracle with isolated contexts and deterministic orchestrator, open decision for the person
 - [x] Env API keys only to official or trusted endpoints
 
+## Done in 0.8 (forecasts and the multiverse)
+
+- [x] A forecast for every open decision before the choice; prompt check with variants
+- [x] Multiverse (archivist, craftsman, oracle), automatic mode opt-in with a daily budget across projects
+- [x] Expert analyst, project switcher, help and onboarding
+
+## Done in 0.9 (a traceable oracle and the auditor)
+
+- [x] Forecast core v2: the same quantity as the measurement, retraceable formula, learned weights, uncertainty band
+- [x] Backtest without knowledge of the future (field history), quality vs. naive persistence, test bench
+- [x] Oracle v2: bounded, evidence-backed corrections of the core; learned trust γ; evidence kept as cited
+- [x] Prüf-Experte: checklist and verdict per forecast, skeptic model, oracle backtest, oracle vs. core
+
 ## Next
 
 - [ ] Streaming chat answers; chat history browser

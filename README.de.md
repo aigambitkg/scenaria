@@ -106,9 +106,16 @@ So werden Fixpunkte durchgesetzt:
 
 Einstellungen, Chat und Relay handeln für dich und nutzen deine Schlüssel – sie brauchen deshalb wie Kanon-Freigaben die Freigabe-Sitzung (den Freigabe-Link aus `scenaria start`).
 
-## Prognosen und Multiversum: sehen, bevor man wählt (v0.8)
+## Prognosen, Orakel und Prüf-Experte: sehen, bevor man wählt (v0.9)
 
-Jede offene Entscheidung bekommt eine **Prognose, bevor jemand wählt**: Wie viel vom Kontext und vom Hauptziel hält jede Option? Die Schnellprognose ist sofort da und braucht kein Modell. Das **Multiversum** lässt drei getrennte Rollen je Option arbeiten: Der Archivar liest die Vergangenheit, der Handwerker spielt die Gegenwart weiter (und sagt, was verloren ginge), das Orakel beurteilt die Zukunft gegen Ziel und Fixpunkte. Prompts und Pläne lassen sich genauso prüfen, Varianten im direkten Vergleich. Später misst Scenaria, wie treu die Linie wirklich blieb. So wird die Trefferquote der Prognosen sichtbar. Automatische Prognosen sind optional, nutzen nur dein Modell und haben ein Tageslimit über alle Projekte. Im Dashboard unter **Prognosen**, per CLI mit `scenaria forecast n12`, im Chat oder für Agenten mit dem Tool `scenaria_forecast`.
+Jede offene Entscheidung bekommt eine **Prognose, bevor jemand wählt**: Wie treu bleibt die Linie nach jeder Option bei Kontext und Hauptziel? Es ist dieselbe Größe, die Scenaria danach misst – jede Prognose lässt sich also an der Wirklichkeit prüfen.
+
+- **Kern** (sofort, ohne Modell): eine kleine Formel, die man von Hand nachrechnen kann. „Warum diese Zahl?“ zeigt jeden Teil, die aus deinen eigenen Entscheidungen gelernten Gewichte und ein ehrliches Unsicherheitsband.
+- **Orakel** (Multiversum, dein Modell): Archivar (Vergangenheit), Handwerker (Gegenwart) und Orakel (Zukunft) dürfen den Kern nur **korrigieren** – höchstens ±20 Punkte je Teil, jede Korrektur mit Grund und existierendem Beleg. Korrekturen ohne Beleg zählen 0; wie sehr dem Orakel vertraut wird (γ), lernt Scenaria daraus, wie seine Korrekturen wirklich ausgingen.
+- **Prüf-Experte**: eine Checkliste für jede Prognose (faire Reihenfolge, Signatur, Datenbasis, Unterscheidbarkeit, Bilanz, Belege) → belastbar / mit Vorsicht / nicht belastbar. Auf Wunsch prüft ein skeptisches Modell jede Aussage des Orakels gegen die Belege, so wie sie zitiert wurden, und streicht nicht belegte Korrekturen.
+- **Güte**: Rückblick über jede vergangene Entscheidung aus ihrer eigenen Zeit heraus, Orakel vs. Kern und ein Prüfstand. Ehrlich: aussagekräftig ab 10 Entscheidungen, davor als Tendenz.
+
+Prompts und Pläne lassen sich genauso prüfen, Varianten im direkten Vergleich. Automatische Prognosen sind optional, nutzen nur dein Modell und haben ein Tageslimit über alle Projekte. Im Dashboard unter **Prognosen**, per CLI mit `scenaria forecast n12` / `--quality` / `--audit f3 [--deep]`, im Chat oder für Agenten mit dem Tool `scenaria_forecast`.
 
 ## Der Experten-Analyst: ein Bericht zum Optimieren (v0.8)
 

@@ -160,6 +160,7 @@ export function AuditBox(props: { t: Dict; id: string; mode?: Forecast["mode"]; 
         <button className="btn link" aria-expanded={open} onClick={() => setOpen(!open)}>
           {open ? t.auHide : t.auShow}
         </button>
+        <HelpButton topic="forecast-check" />
       </div>
       {open && (
         <>
@@ -787,7 +788,9 @@ export function QualityPanel({ t, approval, live, llm }: { t: Dict; approval: bo
   const verdict = !q ? null : !q.enough ? "few" : q.skill !== null && q.skill > 0 ? "good" : "bad";
   return (
     <div className="fc-quality">
-      <p className="hint">{t.fcQualityIntro}</p>
+      <p className="hint">
+        {t.fcQualityIntro} <HelpButton topic="forecast-check" />
+      </p>
       {err && <p className="error">{err}</p>}
       <h4>{t.fcqBacktest}</h4>
       {q && (

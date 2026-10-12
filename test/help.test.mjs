@@ -16,7 +16,8 @@ test("help: every topic exists in German and English, in the same order", () => 
 
 test("help covers every function the request named, incl. the terms the checker asked for", () => {
   for (const id of ["start", "goal", "fidelity", "decisions", "forecasts", "canon", "chat", "relay", "analysis", "projects", "agents", "settings", "history", "privacy", "cli"]) assert.ok(ids(de).includes(id), id);
-  for (const term of ["Schnellprognose", "Multiversum", "Kontext gehalten", "Trefferquote", "Fixpunkt-Chip", "vor der Wahl erstellt", "widerspricht den Fakten", "Was bleibt"]) assert.ok(de.includes(term), term);
+  for (const term of ["Schnellprognose", "Multiversum", "Kontext gehalten", "Trefferquote", "Fixpunkt-Chip", "vor der Wahl erstellt", "widerspricht den Fakten", "Was bleibt", "Orakel-Korrektur", "Vertrauen γ", "Band ±", "KI-geprüft", "Prüf-Experte", "Orakel-Backtest", "Prüfstand"]) assert.ok(de.includes(term), term);
+  assert.ok(ids(de).includes("forecast-check") && ids(en).includes("forecast-check"), "the auditor has its own topic");
 });
 
 test("every help/onboarding action is handled by the dashboard", () => {
