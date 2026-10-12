@@ -80,6 +80,7 @@ const de: HelpTopic[] = [
     title: "Prognosen – vor der Wahl sehen, was passiert",
     what: "Für jede offene Entscheidung (und für Prompts) sagt Scenaria voraus, wie treu die Linie nach dieser Option bei Kontext und Hauptziel bleibt – bevor du wählst. Es ist dieselbe Größe, die Scenaria danach misst (Kontext-Treue), daher lässt sich jede Prognose später überprüfen.",
     when: "Vor jeder wichtigen Wahl und bevor du einem Agenten einen großen Prompt gibst.",
+    example: "„Login mit Passkeys?“ – der Kern kennt das Wort nicht und gibt 48 ± 20. Das Orakel korrigiert +12, weil Knoten n7 „passwortloses Anmelden“ als Ziel nennt (Beleg n7). Neue Zahl: 48 + α·12 = 52 – nachrechenbar in „Warum diese Zahl?“.",
     how: [
       "Oben „Prognosen“ öffnen (die Zahl zeigt offene Entscheidungen) – oder einen Entscheidungsknoten anklicken.",
       "Die Schnellprognose (der Kern) ist sofort da. „Warum diese Zahl?“ zeigt jede Zutat und die Formel.",
@@ -93,7 +94,7 @@ const de: HelpTopic[] = [
       ["Multiversum", "Drei getrennte KI-Rollen: Archivar = Vergangenheit, Handwerker = Gegenwart (nächste Schritte, was verloren ginge), Orakel = Zukunft."],
       ["Orakel-Korrektur", "Das Orakel darf den Kern nur korrigieren: höchstens ±20 Punkte je Teil, mit Grund und Beleg. Gezählt wird Vorschlag × Sicherheit × Vertrauen γ."],
       ["belegt", "Die Korrektur nennt eine existierende, konkrete ID (Knoten, Fixpunkt). Erfundene IDs werden verworfen; Projekt, Aufgabe oder die Entscheidung selbst zählen nicht als Beleg."],
-      ["Vertrauen γ", "Wie stark Korrekturen des Orakels zählen. Startet bei 1 und wird aus geprüften Fällen gelernt – verschlechtert das Orakel die Prognosen, sinkt γ Richtung 0."],
+      ["Vertrauen γ", "Wie stark Korrekturen des Orakels zählen. Startet bei 1 und wird aus geprüften Fällen gelernt: verschlechtert das Orakel die Prognosen, sinkt γ Richtung 0; hilft es, kann γ bis 1,5 steigen – die Korrektur bleibt dabei immer auf ±20 begrenzt."],
       ["Deckel 40", "Zeigt das Orakel einen harten Fixpunkt in Gefahr, wird die Prognose auf 40 begrenzt."],
       ["★ Empfehlung", "Die Option mit der höchsten Prognose (beim Multiversum: die Empfehlung des Orakels – Abweichungen meldet der Prüf-Experte)."],
       ["Kontext gehalten", "Balken: vorhergesagte Kontext-Treue der Linie mit dieser Option (0–100), mit Band und – sobald gemessen – der echten Markierung."],
@@ -113,6 +114,7 @@ const de: HelpTopic[] = [
     title: "Prüf-Experte und Güte – Prognosen absichern",
     what: "Der Prüf-Experte prüft jede Prognose, bevor du dich darauf verlässt, und sagt: belastbar, mit Vorsicht oder nicht belastbar. Der Tab „Güte“ zeigt, wie gut Kern und Orakel auf diesem Projekt bisher wirklich waren.",
     when: "Bevor du nach einer Prognose wählst – vor allem, wenn das Orakel den Kern stark korrigiert hat.",
+    example: "Die Passkey-Option: Der Kern hatte gewarnt (eigene Worte ohne Bezug), das Orakel korrigiert mit Beleg n7. Prüf-Experte: „mit Vorsicht“ – erst nach der KI-Prüfung. Der Skeptiker liest n7, bestätigt den Bezug → „belastbar“. Hätte er widersprochen, fiele die Korrektur in der geprüften Prognose weg.",
     how: [
       "Unter jeder gespeicherten Prognose: „Prüfpunkte zeigen“ – die Checkliste läuft sofort und ohne KI.",
       "„KI-Prüfung der Orakel-Aussagen“: Ein skeptisches Modell prüft jede Aussage NUR gegen die zitierten Belege (so, wie sie bei der Prognose waren). Nicht belegte Korrekturen fallen in der „geprüften Prognose“ weg.",
@@ -317,6 +319,7 @@ const en: HelpTopic[] = [
     title: "Forecasts — see what happens before you choose",
     what: "For every open decision (and for prompts) Scenaria predicts how faithful the line stays to the context and the main goal after this option — before you choose. It is the same quantity Scenaria measures afterwards (context fidelity), so every forecast can be checked later.",
     when: "Before every important choice and before you give an agent a big prompt.",
+    example: "\"Login with passkeys?\" — the core does not know the word and gives 48 ± 20. The oracle corrects +12 because node n7 names \"passwordless sign-in\" as a goal (evidence n7). New number: 48 + α·12 = 52 — retraceable in \"Why this number?\".",
     how: [
       "Open \"Forecasts\" at the top (the number shows open decisions) — or click a decision node.",
       "The quick forecast (the core) is there at once. \"Why this number?\" shows every ingredient and the formula.",
@@ -330,7 +333,7 @@ const en: HelpTopic[] = [
       ["Multiverse", "Three separate AI roles: archivist = past, craftsman = present (next steps, what would be lost), oracle = future."],
       ["Oracle correction", "The oracle may only correct the core: at most ±20 points per part, with a reason and evidence. What counts is proposal × confidence × trust γ."],
       ["backed", "The correction cites an existing, specific id (node, fixed point). Invented ids are dropped; the project, the task or the decision itself are no evidence."],
-      ["Trust γ", "How much the oracle's corrections count. Starts at 1 and is learned from checked cases — if the oracle makes forecasts worse, γ goes towards 0."],
+      ["Trust γ", "How much the oracle's corrections count. Starts at 1 and is learned from checked cases: if the oracle makes forecasts worse, γ goes towards 0; if it helps, γ can rise to 1.5 — the correction always stays within ±20."],
       ["Cap 40", "If the oracle shows a hard fixed point at risk, the forecast is capped at 40."],
       ["★ Recommendation", "The option with the highest forecast (multiverse: the oracle's recommendation — the auditor reports any mismatch)."],
       ["Context kept", "Bar: predicted context fidelity of the line with this option (0–100), with the band and — once measured — the real marker."],
@@ -350,6 +353,7 @@ const en: HelpTopic[] = [
     title: "Auditor and quality — securing forecasts",
     what: "The auditor checks every forecast before you rely on it and says: reliable, with caution or not reliable. The \"Quality\" tab shows how good core and oracle really have been on this project.",
     when: "Before you choose based on a forecast — especially when the oracle corrected the core a lot.",
+    example: "The passkey option: the core had warned (own words without connection), the oracle corrects with evidence n7. Auditor: \"with caution\" — until the AI check. The skeptic reads n7 and confirms the link → \"reliable\". Had it disagreed, the correction would be removed in the audited forecast.",
     how: [
       "Below every saved forecast: \"Show checks\" — the checklist runs at once, without AI.",
       "\"AI check of the oracle's claims\": a skeptical model checks each claim ONLY against the cited evidence (as it was when the forecast was made). Unsupported corrections are removed in the \"audited forecast\".",
