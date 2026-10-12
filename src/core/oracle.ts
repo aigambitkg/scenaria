@@ -208,6 +208,9 @@ export function assignEntries(list: any[], options: { key: string; label: string
   };
   pass((x, o) => one(x?.key, 40) === o.key);
   pass((x, o) => normKey(x?.key) !== "" && normKey(x?.key) === normKey(o.key));
+  // Numbered answers ("1", "2", …) when EVERY entry is numbered exactly 1…n.
+  const numbered = list.length === options.length && list.every((x, i) => String(x?.key ?? "").trim() === String(i + 1));
+  if (numbered) pass((x, o) => String(x?.key ?? "").trim() === String(options.indexOf(o) + 1));
   pass((x, o) => normKey(name(x)) !== "" && normKey(name(x)) === normKey(o.label));
   pass((x, o) => {
     const n = normKey(name(x));

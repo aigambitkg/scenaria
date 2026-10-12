@@ -468,6 +468,10 @@ test("review 0.9.1: answers never land on the wrong option; no usable oracle →
   assert.equal(m.has("a"), false, "a named but unmatched entry is not given to a by order");
   m = O.assignEntries([{ x: 1 }, { x: 2 }], opts);
   assert.equal(m.get("a").x, 1, "nothing named at all → by order");
+  m = O.assignEntries([{ key: "1", x: 1 }, { key: "2", x: 2 }], opts);
+  assert.equal(m.get("b").x, 2, "numbered 1…n");
+  m = O.assignEntries([{ key: "2", x: 1 }, { key: "3", x: 2 }], opts);
+  assert.equal(m.size, 0, "not exactly 1…n → nothing");
   m = O.assignEntries([{ key: "a", x: 1 }, { key: "A", x: 2 }], opts);
   assert.equal(m.get("a").x, 1);
   assert.equal(m.has("b"), false, "one entry never serves two options");
@@ -488,6 +492,7 @@ test("review 0.9.1: answers never land on the wrong option; no usable oracle →
   assert.equal(L.llmErrorCode("lmstudio did not answer within 600 s"), "timeout");
   assert.equal(L.llmErrorCode(`ollama answered HTTP 404: {"error":"model 'qwen3.5:9b' not found, try pulling it first"}`), "model_missing");
   assert.equal(L.missingModel(`model 'qwen3.5:9b' not found`), "qwen3.5:9b");
+  assert.equal(L.missingModel(`ollama answered HTTP 404: {"error":"model \\"qwen3.5:9b\\" not found, try pulling it first"}`), "qwen3.5:9b");
   assert.equal(L.llmErrorCode("openai answered HTTP 401: Incorrect API key provided"), "auth");
   assert.equal(L.llmErrorCode("Kein Modell eingestellt – wähle eines"), "no_model");
   assert.equal(L.llmErrorCode("Abgebrochen / cancelled by the person."), "cancelled");

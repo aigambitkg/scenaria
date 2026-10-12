@@ -21,7 +21,8 @@ export function llmErrorCode(message: string): LlmErrorCode {
 
 /** The model name in "model 'qwen3.5:9b' not found" (for the "ollama pull …" hint). */
 export function missingModel(message: string): string | null {
-  return message.match(/model ['"`]([^'"`]+)['"`]/i)?.[1] ?? null;
+  // Ollama writes {"error":"model \"qwen3.5:9b\" not found"} — with escaped quotes.
+  return message.match(/model\s*\\?['"`]([^'"`\\]+)\\?['"`]/i)?.[1] ?? null;
 }
 
 /** The provider at the start of our own messages ("ollama not reachable at …"). */
