@@ -85,6 +85,7 @@ Prompts, analysis & rules
   relay "<question>" [--options "A|B"] [--decide]   Archivist → craftsman → oracle for one high-impact decision
   analyst [<report id>] [--scope project|line|all] [--head <node>] [--no-model] [--adopt <index>] [--out-file report.md]
                                         Expert analysis to optimise with (list · run · show a report · adopt a recommendation as rule)
+  forecast --quality | --benchmark        Forecast quality: backtest against reality / test bench
   forecast [<decision> | --prompt "<text>" [--options "variant A|variant B"]] [--quick]
                                         Multiverse forecast: does each option / prompt keep the context? (no args: list + hit rate)
                                         Health check; with --llm: pattern analysis by ANY LLM (Ollama, OpenAI, Anthropic, …)
@@ -172,6 +173,8 @@ const opts = {
   options: { type: "string" },
   prompt: { type: "string" },
   quick: { type: "boolean" },
+  benchmark: { type: "boolean" },
+  quality: { type: "boolean" },
   scope: { type: "string" },
   head: { type: "string" },
   "no-model": { type: "boolean" },
@@ -531,6 +534,33 @@ async function main() {
     case "forecast": {
       const s = Scenaria.open(v.root);
       const { forecast, quickDecision, quickPrompt, evaluateForecasts } = await import("./core/forecast.js");
+      const P = await import("./core/predict.js");
+      const de = v.lang !== "en";
+      if (v.quality) {
+        // Quality: every past decision forecast as of its own time vs. what really happened.
+        const q = P.forecastQuality(s);
+        const pctS = (x: number | null) => (x === null ? "–" : `${Math.round(x * 100)}%`);
+        const human = [
+          `${C.bold}${de ? "Prognose-Güte (Backtest, ohne Wissen über die Zukunft)" : "Forecast quality (backtest, no knowledge of the future)"}${C.reset}`,
+          `${de ? "Fälle" : "cases"}: ${q.n} ${de ? "aus" : "from"} ${q.decisions} ${de ? "Entscheidungen" : "decisions"}${q.enough ? "" : `  ${C.yellow}${de ? `zu wenig Daten (ab ${q.minCases} Fällen aussagekräftig)` : `too little data (meaningful from ${q.minCases} cases)`}${C.reset}`}`,
+          `${de ? "Fehler Ø" : "mean error"}: ${q.mae ?? "–"} ${de ? "Punkte · naive Fortschreibung" : "points · naive persistence"}: ${q.maeBaseline ?? "–"} · Skill: ${q.skill ?? "–"} ${q.skill !== null ? (q.skill > 0 ? `${C.green}(${de ? "besser als Fortschreibung" : "better than persistence"})${C.reset}` : `${C.yellow}(${de ? "nicht besser als Fortschreibung" : "not better than persistence"})${C.reset}`) : ""}`,
+          `Bias: ${q.bias ?? "–"} · ${de ? "im Band" : "within band"}: ${pctS(q.coverage)} · ${de ? "Abbrüche erkannt" : "breaks found"}: ${q.breaks.hits}/${q.breaks.actual} (precision ${pctS(q.breaks.precision)}, recall ${pctS(q.breaks.recall)}) · ${de ? "Rangfolge" : "ranking"}: ${q.ranking.concordant}/${q.ranking.pairs}`,
+          `α ${q.calibration.alpha.toFixed(2)} · β ${q.calibration.beta.toFixed(2)} · ${de ? "Band" : "band"} ±${q.calibration.band}${q.calibration.calibrated ? "" : de ? " (Standard, noch nicht kalibriert)" : " (default, not calibrated yet)"}`,
+          ...q.cases.map((c) => `  ${c.decision} ${c.label.slice(0, 40)}: ${de ? "Prognose" : "forecast"} ${c.predicted} · ${de ? "real" : "actual"} ${c.actual} (${c.actualNodes}) · ${de ? "Fehler" : "error"} ${c.error} · ${de ? "Fortschreibung" : "persistence"} ${c.line}${c.broke ? " · broke" : ""}${c.predictedBreak ? " · ⚠" : ""}`),
+        ];
+        return out(human.join("\n"), q);
+      }
+      if (v.benchmark) {
+        const b = await P.benchmark(P.calibrationFor(s));
+        const human = [
+          `${C.bold}${de ? "Prüfstand (synthetische Fälle mit bekanntem Ausgang)" : "Test bench (synthetic cases with known outcome)"}${C.reset}`,
+          `${de ? "klar (Option bleibt beim Ziel vs. driftet)" : "clear (option stays on goal vs drifts)"}: ${b.clear.ranking}/${b.clear.n} ${de ? "richtig gereiht" : "ranked right"}, ${b.clear.flagged}/${b.clear.n} ${de ? "Drift vorher markiert" : "drift flagged before"}`,
+          `${de ? "neutral (beide auf Kurs)" : "neutral (both on track)"}: ${b.neutral.passed}/${b.neutral.n} ${de ? "bestanden" : "passed"}, ${b.neutral.falseAlarms} ${de ? "Fehlalarm(e)" : "false alarm(s)"}`,
+          `${de ? "Fehler Ø" : "mean error"}: ${b.mae}`,
+          ...b.results.map((r) => `  ${r.passed ? "✔" : "✘"} ${r.id} [${r.kind}${r.limit ? `: ${r.limit}` : ""}] ${de ? "Prognose" : "forecast"} ${r.predicted.on}/${r.predicted.off} · ${de ? "real" : "actual"} ${r.measured.on}/${r.measured.off}${r.falseAlarm ? (de ? " · Fehlalarm" : " · false alarm") : ""}`),
+        ];
+        return out(human.join("\n"), b);
+      }
       if (!p[0] && !v.prompt) {
         const ev = evaluateForecasts(s);
         const c = ev.calibration;
@@ -539,10 +569,10 @@ async function main() {
       if (v.quick || (!process.stdin.isTTY && !v.prompt)) {
         if (v.prompt) {
           const q = quickPrompt(s, String(v.prompt));
-          return out(`Prompt keeps the context: ${q.score}%${q.warnings.length ? `\nLessons: ${q.warnings.join("; ")}` : ""}`, q);
+          return out(`Prompt keeps the context: ${q.score}%${q.explain ? `\n${P.explainText(q.explain, de ? "de" : "en")}` : ""}${q.warnings.length ? `\nLessons: ${q.warnings.join("; ")}` : ""}`, q);
         }
         const opts = quickDecision(s, p[0]);
-        return out(opts.map((o) => `${o.key} ${o.label}: ${o.score}%${o.quick.goal !== null ? ` (goal ${o.quick.goal}%)` : ""}${o.quick.explored ? ` explored → ${o.quick.explored.measured}%` : ""}${o.quick.warnings.length ? `\n   ⚠ ${o.quick.warnings.join("\n   ⚠ ")}` : ""}`).join("\n"), opts);
+        return out(opts.map((o) => `${C.bold}${o.key} ${o.label}: ${o.score}%${o.quick.explain ? ` ± ${o.quick.explain.band}` : ""}${C.reset}${o.quick.explored ? ` explored → ${o.quick.explored.measured}%` : ""}${o.quick.explain ? `\n   ${P.explainText(o.quick.explain, de ? "de" : "en").split("\n").join("\n   ")}` : ""}${o.quick.warnings.length ? `\n   ⚠ ${o.quick.warnings.join("\n   ⚠ ")}` : ""}`).join("\n"), opts);
       }
       // The multiverse uses the person's model settings and keys: a person at a terminal.
       if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("The multiverse forecast needs an interactive terminal (it uses your model settings and keys). Use --quick for the forecast without a model.");

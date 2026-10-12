@@ -64,6 +64,70 @@ function epistemicOf(n: ScenariaNode): number {
   return conf.length ? conf.reduce((a, b) => a + b, 0) / conf.length : 0.8;
 }
 
+export interface StepInput {
+  toks: Set<string>;
+  type: string;
+  isRoot: boolean;
+  automatic: boolean;
+  mainGoal: Set<string>;
+  taskGoal: Set<string>;
+  /** Stems of the last 6 steps on the path + the task goal. */
+  window: Set<string>;
+  ancIds: Set<string>;
+  servesGoal?: boolean;
+  respectsCanon?: boolean;
+  /** Explicit references (basedOn) — a reference to the path keeps continuity. */
+  refs: string[];
+  parent: { anchor: number | null; continuity: number } | null;
+}
+
+/**
+ * The content part of one step's fidelity: anchor (closeness to the goals) and continuity (connection to
+ * the path). Shared by the measurement (fidelityAll) and the forecast (core/predict.ts), so a prediction
+ * and the later measurement are the same quantity.
+ */
+export function stepComponents(i: StepInput): { anchor: number | null; continuity: number; signal: boolean; lowSignal: boolean; task: boolean } {
+  const hasGoal = i.mainGoal.size > 0;
+  const signal = i.toks.size >= 4 && !i.automatic;
+  if (i.isRoot) return { anchor: 1, continuity: 1, signal, lowSignal: false, task: false };
+  if (i.type === "goal") {
+    // A task is a legitimate new start; what matters is how close it is to the main goal.
+    return { anchor: hasGoal ? norm(overlap(i.toks, i.mainGoal), 0.2) : null, continuity: 1, signal, lowSignal: false, task: true };
+  }
+  if (!signal && i.parent) {
+    // Too little text to judge (e.g. "Auto-save: a.ts"): carry the line on, slightly decayed.
+    const anchor = i.parent.anchor === null || (!hasGoal && !i.taskGoal.size) ? null : i.parent.anchor * 0.98;
+    return { anchor, continuity: i.parent.continuity * 0.98, signal, lowSignal: true, task: false };
+  }
+  const goalSet = new Set([...i.mainGoal, ...i.taskGoal]);
+  let anchor = hasGoal || i.taskGoal.size ? norm(overlap(i.toks, goalSet), 0.18) : null;
+  if (i.servesGoal) anchor = Math.max(anchor ?? 0, 0.8);
+  // Checked against the project's fixed points: anchored even when the wording differs.
+  if (i.respectsCanon) anchor = Math.max(anchor ?? 0, 0.7);
+  let continuity = norm(overlap(i.toks, i.window), 0.15);
+  if (i.refs.some((r) => i.ancIds.has(r.split(".")[0]))) continuity = Math.max(continuity, 0.95);
+  return { anchor, continuity, signal, lowSignal: false, task: false };
+}
+
+/** The weighted fidelity score 0..100 (without a goal the anchor weight is spread over the rest). */
+export function combine(anchor: number | null, continuity: number, integScore: number, epistemic: number): number {
+  const s =
+    anchor === null
+      ? (continuity * W.continuity + integScore * W.integrity + epistemic * W.epistemic) / (W.continuity + W.integrity + W.epistemic)
+      : anchor * W.anchor + continuity * W.continuity + integScore * W.integrity + epistemic * W.epistemic;
+  return Math.round(s * 100);
+}
+export const FIDELITY_WEIGHTS = W;
+
+/** The break rule (shared): neither connected to the path nor to the goal, or a sharp fall. */
+export function isBreak(anchor: number | null, continuity: number, score: number, parentScore: number | null): boolean {
+  return (continuity < 0.12 && (anchor ?? 0) < 0.4) || (parentScore !== null && parentScore - score >= 30);
+}
+export function isDrift(anchor: number | null, type: string): boolean {
+  return anchor !== null && ((type === "decision" && anchor < 0.25) || (type === "goal" && anchor < 0.2));
+}
+export { epistemicOf };
+
 /** Fidelity of every node, computed in one pass over the tree (each node only sees its own path). */
 export function fidelityAll(nodes: ScenariaNode[], opts: { integrity?: Map<string, IntegrityState>; goalChanges?: string[] } = {}): Map<string, FidelityPoint> {
   const out = new Map<string, FidelityPoint>();
@@ -89,38 +153,29 @@ export function fidelityAll(nodes: ScenariaNode[], opts: { integrity?: Map<strin
     if (integrity === "tampered") flags.push("tampered");
     if (integrity === "inherited") flags.push("builtOnTampered");
     const hasGoal = f.mainGoal.size > 0;
-    let anchor: number | null;
-    let continuity: number;
     // Automatic saves (watcher, autosave) carry file names, not meaning: they never count as a break.
     const automatic = n.type === "autosave" || n.source === "watch" || /^auto-save/i.test(n.title);
-    const signal = toks.size >= 4 && !automatic;
-
-    if (!n.parentId || n.type === "mission") {
-      anchor = 1;
-      continuity = 1;
-    } else if (n.type === "goal") {
-      // A task is a legitimate new start; what matters is how close it is to the main goal.
-      anchor = hasGoal ? norm(overlap(toks, f.mainGoal), 0.2) : null;
-      continuity = 1;
-      flags.push("task");
-    } else if (!signal && f.parent) {
-      // Too little text to judge (e.g. "Auto-save: a.ts"): carry the line on, slightly decayed.
-      anchor = f.parent.anchor === null || (!hasGoal && !f.taskGoal.size) ? null : f.parent.anchor * 0.98;
-      continuity = f.parent.continuity * 0.98;
-      flags.push("lowSignal");
-    } else {
-      const goalSet = new Set([...f.mainGoal, ...f.taskGoal]);
-      anchor = hasGoal || f.taskGoal.size ? norm(overlap(toks, goalSet), 0.18) : null;
-      if (n.servesGoal) anchor = Math.max(anchor ?? 0, 0.8);
-      // Checked against the project's fixed points: anchored even when the wording differs.
-      if (n.respectsCanon?.length) anchor = Math.max(anchor ?? 0, 0.7);
-      const window = new Set<string>([...f.taskGoal]);
-      for (const a of f.anc.slice(-6)) for (const t of a.toks) window.add(t);
-      continuity = norm(overlap(toks, window), 0.15);
-      const ancIds = new Set(f.anc.map((a) => a.n.id));
-      const refs = [...(n.basedOn ?? []), ...(n.factInfo ?? []).flatMap((x) => x?.basedOn ?? [])];
-      if (refs.some((r) => ancIds.has(r.split(".")[0]))) continuity = Math.max(continuity, 0.95);
-    }
+    const window = new Set<string>([...f.taskGoal]);
+    for (const a of f.anc.slice(-6)) for (const t of a.toks) window.add(t);
+    const c = stepComponents({
+      toks,
+      type: n.type,
+      isRoot: !n.parentId || n.type === "mission",
+      automatic,
+      mainGoal: f.mainGoal,
+      taskGoal: f.taskGoal,
+      window,
+      ancIds: new Set(f.anc.map((a) => a.n.id)),
+      servesGoal: Boolean(n.servesGoal),
+      respectsCanon: Boolean(n.respectsCanon?.length),
+      refs: [...(n.basedOn ?? []), ...(n.factInfo ?? []).flatMap((x) => x?.basedOn ?? [])],
+      parent: f.parent,
+    });
+    const anchor = c.anchor;
+    const continuity = c.continuity;
+    const signal = c.signal;
+    if (c.task) flags.push("task");
+    if (c.lowSignal) flags.push("lowSignal");
     if (!hasGoal && n.parentId) flags.push("noGoal");
     if (n.forkedFrom) flags.push("branch");
     if (n.verification?.status === "failed") flags.push("failed");
@@ -130,12 +185,7 @@ export function fidelityAll(nodes: ScenariaNode[], opts: { integrity?: Map<strin
     }
     const epistemic = epistemicOf(n);
     const integScore = integrity === "tampered" ? 0 : integrity === "inherited" ? 0.5 : 1;
-    let score: number;
-    if (anchor === null) {
-      const rest = W.continuity + W.integrity + W.epistemic;
-      score = (continuity * W.continuity + integScore * W.integrity + epistemic * W.epistemic) / rest;
-    } else score = anchor * W.anchor + continuity * W.continuity + integScore * W.integrity + epistemic * W.epistemic;
-    score = Math.round(score * 100);
+    let score = combine(anchor, continuity, integScore, epistemic);
     if (integrity === "tampered") score = Math.min(score, 25);
     if (n.breaksCanon?.length) {
       flags.push("canonBroken");
@@ -143,8 +193,8 @@ export function fidelityAll(nodes: ScenariaNode[], opts: { integrity?: Map<strin
     } else if (n.respectsCanon?.length) flags.push("canonRespected");
     if (!n.parentId) score = integrity === "tampered" ? 25 : 100;
     // A break: the step neither connects to its path nor to the goal, or fidelity falls sharply.
-    if (n.type !== "goal" && n.parentId && signal && ((continuity < 0.12 && (anchor ?? 0) < 0.4) || (f.parent && f.parent.score - score >= 30))) flags.push("break");
-    if (anchor !== null && ((n.type === "decision" && anchor < 0.25) || (n.type === "goal" && anchor < 0.2))) flags.push("drift");
+    if (n.type !== "goal" && n.parentId && signal && isBreak(anchor, continuity, score, f.parent ? f.parent.score : null)) flags.push("break");
+    if (isDrift(anchor, n.type)) flags.push("drift");
     const point: FidelityPoint = { id: n.id, type: n.type, title: n.type === "decision" ? n.question ?? n.title : n.title, score, anchor: anchor === null ? null : Math.round(anchor * 100) / 100, continuity: Math.round(continuity * 100) / 100, integrity, epistemic: Math.round(epistemic * 100) / 100, flags };
     out.set(n.id, point);
     const nextTask = n.type === "goal" ? stems(`${n.title} ${n.goal ?? ""}`) : f.taskGoal;

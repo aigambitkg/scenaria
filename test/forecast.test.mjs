@@ -132,6 +132,10 @@ test("evaluation: a forecast is checked against the branch that was really taken
   s.choose(d.id, "a", "keeps the quest line");
   p.write("c.txt", "1");
   s.checkpoint({ title: "Streak reminder push for daily quests", facts: ["Reminder 2h before the streak resets"] });
+  // one step alone is too noisy to score a forecast (MIN_STEPS = 2)
+  assert.equal(evaluateForecasts(s).forecasts.find((x) => x.id === f.id).actual, undefined);
+  p.write("c2.txt", "1");
+  s.checkpoint({ title: "Streak reminder opt-out for daily quests" });
   const ev = evaluateForecasts(s);
   const mine = ev.forecasts.find((x) => x.id === f.id);
   assert.ok(mine.actual?.length === 1, JSON.stringify(mine.actual));
@@ -265,6 +269,8 @@ test("review fixes: forged forecast files are unverified and never count; prompt
   s.choose(d.id, "a", "keeps the line");
   p.write("z.txt", "1");
   s.checkpoint({ title: "Streak reminder push for daily quests done" });
+  p.write("z2.txt", "1");
+  s.checkpoint({ title: "Streak reminder metrics for daily quests" });
   const ev = evaluateForecasts(s).forecasts.find((x) => x.id === f.id);
   assert.ok(ev.verified);
   assert.ok(ev.actualLine?.nodes >= 1, JSON.stringify(ev));

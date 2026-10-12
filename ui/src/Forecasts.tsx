@@ -5,7 +5,7 @@ import { HelpButton } from "./HelpButton";
  * (archivist = past, craftsman = present, oracle = future) on request or automatically.
  */
 import { useEffect, useMemo, useState } from "react";
-import { api, type Forecast, type ForecastOption, type ForecastsPage, type QuickForecast, type ScenariaNode } from "./api";
+import { api, type Explain, type Forecast, type ForecastOption, type ForecastQuality, type BenchSummary, type ForecastsPage, type QuickForecast, type ScenariaNode } from "./api";
 import { Modal } from "./Dialogs";
 import { NodeId } from "./Map";
 import type { Dict } from "./i18n";
@@ -15,15 +15,70 @@ const errText = (e: any) => String(e?.message ?? e);
 const tone = (n: number) => (n >= 70 ? "good" : n >= 45 ? "mid" : "low");
 
 /** One horizontal bar: predicted context retention. */
-export function ScoreBar({ value, label, measured }: { value: number; label?: string; measured?: number }) {
+export function ScoreBar({ value, label, measured, band }: { value: number; label?: string; measured?: number; band?: number }) {
   return (
     <div className="fbar" title={label}>
+      {band !== undefined && <div className="fbar-band" style={{ left: `${Math.max(0, value - band)}%`, width: `${Math.min(100, value + band) - Math.max(0, value - band)}%` }} />}
       <div className={`fbar-fill ${tone(value)}`} style={{ width: `${Math.max(2, value)}%` }} />
       {measured !== undefined && <div className="fbar-actual" style={{ left: `${measured}%` }} title={`${measured}%`} />}
       <span className="fbar-num">
         {label ? `${label} ` : ""}
-        {value}%
+        {value}%{band !== undefined ? ` ±${band}` : ""}
       </span>
+    </div>
+  );
+}
+
+/** "Why this number?" — every part of the forecast (model v2), so it can be retraced by hand. */
+export function Derivation({ t, e }: { t: Dict; e: Explain }) {
+  const pc = (x: number | null) => (x === null ? "–" : `${Math.round(x * 100)} %`);
+  const risk = e.risk.lessons + e.risk.canon;
+  return (
+    <div className="fc-why">
+      <table className="log">
+        <tbody>
+          <tr>
+            <th>{t.fcOwnWords}</th>
+            <td>
+              {t.fcGoal} {pc(e.own.anchor)} · {t.fcConnection} {pc(e.own.continuity)}
+            </td>
+            <td className="num">{e.own.score}</td>
+          </tr>
+          <tr>
+            <th>{t.fcInContext}</th>
+            <td>
+              {t.fcGoal} {pc(e.inContext.anchor)} · {t.fcConnection} {pc(e.inContext.continuity)}
+            </td>
+            <td className="num">{e.inContext.score}</td>
+          </tr>
+          <tr>
+            <th>{t.fcLine}</th>
+            <td>{t.fcLineHint(e.lineN)}</td>
+            <td className="num">{e.line}</td>
+          </tr>
+          <tr>
+            <th>{t.fcReliability}</th>
+            <td>{t.fcReliabilityHint}</td>
+            <td className="num">{pc(e.reliability)}</td>
+          </tr>
+          {risk > 0 && (
+            <tr>
+              <th>{t.fcRisk}</th>
+              <td>
+                {t.fcLessons} −{e.risk.lessons} · {t.fcFixedPoints} −{e.risk.canon}
+              </td>
+              <td className="num">−{risk}</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+      <p className="fc-formula">
+        P = L + α·({t.fcOwnShort} − L) + β·({t.fcCtxShort} − L) − {t.fcRiskShort} = {e.line} + {e.alpha}·({e.own.score} − {e.line}) + {e.beta}·({e.inContext.score} − {e.line}) − {risk} = <strong>{e.predicted}</strong> ± {e.band}
+      </p>
+      <p className="muted small">
+        {e.calibrated ? t.fcLearned(e.learnedFrom) : t.fcNotCalibrated(e.learnedFrom)}
+        {e.breakRisk ? ` · ⚠ ${t.fcBreakRisk}` : ""}
+      </p>
     </div>
   );
 }
@@ -63,6 +118,7 @@ export function OptionForecasts(props: { t: Dict; options: ForecastOption[]; rec
   const { t } = props;
   // Universes start open for up to two options (full view); the toggle really toggles.
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [why, setWhy] = useState<Record<string, boolean>>({});
   const isOpen = (k: string) => open[k] ?? (!props.compact && props.options.length <= 2);
   const best = Math.max(...props.options.map((o) => o.score));
   const close = props.options.length > 1 && best - Math.min(...props.options.map((o) => o.score)) < 6;
@@ -84,7 +140,7 @@ export function OptionForecasts(props: { t: Dict; options: ForecastOption[]; rec
                 </button>
               )}
             </div>
-            <ScoreBar value={o.score} label={t.fcContextKept} measured={act?.measured} />
+            <ScoreBar value={o.score} label={t.fcContextKept} measured={act?.measured} band={!u ? o.quick.explain?.band : undefined} />
             <div className="fopt-meta">
               <QuickChips t={t} q={o.quick} goal={u?.goal} />
               {act && (
@@ -97,7 +153,13 @@ export function OptionForecasts(props: { t: Dict; options: ForecastOption[]; rec
                   {isOpen(o.key) ? t.fcHideUniverse : t.fcShowUniverse}
                 </button>
               )}
+              {o.quick.explain && (
+                <button className="btn link" aria-expanded={Boolean(why[o.key])} onClick={() => setWhy({ ...why, [o.key]: !why[o.key] })}>
+                  {why[o.key] ? t.fcHideWhy : t.fcWhyNumber}
+                </button>
+              )}
             </div>
+            {o.quick.explain && why[o.key] && <Derivation t={t} e={o.quick.explain} />}
             {u && isOpen(o.key) && (
               <div className="universe">
                 <div>
@@ -174,7 +236,7 @@ export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessi
   const [quick, setQuick] = useState<Record<string, ForecastOption[]>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [tab, setTab] = useState<"open" | "prompt" | "history">("open");
+  const [tab, setTab] = useState<"open" | "prompt" | "history" | "quality">("open");
   const { approval, provider } = useApproval();
   const llm = () => (provider && props.keys[provider] ? { apiKey: props.keys[provider], keyFor: provider } : undefined);
 
@@ -276,9 +338,9 @@ export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessi
         <p className="hint">{t.fcWhy}</p>
         <p className="muted small">{t.fcLegend}</p>
         <div className="side-tabs fc-tabs" role="tablist">
-          {(["open", "prompt", "history"] as const).map((k) => (
+          {(["open", "prompt", "history", "quality"] as const).map((k) => (
             <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>
-              {k === "open" ? `${t.fcTabOpen} (${decisions.length})` : k === "prompt" ? t.fcTabPrompt : `${t.fcTabHistory} (${page?.forecasts.length ?? 0})`}
+              {k === "open" ? `${t.fcTabOpen} (${decisions.length})` : k === "prompt" ? t.fcTabPrompt : k === "history" ? `${t.fcTabHistory} (${page?.forecasts.length ?? 0})` : t.fcTabQuality}
             </button>
           ))}
         </div>
@@ -349,6 +411,7 @@ export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessi
 
         {tab === "prompt" && <PromptCheck t={t} lang={props.lang} approval={approval} llm={llm} toast={props.toast} onDone={load} />}
 
+        {tab === "quality" && <QualityPanel t={t} approval={approval} />}
         {tab === "history" && (
           <section className="a-sec">
             {!page?.forecasts.length && <p className="muted">{t.fcNoHistory}</p>}
@@ -544,5 +607,134 @@ export function DecisionForecast(props: { t: Dict; node: ScenariaNode; graphVers
         {t.fcOpen}
       </button>
     </section>
+  );
+}
+
+/** Forecast quality: the backtest (every past decision forecast as of its own time) and the test bench. */
+export function QualityPanel({ t, approval }: { t: Dict; approval: boolean }) {
+  const [q, setQ] = useState<ForecastQuality | null>(null);
+  const [bench, setBench] = useState<BenchSummary | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    api
+      .forecastQuality()
+      .then(setQ)
+      .catch((e) => setErr(errText(e)));
+  }, []);
+  const pc = (x: number | null) => (x === null ? "–" : `${Math.round(x * 100)} %`);
+  const verdict = !q ? null : !q.enough ? "few" : q.skill !== null && q.skill > 0 ? "good" : "bad";
+  return (
+    <div className="fc-quality">
+      <p className="hint">{t.fcQualityIntro}</p>
+      {err && <p className="error">{err}</p>}
+      {q && (
+        <>
+          {verdict === "few" && <p className="qnote q-info">{t.fcQualityFew(q.n, q.minCases)}</p>}
+          {verdict === "good" && <p className="qnote q-good">{t.fcQualityGood(q.skill!)}</p>}
+          {verdict === "bad" && <p className="qnote q-warn">{t.fcQualityBad}</p>}
+          <div className="x-kpis">
+            <div className="x-kpi">
+              <span className="x-kpi-num">{q.n}</span>
+              <span className="muted small">{t.fcqCases(q.decisions)}</span>
+            </div>
+            <div className="x-kpi" title={t.fcqMaeHint}>
+              <span className="x-kpi-num">{q.mae ?? "–"}</span>
+              <span className="muted small">{t.fcqMae}</span>
+            </div>
+            <div className="x-kpi" title={t.fcqBaselineHint}>
+              <span className="x-kpi-num">{q.maeBaseline ?? "–"}</span>
+              <span className="muted small">{t.fcqBaseline}</span>
+            </div>
+            <div className="x-kpi" title={t.fcqSkillHint}>
+              <span className="x-kpi-num">{q.skill ?? "–"}</span>
+              <span className="muted small">Skill</span>
+            </div>
+            <div className="x-kpi" title={t.fcqCoverageHint}>
+              <span className="x-kpi-num">{pc(q.coverage)}</span>
+              <span className="muted small">{t.fcqCoverage(q.calibration.band)}</span>
+            </div>
+            <div className="x-kpi" title={t.fcqBreaksHint}>
+              <span className="x-kpi-num">
+                {q.breaks.hits}/{q.breaks.actual}
+              </span>
+              <span className="muted small">{t.fcqBreaks(pc(q.breaks.precision))}</span>
+            </div>
+            <div className="x-kpi" title={t.fcqRankingHint}>
+              <span className="x-kpi-num">
+                {q.ranking.concordant}/{q.ranking.pairs}
+              </span>
+              <span className="muted small">{t.fcqRanking}</span>
+            </div>
+          </div>
+          <p className="muted small">{t.fcqWeights(q.calibration.alpha, q.calibration.beta, q.calibration.n, q.calibration.calibrated)}</p>
+          {q.cases.length > 0 && (
+            <table className="log fc-cases">
+              <thead>
+                <tr>
+                  <th>{t.fcqDecision}</th>
+                  <th>{t.fcqForecast}</th>
+                  <th>{t.fcqActual}</th>
+                  <th>{t.fcqError}</th>
+                  <th>{t.fcqBaselineShort}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {q.cases.map((c) => (
+                  <tr key={`${c.decision}-${c.option}`}>
+                    <td>
+                      <NodeId id={c.decision} /> {c.label}
+                      {c.predictedBreak ? " ⚠" : ""}
+                    </td>
+                    <td>{c.predicted}</td>
+                    <td>
+                      {c.actual} <span className="muted small">({c.actualNodes})</span>
+                      {c.broke ? " ↯" : ""}
+                    </td>
+                    <td className={c.error <= q.calibration.band ? "" : "sev-high"}>{c.error}</td>
+                    <td>{c.baselineError}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </>
+      )}
+      <h4>{t.fcqBench}</h4>
+      <p className="muted small">{t.fcqBenchHint}</p>
+      <button
+        className="btn"
+        disabled={busy || !approval}
+        onClick={async () => {
+          setBusy(true);
+          setErr(null);
+          try {
+            setBench(await api.benchmark());
+          } catch (e) {
+            setErr(errText(e));
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {busy ? "…" : t.fcqBenchRun}
+      </button>
+      {bench && (
+        <div className="fc-bench">
+          <p>
+            {t.fcqBenchClear(bench.clear.ranking, bench.clear.n, bench.clear.flagged)} · {t.fcqBenchNeutral(bench.neutral.passed, bench.neutral.n, bench.neutral.falseAlarms)} · {t.fcqMae} {bench.mae}
+          </p>
+          <ul className="issues">
+            {bench.results.map((r) => (
+              <li key={r.id} className={r.passed ? "" : r.kind === "limit" ? "sev-low" : "sev-high"}>
+                {r.passed ? "✔" : "✘"} <strong>{r.id}</strong> <span className="chip">{t.fcqKind[r.kind]}</span> {t.fcqForecast} {r.predicted.on}/{r.predicted.off} · {t.fcqActual} {r.measured.on}/{r.measured.off}
+                {r.falseAlarm ? ` · ${t.fcqFalseAlarm}` : ""}
+                {r.limit ? <span className="muted small"> — {r.limit}</span> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
   );
 }

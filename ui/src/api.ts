@@ -12,6 +12,8 @@ import type { gateMatrix } from "../../src/core/gate";
 import type { Forecast, ForecastOption, QuickForecast } from "../../src/core/forecast";
 export type { Forecast, ForecastOption, QuickForecast };
 import type { ExpertReport, FactSheet, Finding, Recommendation } from "../../src/core/expert";
+import type { Explain, Quality as ForecastQuality, BenchSummary, Calibration } from "../../src/core/predict";
+export type { Explain, ForecastQuality, BenchSummary, Calibration };
 import type { KnownProject } from "../../src/core/projects";
 export type { ExpertReport, FactSheet, Finding, Recommendation, KnownProject };
 export interface ProjectsPage {
@@ -30,7 +32,7 @@ export interface ExpertPage {
 }
 export interface ForecastsPage {
   forecasts: Forecast[];
-  calibration: { evaluated: number; meanError: number | null; hits: number };
+  calibration: { evaluated: number; meanError: number | null; hits: number; legacy: number; multiverse: { evaluated: number; meanError: number | null } };
   running: string | null;
   open: string[];
   failed: Record<string, string>;
@@ -140,6 +142,8 @@ export const api = {
   quickDecision: (node: string) => req<{ node: string; options: ForecastOption[] }>(`/api/forecast/quick?node=${encodeURIComponent(node)}`),
   quickPrompt: (text: string) => req<{ prompt: string; quick: QuickForecast }>(`/api/forecast/quick?prompt=${encodeURIComponent(text)}`),
   runForecast: (b: { node?: string; prompt?: string; variants?: string[]; quick?: boolean; lang: string; llm?: Partial<LlmCall> }) => req<Forecast>("/api/forecast", b),
+  forecastQuality: () => req<ForecastQuality>("/api/forecast/quality"),
+  benchmark: () => req<BenchSummary & { calibration: Calibration }>("/api/forecast/benchmark", {}),
   markUsed: (id: string, key: string) => req<Forecast>("/api/forecast/used", { id, key }),
   models: (b: { provider: string; baseUrl?: string; apiKey?: string }) => req<{ models: string[] }>("/api/settings/models", b),
   testLlm: (b: LlmCall) => req<{ ok: boolean; model: string; reply: string; ms: number }>("/api/settings/test", b),

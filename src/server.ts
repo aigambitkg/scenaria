@@ -25,6 +25,7 @@ import { archivistProposals } from "./core/canon-llm.js";
 import { gateMatrix, runGate } from "./core/gate.js";
 import { effectiveLlm, listModels, readSettings, upstreams, writeSettings } from "./core/settings.js";
 import { listRelays, runRelay } from "./core/relay.js";
+import { benchmark, calibrationFor, forecastQuality } from "./core/predict.js";
 import { autoBudget, evaluateForecasts, forecast, markUsed, openWithoutForecast, quickDecision, quickPrompt } from "./core/forecast.js";
 import { chat } from "./chat.js";
 import { TARGETS, agentStatus, connectionSnippets, setupAgents, type Target } from "./setup.js";
@@ -483,6 +484,11 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         if (req.method === "GET" && p === "/api/forecasts") {
           const failed = Object.fromEntries([...attempts].filter(([, a]) => a.n >= 2).map(([id, a]) => [id, a.error ?? "failed"]));
           return send(res, 200, { ...evaluateForecasts(s), running: forecasting, open: openWithoutForecast(s), failed, auto: { ...readSettings(s).forecast, usedToday: autoBudget(s).used() } });
+        }
+        if (req.method === "GET" && p === "/api/forecast/quality") return send(res, 200, forecastQuality(s));
+        if (req.method === "POST" && p === "/api/forecast/benchmark") {
+          // Throw-away projects in the temp folder; uses the calibration this project's forecasts use.
+          return send(res, 200, { calibration: calibrationFor(s), ...(await benchmark(calibrationFor(s))) });
         }
         if (req.method === "POST" && p === "/api/forecast/used") {
           const b = await readBody(req);

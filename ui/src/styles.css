@@ -714,3 +714,14 @@ table.gate tr.current td:first-child { box-shadow: inset 4px 0 0 var(--marker-so
 }
 .app { grid-template-columns: minmax(0, 1fr); }
 .topbar { min-width: 0; }
+
+/* ---------- forecast v2: band, derivation, quality ---------- */
+.fbar { position: relative; }
+.fbar-band { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--ink) 9%, transparent); }
+.fc-why { margin: 6px 0 4px; }
+.fc-why table { width: 100%; }
+.fc-why th { text-align: left; font-weight: 600; white-space: nowrap; }
+.fc-why td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.fc-formula { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; margin: 6px 0 2px; }
+.fc-cases td, .fc-cases th { font-variant-numeric: tabular-nums; }
+.qnote.q-good { border-color: var(--pass); }

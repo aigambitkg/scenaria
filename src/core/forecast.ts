@@ -3,10 +3,11 @@
  * prompt — will play out: does the line keep its context and its main goal, or lose them?
  *
  * Two layers:
- *   quick       — deterministic, instant, no tokens. Per option: closeness to the main goal and the
- *                 task (anchor), connection to the recent path (continuity), lessons from rewinds and
- *                 failed checks that resemble the option, and — if the option was already explored —
- *                 how that branch really went. Always available, also to agents (scenaria_forecast).
+ *   quick       — deterministic, instant, no tokens (model v2, see core/predict.ts): the predicted
+ *                 context fidelity of the line after the option — the SAME quantity that is measured
+ *                 afterwards — from the option's own words and the next step in context (fidelity
+ *                 formula), the line's level, lessons and fixed points at stake; learned weights and an
+ *                 uncertainty band from this project's backtest. Also available to agents.
  *   multiverse  — three model roles with disjoint context (like the relay):
  *                   archivist (PAST: dossier, rules, past canon, lessons)
  *                   craftsman (PRESENT: the current line, the concrete next steps per option and
@@ -17,7 +18,8 @@
  *                 automatically for open decisions when the person enabled it in Settings.
  *
  * Evaluation: once an option was really taken (chosen or explored), the forecast is compared with
- * the measured context fidelity of that branch → hit rate per forecast and overall calibration.
+ * the measured fidelity of that branch (mean of its first steps with content, within the task).
+ * The overall quality (backtest against the naive "line keeps its level") is in core/predict.ts.
  * A forecast never chooses: the person decides.
  */
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -28,6 +30,7 @@ import { callLlm, dossier, type LlmRequest } from "./analysis.js";
 import { canonState, type CanonEvent } from "./canon.js";
 import { nearestGoal } from "./context.js";
 import { stems, overlap } from "./fidelity.js";
+import { MIN_STEPS, MODEL_VERSION, branchOf, calibrationFor, measureLine, predictOption, predictPrompt, viewNow, type Explain } from "./predict.js";
 import { nodeText } from "./recall.js";
 import { effectiveLlm, upstreams, type LlmRole } from "./settings.js";
 import { writeJsonAtomic } from "./store.js";
@@ -52,7 +55,9 @@ export interface QuickForecast {
   /** "low": the option says too little to judge it (e.g. "yes"/"no") — use the multiverse. */
   signal: "ok" | "low";
   /** If the option was already explored: how that branch really went. */
-  explored?: { node: string; measured: number };
+  explored?: { node: string; measured: number; nodes?: number };
+  /** Model v2: every part of the number, so anyone can retrace it (core/predict.ts). */
+  explain?: Explain;
 }
 
 export interface Universe {
@@ -97,6 +102,8 @@ export interface Forecast {
   subject: { kind: "decision"; node: string; question: string } | { kind: "prompt"; text: string; at: string | null };
   createdAt: string;
   mode: "quick" | "multiverse";
+  /** Forecast model version (2 = same quantity as the measurement; older ones are kept but not scored). */
+  model?: number;
   trigger: "person" | "auto" | "chat";
   models: Partial<Record<LlmRole, string>>;
   options: ForecastOption[];
@@ -160,73 +167,44 @@ function lineContext(s: Scenaria, at: string | null, opts: { excludeLast?: boole
   };
 }
 
-function quickFor(text: string, lc: LineContext, signal: "ok" | "low" = "ok"): QuickForecast {
-  const toks = stems(text);
-  const goalSet = new Set([...lc.mainGoal, ...lc.taskGoal]);
-  const goal = goalSet.size ? norm(overlap(toks, goalSet), 0.18) : null;
-  const cont = new Set([...lc.window, ...lc.taskGoal]);
-  const continuity = cont.size ? norm(overlap(toks, cont), 0.15) : 0.5;
-  const warnings = lc.lessons
-    .map((l) => ({ l, o: overlap(toks, l.toks) }))
-    .filter((x) => x.o >= 0.22)
-    .sort((a, b) => b.o - a.o)
-    .slice(0, 3)
-    .map((x) => `${x.l.node}: ${one(x.l.text, 160)}`);
-  const touched = lc.canon.filter((e) => overlap(toks, stems(e.text)) >= 0.25);
-  const canonTouched = touched.map((e) => e.id);
-  // The future enters the quick layer through the fixed points: touching a hard or dated one is a
-  // risk the oracle must judge (the wording alone cannot say whether the option keeps or breaks it).
-  const canonHints = touched.map((e) => `${e.id}${e.hard ? " (hard" : " (soft"}${e.kind === "future" ? `, future${e.due ? `, by ${e.due}` : ""}` : ""}): ${one(e.text, 120)}`);
-  const atStake = touched.filter((e) => e.hard && (e.kind === "future" || e.due)).length;
-  const penalty = Math.min(0.4, warnings.length * 0.12 + atStake * 0.08);
-  const base = goal === null ? continuity : goal * 0.5 + continuity * 0.5;
-  return { score: clamp(base * (1 - penalty) * 100), goal: goal === null ? null : clamp(goal * 100), continuity: clamp(continuity * 100), warnings, canonTouched, canonHints, signal };
-}
+const toQuick = (p: ReturnType<typeof predictOption>): QuickForecast => ({
+  score: p.explain.predicted,
+  goal: p.explain.own.anchor === null ? null : Math.round(p.explain.own.anchor * 100),
+  continuity: Math.round(p.explain.own.continuity * 100),
+  warnings: p.warnings,
+  canonTouched: p.canonTouched,
+  canonHints: p.canonHints,
+  signal: p.explain.signal,
+  explain: p.explain,
+});
 
-/** Options of a decision with their quick forecast — instant, no model. */
+/** Options of a decision with their quick forecast — instant, no model (model v2, core/predict.ts). */
 export function quickDecision(s: Scenaria, nodeId: string): ForecastOption[] {
   const d = s.node(nodeId);
   if (d.type !== "decision") throw new Error(`${nodeId} is not a decision`);
-  const lc = lineContext(s, d.id, { excludeLast: true });
-  const fid = s.fidelity().points;
-  const kids = s.children(d.id);
+  const v = viewNow(s);
+  const cal = calibrationFor(s);
   return (d.options ?? []).map((o) => {
-    const own = `${o.label} ${o.description ?? ""}`;
-    // Very short options ("Ja"/"Nein") get the question for meaning — and are marked as low signal.
-    const low = stems(own).size < 3;
-    const q = quickFor(low ? `${d.question ?? d.title} ${own}` : own, lc, low ? "low" : "ok");
+    const q = toQuick(predictOption(v, d, o, cal));
     // Already explored or chosen: the real branch says more than any prediction.
-    const branch = kids.find((k) => k.viaOption === o.id) ?? (d.chosen === o.id ? kids.find((k) => !k.viaOption) : undefined);
-    if (branch && fid[branch.id]) q.explored = { node: branch.id, measured: measuredAfter(s, branch.id, fid).measured };
+    const branch = branchOf(v, d, o.id);
+    const m = branch ? measureLine(v, branch.id) : null;
+    if (branch && m) q.explored = { node: branch.id, measured: m.measured, nodes: m.nodes };
     return { key: o.id, label: o.label, text: o.description, quick: q, score: q.score };
   });
 }
 
-/** Quick forecast of a prompt (and optional variants) on a line. */
+/** Quick forecast of a prompt on a line (default: HEAD). */
 export function quickPrompt(s: Scenaria, text: string, at?: string | null): QuickForecast {
   const head = at ?? s.store.readState().head;
-  const lc = lineContext(s, head);
-  const q = quickFor(text, lc);
-  // Explicit references to the line (n12, k3) keep context; very short prompts lose it.
-  const refs = (text.match(/\b[nk]\d+\b/g) ?? []).length;
-  const words = text.split(/\s+/).filter(Boolean).length;
-  let score = q.score + Math.min(15, refs * 5) - (words < 6 ? 15 : 0);
-  if (lc.mainGoal.size && !text.trim()) score = 0;
-  return { ...q, score: clamp(score) };
-}
-
-/** Measured context fidelity of the line starting at `start` (avg of up to 6 nodes). */
-function measuredAfter(s: Scenaria, start: string, fid: Record<string, { score: number }>) {
-  const scores: number[] = [];
-  let cur: string | undefined = start;
-  const seen = new Set<string>();
-  while (cur && scores.length < 6 && !seen.has(cur)) {
-    seen.add(cur);
-    if (fid[cur]) scores.push(fid[cur].score);
-    const kids: ScenariaNode[] = s.children(cur);
-    cur = kids.sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0]?.id;
+  const v = viewNow(s);
+  if (!head || !v.nodes.has(head)) {
+    const q: QuickForecast = { score: 0, goal: null, continuity: 0, warnings: [], canonTouched: [], canonHints: [], signal: "low" };
+    return q;
   }
-  return { measured: scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0, nodes: scores.length };
+  const q = toQuick(predictPrompt(v, head, text, calibrationFor(s)));
+  if (v.mainGoal && !text.trim()) q.score = 0;
+  return q;
 }
 
 // ------------------------------------------------------------------ multiverse (three roles)
@@ -311,7 +289,7 @@ function save(s: Scenaria, f: Omit<Forecast, "id">): Forecast {
     }
   }
   const id = `f${n}`;
-  const out = { id, ...f } as Forecast;
+  const out = { id, model: MODEL_VERSION, ...f } as Forecast;
   const sg = signRecord(s.store, ["forecast/v1", id, digest(out)]);
   out.sig = sg.sig;
   out.pub = sg.pub;
@@ -434,49 +412,58 @@ export async function forecast(s: Scenaria, req: ForecastRequest): Promise<Forec
 
 // ------------------------------------------------------------------ evaluation
 
-/** Compare forecasts with what really happened on the branches that were taken. */
-export function evaluateForecasts(s: Scenaria): { forecasts: Forecast[]; calibration: { evaluated: number; meanError: number | null; hits: number } } {
-  const fid = s.fidelity().points;
+/**
+ * Compare forecasts with what really happened on the branches that were taken — the same quantity the
+ * forecast predicts (model v2): mean fidelity of the first steps with content within the task.
+ * Only forecasts of model v2 are scored; older ones keep their number but are not comparable.
+ */
+export function evaluateForecasts(s: Scenaria): { forecasts: Forecast[]; calibration: { evaluated: number; meanError: number | null; hits: number; legacy: number; multiverse: { evaluated: number; meanError: number | null } } } {
+  const v = viewNow(s);
   const all = listForecasts(s);
   const errors: number[] = [];
-  const nodes = s.store.listNodes();
+  const mvErrors: number[] = [];
+  let legacy = 0;
   for (const f of all) {
     if (!f.verified) continue;
+    if ((f.model ?? 1) < MODEL_VERSION) {
+      legacy++;
+      continue;
+    }
     if (f.subject.kind === "prompt") {
-      // The line after the prompt forecast: first node created afterwards on a line through `at`.
+      // The line after the prompt forecast: the first step created afterwards under `at`.
       const at = f.subject.at;
-      const after = nodes.filter((n) => n.createdAt >= f.createdAt && (!at || n.parentId === at)).sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
-      if (after) {
-        const m = measuredAfter(s, after.id, fid);
-        if (m.nodes) {
-          f.actualLine = m;
-          const usedOpt = f.options.find((o) => o.key === f.used);
-          if (usedOpt) {
-            f.actual = [{ option: usedOpt.key, measured: m.measured, predicted: usedOpt.score, error: Math.abs(m.measured - usedOpt.score), nodes: m.nodes }];
-            errors.push(f.actual[0].error);
-          }
+      const after = [...v.nodes.values()].filter((n) => n.createdAt >= f.createdAt && (!at || n.parentId === at)).sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+      const m = after ? measureLine(v, after.id) : null;
+      if (m) {
+        f.actualLine = { measured: m.measured, nodes: m.nodes };
+        const usedOpt = f.options.find((o) => o.key === f.used);
+        if (usedOpt && m.nodes >= MIN_STEPS) {
+          f.actual = [{ option: usedOpt.key, measured: m.measured, predicted: usedOpt.score, error: Math.abs(m.measured - usedOpt.score), nodes: m.nodes }];
+          errors.push(f.actual[0].error);
+          if (f.mode === "multiverse") mvErrors.push(f.actual[0].error);
         }
       }
       continue;
     }
-    if (!s.store.hasNode(f.subject.node)) continue;
-    const d = s.node(f.subject.node);
-    const kids = s.children(d.id);
+    const d = v.nodes.get(f.subject.node);
+    if (!d) continue;
     const actual: ForecastActual[] = [];
     for (const o of f.options) {
       // Only branches created after the forecast count (otherwise the forecast already saw them).
-      const branch = kids.find((k) => (k.viaOption === o.key || (d.chosen === o.key && !k.viaOption)) && k.createdAt >= f.createdAt);
-      if (!branch) continue;
-      const m = measuredAfter(s, branch.id, fid);
-      if (!m.nodes) continue;
+      const branch = branchOf(v, d, o.key);
+      if (!branch || branch.createdAt < f.createdAt) continue;
+      const m = measureLine(v, branch.id);
+      if (!m || m.nodes < MIN_STEPS) continue;
       actual.push({ option: o.key, measured: m.measured, predicted: o.score, error: Math.abs(m.measured - o.score), nodes: m.nodes });
       errors.push(Math.abs(m.measured - o.score));
+      if (f.mode === "multiverse") mvErrors.push(Math.abs(m.measured - o.score));
     }
     if (actual.length) f.actual = actual;
   }
+  const avg = (xs: number[]) => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null);
   return {
     forecasts: all,
-    calibration: { evaluated: errors.length, meanError: errors.length ? Math.round(errors.reduce((a, b) => a + b, 0) / errors.length) : null, hits: errors.filter((e) => e <= 15).length },
+    calibration: { evaluated: errors.length, meanError: avg(errors), hits: errors.filter((e) => e <= 15).length, legacy, multiverse: { evaluated: mvErrors.length, meanError: avg(mvErrors) } },
   };
 }
 
