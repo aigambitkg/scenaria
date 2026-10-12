@@ -348,9 +348,18 @@ const T = {
   },
 };
 
-function choiceTime(s: Scenaria, node: string): string | null {
-  const ev = s.store.readEvents().filter((e) => e.type === "choose" && e.nodeId === node);
-  return ev.length ? ev[0].ts : null;
+/**
+ * Was the forecast made before the decision was chosen? Decided by the ORDER in the event log (the
+ * forecast's own "analysis" event vs. the first "choose"), so two things in the same millisecond are
+ * still told apart; timestamps only when the forecast's event is missing (strictly earlier then).
+ */
+function madeBeforeChoice(s: Scenaria, f: Forecast, node: string): boolean | null {
+  const ev = s.store.readEvents();
+  const ci = ev.findIndex((e) => e.type === "choose" && e.nodeId === node);
+  if (ci < 0) return null;
+  const fi = ev.findIndex((e) => e.type === "analysis" && (e.data as any)?.id === f.id);
+  // The signed createdAt must not be later than the choice either (the log alone is not signed).
+  return fi >= 0 ? fi < ci && f.createdAt <= ev[ci].ts : f.createdAt < ev[ci].ts;
 }
 
 /**
@@ -375,9 +384,9 @@ export function auditForecast(s: Scenaria, f: Forecast, lang: Lang = "de", pre: 
   const add = (id: string, status: CheckStatus, text: string) => checks.push({ id, status, text });
   // 1. timing
   if (f.subject.kind === "decision") {
-    const ct = choiceTime(s, f.subject.node);
-    if (!ct) add("timing", "ok", t.timingOpen);
-    else add("timing", f.createdAt <= ct ? "ok" : "fail", f.createdAt <= ct ? t.timingOk : t.timingFail);
+    const before = madeBeforeChoice(s, f, f.subject.node);
+    if (before === null) add("timing", "ok", t.timingOpen);
+    else add("timing", before ? "ok" : "fail", before ? t.timingOk : t.timingFail);
   }
   // 2. signature, model
   add("signature", f.verified ? "ok" : "fail", f.verified ? t.sigOk : t.sigFail);
