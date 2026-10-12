@@ -378,6 +378,10 @@ npm link
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/ROADMAP.md](docs/ROADMAP.md) and [examples/](examples/README.md).
 
+## Developing Scenaria
+
+Continuing the development (people or agents): start with [docs/HANDOFF.md](docs/HANDOFF.md) — rules that must never be broken, build and test, module map, working method and open points. Then [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
+
 ## License
 
 MIT © Kevin Grundmann · [AI-Gambit](https://ai-gambit.com)

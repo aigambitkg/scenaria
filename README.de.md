@@ -236,6 +236,10 @@ Claude Code (MCP + Hooks), Cursor, VS Code/Copilot, Gemini CLI, Codex, Windsurf 
 
 Mehr: [README.md](README.md) (vollständige Referenz), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/ROADMAP.md](docs/ROADMAP.md), [examples/](examples/README.md).
 
+## Scenaria weiterentwickeln
+
+Wer Scenaria weiterentwickelt (Mensch oder Agent), startet mit [docs/HANDOFF.md](docs/HANDOFF.md): Regeln, die nie gebrochen werden dürfen, Build und Tests, Modulübersicht, Arbeitsweise und offene Punkte. Danach [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) und [docs/ROADMAP.md](docs/ROADMAP.md).
+
 ## Lizenz
 
 MIT © Kevin Grundmann · [AI-Gambit](https://ai-gambit.com)
