@@ -33,6 +33,7 @@ export function ScoreBar({ value, label, measured, band }: { value: number; labe
 export function Derivation({ t, e }: { t: Dict; e: Explain }) {
   const pc = (x: number | null) => (x === null ? "–" : `${Math.round(x * 100)} %`);
   const risk = e.risk.lessons + e.risk.canon;
+  const goalWord = e.goalKind === "task" ? t.fcTaskGoal : t.fcGoal;
   return (
     <div className="fc-why">
       <table className="log">
@@ -40,14 +41,14 @@ export function Derivation({ t, e }: { t: Dict; e: Explain }) {
           <tr>
             <th>{t.fcOwnWords}</th>
             <td>
-              {t.fcGoal} {pc(e.own.anchor)} · {t.fcConnection} {pc(e.own.continuity)}
+              {goalWord} {pc(e.own.anchor)} · {t.fcConnection} {pc(e.own.continuity)}
             </td>
             <td className="num">{e.own.score}</td>
           </tr>
           <tr>
             <th>{t.fcInContext}</th>
             <td>
-              {t.fcGoal} {pc(e.inContext.anchor)} · {t.fcConnection} {pc(e.inContext.continuity)}
+              {goalWord} {pc(e.inContext.anchor)} · {t.fcConnection} {pc(e.inContext.continuity)}
             </td>
             <td className="num">{e.inContext.score}</td>
           </tr>
@@ -88,9 +89,9 @@ function QuickChips({ t, q, goal }: { t: Dict; q: QuickForecast; goal?: number }
   const g = goal ?? q.goal;
   return (
     <span className="fchips">
-      {g !== null && (
+      {g !== null && q.explain?.goalKind !== "none" && (
         <span className="chip" title={t.fcGoalHint}>
-          {t.fcGoal} {g}%
+          {q.explain?.goalKind === "task" ? t.fcTaskGoal : t.fcGoal} {g}%
         </span>
       )}
       {q.signal === "low" && <span className="chip v-warning">{t.fcLowSignal}</span>}
@@ -319,9 +320,9 @@ export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessi
       <div className="modal-body analysis forecasts">
         <p className="hint">{t.fcIntro}</p>
         <div className="fc-stats">
-          <span className="chip" title={t.fcCalibrationHint}>
-            {t.fcCalibration}: {!c ? "…" : c.evaluated ? `${c.hits}/${c.evaluated} ${t.fcWithin} · Ø ±${c.meanError}` : t.fcNoCalibration}
-          </span>
+          <button className="chip" title={t.fcCalibrationHint} onClick={() => setTab("quality")}>
+            {t.fcCalibration}: {!c ? "…" : c.evaluated ? `${c.hits}/${c.evaluated} ${t.fcWithin} · Ø ±${c.meanError}` : t.fcNoCalibration} · {t.fcTabQuality} →
+          </button>
           {page && (
             <span className={`chip ${page.auto.auto ? "v-passed" : ""}`}>
               {t.fcAuto}: {page.auto.auto ? `${t.on} · ${page.auto.usedToday}/${page.auto.dailyLimit} ${t.fcToday}` : t.off}{" "}
@@ -411,7 +412,7 @@ export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessi
 
         {tab === "prompt" && <PromptCheck t={t} lang={props.lang} approval={approval} llm={llm} toast={props.toast} onDone={load} />}
 
-        {tab === "quality" && <QualityPanel t={t} approval={approval} />}
+        {tab === "quality" && <QualityPanel t={t} approval={approval} live={c} />}
         {tab === "history" && (
           <section className="a-sec">
             {!page?.forecasts.length && <p className="muted">{t.fcNoHistory}</p>}
@@ -611,7 +612,7 @@ export function DecisionForecast(props: { t: Dict; node: ScenariaNode; graphVers
 }
 
 /** Forecast quality: the backtest (every past decision forecast as of its own time) and the test bench. */
-export function QualityPanel({ t, approval }: { t: Dict; approval: boolean }) {
+export function QualityPanel({ t, approval, live }: { t: Dict; approval: boolean; live?: ForecastsPage["calibration"] }) {
   const [q, setQ] = useState<ForecastQuality | null>(null);
   const [bench, setBench] = useState<BenchSummary | null>(null);
   const [busy, setBusy] = useState(false);
@@ -628,15 +629,16 @@ export function QualityPanel({ t, approval }: { t: Dict; approval: boolean }) {
     <div className="fc-quality">
       <p className="hint">{t.fcQualityIntro}</p>
       {err && <p className="error">{err}</p>}
+      <h4>{t.fcqBacktest}</h4>
       {q && (
         <>
-          {verdict === "few" && <p className="qnote q-info">{t.fcQualityFew(q.n, q.minCases)}</p>}
+          {verdict === "few" && <p className="qnote q-info">{t.fcQualityFew(q.decisions, q.minDecisions)}</p>}
           {verdict === "good" && <p className="qnote q-good">{t.fcQualityGood(q.skill!)}</p>}
           {verdict === "bad" && <p className="qnote q-warn">{t.fcQualityBad}</p>}
           <div className="x-kpis">
             <div className="x-kpi">
-              <span className="x-kpi-num">{q.n}</span>
-              <span className="muted small">{t.fcqCases(q.decisions)}</span>
+              <span className="x-kpi-num">{q.decisions}</span>
+              <span className="muted small">{t.fcqCases(q.n)}</span>
             </div>
             <div className="x-kpi" title={t.fcqMaeHint}>
               <span className="x-kpi-num">{q.mae ?? "–"}</span>
@@ -652,7 +654,7 @@ export function QualityPanel({ t, approval }: { t: Dict; approval: boolean }) {
             </div>
             <div className="x-kpi" title={t.fcqCoverageHint}>
               <span className="x-kpi-num">{pc(q.coverage)}</span>
-              <span className="muted small">{t.fcqCoverage(q.calibration.band)}</span>
+              <span className="muted small">{t.fcqCoverage}</span>
             </div>
             <div className="x-kpi" title={t.fcqBreaksHint}>
               <span className="x-kpi-num">
@@ -667,7 +669,10 @@ export function QualityPanel({ t, approval }: { t: Dict; approval: boolean }) {
               <span className="muted small">{t.fcqRanking}</span>
             </div>
           </div>
-          <p className="muted small">{t.fcqWeights(q.calibration.alpha, q.calibration.beta, q.calibration.n, q.calibration.calibrated)}</p>
+          <p className="muted small">
+            {t.fcqWeights(q.calibration.alpha, q.calibration.beta, q.calibration.n, q.calibration.calibrated)} {t.fcqLoo}
+            {q.excluded ? ` ${t.fcqExcluded(q.excluded)}` : ""}
+          </p>
           {q.cases.length > 0 && (
             <table className="log fc-cases">
               <thead>
@@ -691,13 +696,21 @@ export function QualityPanel({ t, approval }: { t: Dict; approval: boolean }) {
                       {c.actual} <span className="muted small">({c.actualNodes})</span>
                       {c.broke ? " ↯" : ""}
                     </td>
-                    <td className={c.error <= q.calibration.band ? "" : "sev-high"}>{c.error}</td>
+                    <td className={c.error <= c.band ? "" : "sev-high"} title={`±${c.band}`}>
+                      {c.error}
+                    </td>
                     <td>{c.baselineError}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
+        </>
+      )}
+      {live && (
+        <>
+          <h4>{t.fcqLive}</h4>
+          <p className="muted small">{t.fcqLiveText(live.evaluated, live.meanError, live.multiverse?.evaluated ?? 0, live.multiverse?.meanError ?? null, live.legacy ?? 0)}</p>
         </>
       )}
       <h4>{t.fcqBench}</h4>

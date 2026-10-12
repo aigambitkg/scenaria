@@ -818,7 +818,7 @@ export class Scenaria {
     if (!g || g === root.goal) return root;
     const prev = root.goal;
     root.goal = g;
-    if (prev) root.meta = { ...(root.meta ?? {}), goalHistory: [...((root.meta?.goalHistory as any[]) ?? []), { goal: prev, until: new Date().toISOString() }].slice(-10) };
+    if (prev) root.meta = { ...(root.meta ?? {}), goalHistory: [...((root.meta?.goalHistory as any[]) ?? []), { goal: prev, until: new Date().toISOString() }].slice(-100) };
     this.save(root);
     this.store.appendEvent({ type: "update", nodeId: root.id, data: { fields: ["goal"], message: prev ? "main goal changed" : "main goal set" } });
     return root;
@@ -900,6 +900,17 @@ export class Scenaria {
     s.counter += 1;
     this.store.writeState(s);
     return `n${s.counter}`;
+  }
+
+  /**
+   * Keep the previous values of fields that are about to change (with the time), so a later view of the
+   * past — the forecast backtest — sees exactly what was known then (core/predict.ts → viewAsOf).
+   */
+  private remember(n: ScenariaNode, fields: string[]) {
+    const before: Record<string, unknown> = {};
+    for (const f of fields) before[f] = (n as any)[f] === undefined ? null : JSON.parse(JSON.stringify((n as any)[f]));
+    const hist = ((n.meta?.fieldHistory as unknown[]) ?? []).slice(-49);
+    n.meta = { ...(n.meta ?? {}), fieldHistory: [...hist, { at: new Date().toISOString(), before }] };
   }
 
   private save(n: ScenariaNode) {
@@ -1021,6 +1032,7 @@ export class Scenaria {
       const head = this.head();
       // Starting a task twice without any work in between refines it instead of stacking tasks.
       if (head && head.type === "goal" && !this.children(head.id).length) {
+        this.remember(head, ["title", "goal", "brief"]);
         head.title = input.title.trim().slice(0, 200);
         if (input.goal?.trim()) head.goal = input.goal.trim();
         if (input.brief?.trim()) head.brief = input.brief.trim();
@@ -1176,6 +1188,7 @@ export class Scenaria {
       if (node.type !== "decision") throw new Error(`${nodeId} is not a decision`);
       const opt = this.resolveOption(node, option);
       if (!opt) throw new Error(`Option "${option}" not found on ${nodeId}`);
+      this.remember(node, ["chosen", "rationale"]);
       node.chosen = opt.id;
       if (rationale) node.rationale = rationale.trim();
       this.save(node);
@@ -1259,6 +1272,7 @@ export class Scenaria {
     if (!head) return null;
     const goal = nearestGoal(this.path(head.id));
     if (!goal || goal.type !== "goal") return null;
+    this.remember(goal, ["status", "summary"]);
     goal.status = "done";
     // A summary describes the path it was written on; capsules on other branches of this task ignore it.
     if (summary?.trim()) {
@@ -1324,6 +1338,7 @@ export class Scenaria {
       }
 
       if (opts.lesson?.trim()) {
+        this.remember(target, ["lessons"]);
         target.lessons = [...(target.lessons ?? []), `${opts.lesson.trim()}${from ? ` (learned on ${from})` : ""}`];
         this.save(target);
       }
@@ -1390,6 +1405,7 @@ export class Scenaria {
       const node = this.store.readNode(id);
       const checks = pre.checks;
       const status = input.status ?? (checks.length ? worst(checks.map((c) => c.status)) : "unverified");
+      this.remember(node, ["verification"]);
       node.verification = {
         status,
         notes: input.notes?.trim() || node.verification?.notes,
@@ -1409,6 +1425,8 @@ export class Scenaria {
   ): ScenariaNode {
     return this.store.withLock(() => {
       const node = this.store.readNode(id);
+      const changed = Object.entries(patch).filter(([, v]) => v !== undefined).map(([k]) => k);
+      this.remember(node, patch.facts !== undefined ? [...changed, "factInfo"] : changed);
       Object.assign(node, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)));
       // New facts: confidence/basedOn of the old facts no longer apply.
       if (patch.facts !== undefined) delete node.factInfo;

@@ -98,66 +98,132 @@ export function viewNow(s: Scenaria): View {
   };
 }
 
-/** When each lesson became known (rewind events carry it; a fork's lesson exists from its creation). */
-function lessonTimes(events: ScenariaEvent[]) {
-  const out: { node: string; lesson: string; ts: string }[] = [];
-  for (const e of events) if (e.type === "rewind" && e.nodeId && typeof e.data?.lesson === "string" && e.data.lesson.trim()) out.push({ node: e.nodeId, lesson: e.data.lesson.trim(), ts: e.ts });
-  return out;
+/** Everything the backtest needs about the project's history, read once. */
+export interface History {
+  events: ScenariaEvent[];
+  nodes: ScenariaNode[];
+  integrity: Map<string, any>;
+  canon: CanonEvent[];
+  rootId: string | null;
+  rootGoal: string;
+  goalHistory: { goal?: string; until?: string }[];
 }
 
-/** Main goal at a moment: goal history + the event that first set it. */
-function goalAt(s: Scenaria, t: string, events: ScenariaEvent[]): string {
+export function readHistory(s: Scenaria): History {
   const root = s.project();
-  const hist = ((root?.meta?.goalHistory as { goal?: string; until?: string }[] | undefined) ?? []).filter((g) => typeof g.until === "string").sort((a, b) => a.until!.localeCompare(b.until!));
-  const firstSet = events.find((e) => e.type === "update" && e.nodeId === root?.id && /main goal set/.test(String(e.data?.message ?? "")));
-  if (firstSet && firstSet.ts > t && !hist.length) return "";
-  for (const g of hist) if (g.until! > t) return g.goal ?? "";
-  return root?.goal ?? "";
+  return {
+    events: s.store.readEvents(),
+    nodes: s.store.listNodes(),
+    integrity: s.integrity().state,
+    canon: canonState(s.store).events,
+    rootId: root?.id ?? null,
+    rootGoal: root?.goal ?? "",
+    goalHistory: (root?.meta?.goalHistory as { goal?: string; until?: string }[] | undefined) ?? [],
+  };
 }
 
 /**
- * The project as it was at moment t (for the backtest): only nodes created until t; lessons, check
- * results and fixed-point approvals that came later are removed; the main goal of that time.
+ * Main goal at a moment. Unknown before the first "main goal set" → no goal; afterwards the goal history
+ * (each entry: a goal and when it was replaced). If the history was truncated and t lies before its
+ * oldest entry, the goal of that time is unknown → no goal (never a later one).
  */
-export function viewAsOf(s: Scenaria, t: string, cache?: { events?: ScenariaEvent[]; integrity?: Map<string, any> }): View {
-  const events = cache?.events ?? s.store.readEvents();
-  const times = lessonTimes(events);
-  const nodes = s.store
-    .listNodes()
+export function goalAt(h: History, t: string): string {
+  const firstSet = h.events.find((e) => e.type === "update" && e.nodeId === h.rootId && /main goal set/.test(String(e.data?.message ?? "")));
+  if (firstSet && firstSet.ts > t) return "";
+  const hist = h.goalHistory.filter((g) => typeof g.until === "string").sort((a, b) => a.until!.localeCompare(b.until!));
+  const changes = h.events.filter((e) => e.type === "update" && e.nodeId === h.rootId && /main goal changed/.test(String(e.data?.message ?? ""))).length;
+  if (hist.length < changes && hist.length && t < hist[0].until!) return ""; // truncated history: unknown
+  for (const g of hist) if (g.until! > t) return g.goal ?? "";
+  return h.rootGoal;
+}
+
+/** Fields of each node that were written AFTER t (they did not exist yet at t). */
+function laterFields(h: History, t: string): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  const add = (id: string, fs: string[]) => out.set(id, new Set([...(out.get(id) ?? []), ...fs]));
+  for (const e of h.events) {
+    if (e.ts <= t || !e.nodeId) continue;
+    if (e.type === "update" && Array.isArray(e.data?.fields)) add(e.nodeId, (e.data!.fields as unknown[]).map(String));
+    else if (e.type === "choose") add(e.nodeId, ["chosen", "rationale"]);
+    else if (e.type === "verify") add(e.nodeId, ["verification"]);
+  }
+  return out;
+}
+
+const STRIPPABLE = new Set(["title", "goal", "brief", "summary", "facts", "outputs", "openQuestions", "irreversible", "tags", "lessons", "status", "rationale", "context", "servesGoal", "expectedOutcome", "chosen", "verification"]);
+
+/**
+ * The project as it was at moment t (for the backtest): only nodes created until t; every field written
+ * later (task summaries, edits, choices, check results, lessons) is removed; fixed points approved later
+ * are left out; the main goal of that time. With `focus`, fidelity is computed for the path to that node
+ * only (all a forecast needs — fidelity of a node depends on its own path only).
+ */
+export function viewAsOf(s: Scenaria, t: string, h: History = readHistory(s), focus?: string): View {
+  const late = laterFields(h, t);
+  const lessonKnown = new Map<string, { lesson: string; ts: string }[]>();
+  for (const e of h.events) if (e.type === "rewind" && e.nodeId && typeof e.data?.lesson === "string" && e.data.lesson.trim()) lessonKnown.set(e.nodeId, [...(lessonKnown.get(e.nodeId) ?? []), { lesson: e.data.lesson.trim(), ts: e.ts }]);
+  const knownLesson = (n: ScenariaNode, l: string) => {
+    if (n.type === "branch") return true; // a fork's lesson exists from its creation (≤ t)
+    return (lessonKnown.get(n.id) ?? []).some((x) => l.startsWith(x.lesson) && x.ts <= t);
+  };
+  const nodes = h.nodes
     .filter((n) => n.createdAt <= t)
     .map((n) => {
       const c: ScenariaNode = { ...n };
-      if (c.verification?.at && c.verification.at > t) c.verification = undefined;
-      else if (c.verification && !c.verification.at) c.verification = undefined;
+      // Exact: restore the values a field had at t from the node's field history (newest change first).
+      const restored = new Set<string>();
+      const hist = ((n.meta?.fieldHistory as { at?: string; before?: Record<string, unknown> }[] | undefined) ?? []).filter((x) => typeof x?.at === "string" && x.at > t && x.before && typeof x.before === "object");
+      for (const hEntry of [...hist].sort((a, b) => b.at!.localeCompare(a.at!))) {
+        for (const [f, val] of Object.entries(hEntry.before!)) {
+          if (!STRIPPABLE.has(f) && f !== "factInfo") continue;
+          (c as any)[f] = val === null ? (f === "title" ? "" : undefined) : val;
+          restored.add(f);
+        }
+      }
+      // Older projects without a field history: whatever was written after t is removed (conservative).
+      for (const f of late.get(n.id) ?? []) {
+        if (!STRIPPABLE.has(f) || restored.has(f)) continue;
+        if (f === "title") c.title = "";
+        else (c as any)[f] = undefined;
+        if (f === "facts") c.factInfo = undefined;
+      }
+      if (c.verification && (!c.verification.at || c.verification.at > t)) c.verification = undefined;
+      if (c.lessons?.length) c.lessons = c.lessons.filter((l) => knownLesson(c, l));
       return c;
     });
-  // A decision without any step after it by then was not decided yet: no choice, no rationale.
+  // A decision without any step below it by then cannot have been decided (older projects without events).
   const hasKidBy = new Set(nodes.filter((n) => n.parentId).map((n) => n.parentId!));
-  for (const n of nodes) if (n.type === "decision" && !hasKidBy.has(n.id)) {
-    n.chosen = undefined;
-    n.rationale = undefined;
+  for (const n of nodes)
+    if (n.type === "decision" && !hasKidBy.has(n.id)) {
+      n.chosen = undefined;
+      n.rationale = undefined;
+    }
+  const goal = goalAt(h, t);
+  const withGoal = nodes.map((n) => (n.id === h.rootId ? { ...n, goal: goal || undefined } : n));
+  const byId = new Map(withGoal.map((n) => [n.id, n]));
+  let fidNodes = withGoal;
+  if (focus && byId.has(focus)) {
+    const path: ScenariaNode[] = [];
+    let cur = byId.get(focus);
+    const seen = new Set<string>();
+    while (cur && !seen.has(cur.id)) {
+      seen.add(cur.id);
+      path.unshift(cur);
+      cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+    }
+    fidNodes = path;
   }
-  const known = (n: ScenariaNode, lesson: string) => {
-    if (!lesson) return Boolean(n.verification); // failed checks: only when known by then (kept above)
-    if (n.type === "branch" && n.createdAt <= t) return true; // a fork's lesson exists from its creation
-    const hit = times.find((x) => x.node === n.id && lesson.startsWith(x.lesson));
-    return Boolean(hit && hit.ts <= t);
-  };
-  const lessons = lessonsOf(nodes, known);
-  // Lesson texts that were not known yet must not leak through the node text either.
-  for (const n of nodes) if (n.lessons?.length) n.lessons = n.lessons.filter((l) => known(n, l));
-  const root = s.project();
-  const goal = goalAt(s, t, events);
-  const nodesNow = nodes.map((n) => (root && n.id === root.id ? { ...n, goal: goal || undefined } : n));
-  const integ = cache?.integrity ?? s.integrity().state;
-  const fid = fidelityAll(nodesNow, { integrity: integ });
+  const goalChanges = h.goalHistory.map((g) => g.until).filter((x): x is string => typeof x === "string" && x <= t);
+  const fid = fidelityAll(fidNodes, { integrity: h.integrity, goalChanges });
+  // Fixed points in force at t: approved by then; a later retirement does not count against t.
+  const canon = h.canon.filter((e) => typeof e.decidedAt === "string" && (e.status === "active" ? e.decidedAt <= t : e.status === "retired" && e.createdAt <= t && e.decidedAt > t));
   return {
-    nodes: new Map(nodesNow.map((n) => [n.id, n])),
-    children: childrenOf(nodesNow),
+    nodes: byId,
+    children: childrenOf(withGoal),
     fid,
     mainGoal: goal,
-    lessons,
-    canon: canonState(s.store).events.filter((e) => e.status === "active" && typeof e.decidedAt === "string" && e.decidedAt <= t),
+    lessons: lessonsOf(withGoal, () => true),
+    canon,
     head: null,
     asOf: t,
   };
@@ -223,6 +289,8 @@ export interface Explain {
   band: number;
   bandN: number;
   calibrated: boolean;
+  /** What "goal" means here: the main goal (+ task), only the task (no main goal yet) or nothing. */
+  goalKind: "main" | "task" | "none";
   /** The option's own words would count as a context break / goal drift. */
   breakRisk: boolean;
   driftRisk: boolean;
@@ -300,7 +368,9 @@ export function predictStep(v: View, at: string, own: string, full: string, cal:
   const lambda = cal.alpha + cal.beta;
   const mu = lambda > 1e-9 ? cal.alpha / lambda : 0.5;
   const step = Math.round(mu * ownP.score + (1 - mu) * fullP.score);
-  const predicted = predictLinear({ own: ownP.score, inContext: fullP.score, line: level, risk: risk.lessons + risk.canon }, cal);
+  // Computed from exactly the rounded numbers that are shown, so the formula reproduces the result.
+  const shown = { alpha: round2(cal.alpha), beta: round2(cal.beta), line: Math.round(level) };
+  const predicted = predictLinear({ own: ownP.score, inContext: fullP.score, line: shown.line, risk: risk.lessons + risk.canon }, shown);
   const lowSignal = toks.size < 3 || !ownP.signal;
   const explain: Explain = {
     model: 2,
@@ -312,8 +382,8 @@ export function predictStep(v: View, at: string, own: string, full: string, cal:
     line: Math.round(level),
     lineN,
     lambda: Math.round(lambda * 100) / 100,
-    alpha: Math.round(cal.alpha * 100) / 100,
-    beta: Math.round(cal.beta * 100) / 100,
+    alpha: shown.alpha,
+    beta: shown.beta,
     learnedFrom: cal.n,
     risk,
     predicted,
@@ -321,6 +391,7 @@ export function predictStep(v: View, at: string, own: string, full: string, cal:
     bandN: cal.bandN,
     calibrated: cal.calibrated,
     // Very short options ("yes/no") say too little: no break/drift claim from their words.
+    goalKind: stems(v.mainGoal).size ? "main" : taskGoal.size ? "task" : "none",
     breakRisk: !lowSignal && isBreak(ownP.anchor, ownP.continuity, ownP.score, null),
     driftRisk: !lowSignal && ownP.anchor !== null && ownP.anchor < 0.25,
     signal: lowSignal ? "low" : "ok",
@@ -333,6 +404,8 @@ export function predictStep(v: View, at: string, own: string, full: string, cal:
   };
 }
 
+const round2 = (x: number) => Math.round(x * 100) / 100;
+
 export function predictLinear(x: { own: number; inContext: number; line: number; risk: number }, cal: Pick<Calibration, "alpha" | "beta">): number {
   return clamp(x.line + cal.alpha * (x.own - x.line) + cal.beta * (x.inContext - x.line) - x.risk);
 }
@@ -341,11 +414,12 @@ export function predictLinear(x: { own: number; inContext: number; line: number;
 export function explainText(e: Explain, lang: "de" | "en" = "en"): string {
   const de = lang === "de";
   const r = e.risk.lessons + e.risk.canon;
-  const parts = (x: StepParts) => `${de ? "Ziel" : "goal"} ${x.anchor === null ? "–" : Math.round(x.anchor * 100) + "%"}, ${de ? "Anschluss" : "connection"} ${Math.round(x.continuity * 100)}%`;
+  const goalWord = e.goalKind === "task" ? (de ? "Teilziel" : "task goal") : de ? "Ziel" : "goal";
+  const parts = (x: StepParts) => `${goalWord} ${x.anchor === null ? "–" : Math.round(x.anchor * 100) + "%"}, ${de ? "Anschluss" : "connection"} ${Math.round(x.continuity * 100)}%`;
   return [
     `P = L + α·(own − L) + β·(context − L) − risk = ${e.line} + ${e.alpha}·(${e.own.score} − ${e.line}) + ${e.beta}·(${e.inContext.score} − ${e.line}) − ${r} = ${e.predicted} ± ${e.band}${e.calibrated ? "" : de ? " (noch nicht kalibriert)" : " (not calibrated yet)"}`,
     `${de ? "eigene Worte" : "own words"} ${e.own.score} (${parts(e.own)}) · ${de ? "im Kontext" : "in context"} ${e.inContext.score} (${parts(e.inContext)}) · ${de ? "Linie" : "line"} L ${e.line} (${e.lineN} ${de ? "Schritte" : "steps"}) · ${de ? "Belastbarkeit" : "reliability"} ${Math.round(e.reliability * 100)}%`,
-    `α, β ${de ? "gelernt aus" : "learned from"} ${e.learnedFrom} ${de ? "Fällen" : "cases"}${r ? ` · ${de ? "Risiko" : "risk"}: ${de ? "Lektionen" : "lessons"} −${e.risk.lessons}, ${de ? "Fixpunkte" : "fixed points"} −${e.risk.canon}` : ""}${e.breakRisk ? ` · ${de ? "⚠ eigene Worte ohne Bezug zum Kontext (prüfen)" : "⚠ own words without connection to the context (check)"}` : ""}`,
+    `α, β ${de ? "gelernt aus" : "learned from"} ${e.learnedFrom} ${de ? "Entscheidungen" : "decisions"}${r ? ` · ${de ? "Risiko" : "risk"}: ${de ? "Lektionen" : "lessons"} −${e.risk.lessons}, ${de ? "Fixpunkte" : "fixed points"} −${e.risk.canon}` : ""}${e.breakRisk ? ` · ${de ? "⚠ eigene Worte ohne Bezug zum Kontext (prüfen)" : "⚠ own words without connection to the context (check)"}` : ""}`,
   ].join("\n");
 }
 
@@ -433,22 +507,60 @@ export interface Case {
   signal: "ok" | "low";
 }
 
+/** Forecasts as of a decision's own time never change (later data is stripped): computed once. */
+const pastCache = new Map<string, Map<string, { key: string; preds: Map<string, StepPrediction> }>>();
+
 /** Every past decision, forecast as of its own time, compared with how its branches really went. */
-export function backtestCases(s: Scenaria): Case[] {
+export function backtestCases(s: Scenaria, hist?: History): { cases: Case[]; excluded: number } {
   const now = viewNow(s);
-  const events = s.store.readEvents();
-  const integrity = s.integrity().state;
+  let h = hist ?? null;
+  const history = () => (h ??= readHistory(s));
+  // Nodes created by a time (for the cache key): sorted once.
+  const created = [...now.nodes.values()].map((n) => n.createdAt).sort();
+  const countBy = (t: string) => {
+    let lo = 0, hi = created.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (created[mid] <= t) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
   const cases: Case[] = [];
+  let excluded = 0;
+  const cache = pastCache.get(s.root) ?? new Map();
+  pastCache.set(s.root, cache);
   for (const d of [...now.nodes.values()].filter((n) => n.type === "decision" && (n.options?.length ?? 0) > 1)) {
-    const measured = (d.options ?? []).map((o) => {
-      const b = branchOf(now, d, o.id);
-      return { o, m: b ? measureLine(now, b.id) : null };
-    }).filter((x) => x.m && x.m.nodes >= MIN_STEPS); // one step alone is too noisy to judge a forecast
+    const measured = (d.options ?? [])
+      .map((o) => {
+        const b = branchOf(now, d, o.id);
+        return { o, m: b ? measureLine(now, b.id) : null };
+      })
+      .filter((x) => x.m && x.m.nodes >= MIN_STEPS); // one step alone is too noisy to judge a forecast
     if (!measured.length) continue;
-    const past = viewAsOf(s, d.createdAt, { events, integrity });
-    if (!past.nodes.has(d.id)) continue;
+    // Tampered history (or work built on it) does not teach the model anything — left out, and counted.
+    const path = pathTo(now, d.id).map((n) => n.id);
+    const touched = [...path, ...measured.flatMap((x) => x.m!.ids)].some((id) => {
+      const f = now.fid.get(id);
+      return f && (f.integrity === "tampered" || f.integrity === "inherited");
+    });
+    if (touched) {
+      excluded += measured.length;
+      continue;
+    }
+    const key = `${d.createdAt}|${countBy(d.createdAt)}`;
+    let hit = cache.get(d.id);
+    if (!hit || hit.key !== key) {
+      const past = viewAsOf(s, d.createdAt, history(), d.id);
+      const pd = past.nodes.get(d.id);
+      const preds = new Map<string, StepPrediction>();
+      if (pd) for (const o of d.options ?? []) preds.set(o.id, predictOption(past, pd, o, UNCALIBRATED));
+      hit = { key, preds };
+      cache.set(d.id, hit);
+    }
     for (const { o, m } of measured) {
-      const p = predictOption(past, d, o, UNCALIBRATED);
+      const p = hit.preds.get(o.id);
+      if (!p) continue;
       cases.push({
         decision: d.id,
         question: one(d.question ?? d.title, 120),
@@ -467,7 +579,7 @@ export function backtestCases(s: Scenaria): Case[] {
       });
     }
   }
-  return cases.sort((a, b) => a.at.localeCompare(b.at));
+  return { cases: cases.sort((a, b) => a.at.localeCompare(b.at)), excluded };
 }
 
 /**
@@ -512,11 +624,15 @@ function quantile(xs: number[], q: number) {
 
 export interface Quality {
   model: 2;
-  cases: (Case & { predicted: number; error: number; baselineError: number })[];
+  cases: (Case & { predicted: number; error: number; baselineError: number; band: number })[];
+  /** Decisions with at least one evaluated branch — the unit that counts. */
   decisions: number;
+  /** Evaluated options (cases). */
   n: number;
+  /** Cases left out because their history was tampered with (or built on tampered work). */
+  excluded: number;
   enough: boolean;
-  minCases: number;
+  minDecisions: number;
   /** Mean absolute error of the forecast and of the naive "line keeps its level" forecast. */
   mae: number | null;
   maeBaseline: number | null;
@@ -524,35 +640,53 @@ export interface Quality {
   skill: number | null;
   /** Mean signed error (forecast − reality): > 0 = too optimistic. */
   bias: number | null;
-  /** Share of real outcomes inside the band. */
+  /** Share of real outcomes inside a band that was learned WITHOUT that decision (honest, not by construction). */
   coverage: number | null;
   breaks: { actual: number; predicted: number; hits: number; precision: number | null; recall: number | null };
   ranking: { pairs: number; concordant: number; accuracy: number | null };
   calibration: Calibration;
 }
 
-/** Honest quality of the forecasts on this project: leave-one-out backtest against the baseline. */
-export function forecastQuality(s: Scenaria, cases = backtestCases(s)): Quality {
-  const evaluated = cases.map((c, i) => {
-    const others = cases.filter((_, j) => j !== i);
-    const predicted = predictLinear({ own: c.own, inContext: c.inContext, line: c.line, risk: c.risk }, fit(others));
-    return { ...c, predicted, error: Math.abs(predicted - c.actual), baselineError: Math.abs(c.line - c.actual) };
+const MIN_DECISIONS = 10;
+const BAND_FROM = 8;
+
+/**
+ * Honest quality on this project. Leave-one-DECISION-out: for each decision, α, β and the band are
+ * learned from the OTHER decisions only (options of the same decision share their line and context).
+ */
+export function forecastQuality(s: Scenaria, input?: { cases: Case[]; excluded: number }): Quality {
+  const { cases, excluded } = input ?? backtestCases(s);
+  const groups = [...new Set(cases.map((c) => c.decision))];
+  const predOf = new Map<Case, number>();
+  for (const g of groups) {
+    const others = cases.filter((c) => c.decision !== g);
+    const w = fit(others);
+    const shown = { alpha: round2(w.alpha), beta: round2(w.beta) };
+    for (const c of cases.filter((x) => x.decision === g)) predOf.set(c, predictLinear(c, shown));
+  }
+  const errOf = (c: Case) => Math.abs(predOf.get(c)! - c.actual);
+  const evaluated = cases.map((c) => {
+    // The band for this decision, from the leave-one-out errors of the other decisions only.
+    const otherErrs = cases.filter((x) => x.decision !== c.decision).map(errOf);
+    const otherDecisions = new Set(cases.filter((x) => x.decision !== c.decision).map((x) => x.decision)).size;
+    const band = otherDecisions >= BAND_FROM ? Math.max(3, Math.round(quantile(otherErrs, 0.8))) : DEFAULT_BAND;
+    const predicted = predOf.get(c)!;
+    return { ...c, predicted, error: Math.abs(predicted - c.actual), baselineError: Math.abs(c.line - c.actual), band };
   });
   const n = evaluated.length;
+  const decisions = groups.length;
   const mae = n ? mean(evaluated.map((c) => c.error)) : null;
   const maeBaseline = n ? mean(evaluated.map((c) => c.baselineError)) : null;
-  const errs = evaluated.map((c) => c.error);
-  const band = n >= 8 ? Math.max(3, Math.round(quantile(errs, 0.8))) : DEFAULT_BAND;
-  const calibration: Calibration = { ...fit(cases), n, band, bandN: n >= 8 ? n : 0, calibrated: n >= 8 };
+  const all = fit(cases);
+  const bandAll = decisions >= BAND_FROM ? Math.max(3, Math.round(quantile(evaluated.map((c) => c.error), 0.8))) : DEFAULT_BAND;
+  const calibration: Calibration = { alpha: round2(all.alpha), beta: round2(all.beta), n: decisions, band: bandAll, bandN: decisions >= BAND_FROM ? decisions : 0, calibrated: decisions >= BAND_FROM };
   const actualBreaks = evaluated.filter((c) => c.broke).length;
   const predictedBreaks = evaluated.filter((c) => c.predictedBreak).length;
   const hits = evaluated.filter((c) => c.broke && c.predictedBreak).length;
-  // Ranking: decisions where at least two options were really taken.
   let pairs = 0;
   let concordant = 0;
-  const byDecision = new Map<string, typeof evaluated>();
-  for (const c of evaluated) byDecision.set(c.decision, [...(byDecision.get(c.decision) ?? []), c]);
-  for (const list of byDecision.values())
+  for (const g of groups) {
+    const list = evaluated.filter((c) => c.decision === g);
     for (let i = 0; i < list.length; i++)
       for (let j = i + 1; j < list.length; j++) {
         const da = list[i].actual - list[j].actual;
@@ -560,26 +694,28 @@ export function forecastQuality(s: Scenaria, cases = backtestCases(s)): Quality 
         pairs++;
         if (Math.sign(list[i].predicted - list[j].predicted) === Math.sign(da)) concordant++;
       }
+  }
   const r1 = (x: number | null) => (x === null ? null : Math.round(x * 10) / 10);
   return {
     model: 2,
     cases: evaluated,
-    decisions: byDecision.size,
+    decisions,
     n,
-    enough: n >= MIN_CASES,
-    minCases: MIN_CASES,
+    excluded,
+    enough: decisions >= MIN_DECISIONS,
+    minDecisions: MIN_DECISIONS,
     mae: r1(mae),
     maeBaseline: r1(maeBaseline),
     skill: mae !== null && maeBaseline ? Math.round((1 - mae / maeBaseline) * 100) / 100 : null,
     bias: n ? r1(mean(evaluated.map((c) => c.predicted - c.actual))) : null,
-    coverage: n ? Math.round((evaluated.filter((c) => c.error <= band).length / n) * 100) / 100 : null,
+    coverage: n ? Math.round((evaluated.filter((c) => c.error <= c.band).length / n) * 100) / 100 : null,
     breaks: { actual: actualBreaks, predicted: predictedBreaks, hits, precision: predictedBreaks ? Math.round((hits / predictedBreaks) * 100) / 100 : null, recall: actualBreaks ? Math.round((hits / actualBreaks) * 100) / 100 : null },
     ranking: { pairs, concordant, accuracy: pairs ? Math.round((concordant / pairs) * 100) / 100 : null },
     calibration,
   };
 }
 
-/** Calibration for live forecasts, cached per project version (cheap, deterministic, not stored). */
+/** Calibration for live forecasts, cached per project version (cheap, deterministic, never stored). */
 const calCache = new Map<string, { v: string; cal: Calibration }>();
 export function calibrationFor(s: Scenaria): Calibration {
   const key = s.root;
@@ -711,4 +847,28 @@ export async function benchmark(cal: Calibration = UNCALIBRATED): Promise<BenchS
     mae: Math.round(mean([...clear, ...neutral].flatMap((r) => r.errors)) * 10) / 10,
     limits: results.filter((r) => r.kind === "limit"),
   };
+}
+
+/** The test bench in a worker thread (the server stays responsive while it runs). */
+export function benchmarkInWorker(cal: Calibration = UNCALIBRATED, timeoutMs = 120_000): Promise<BenchSummary> {
+  return import("node:worker_threads").then(
+    ({ Worker }) =>
+      new Promise<BenchSummary>((resolve, reject) => {
+        const w = new Worker(new URL("./bench-worker.js", import.meta.url), { workerData: { cal } });
+        const timer = setTimeout(() => {
+          void w.terminate();
+          reject(new Error("test bench timed out"));
+        }, timeoutMs);
+        w.once("message", (m: { ok: boolean; r?: BenchSummary; error?: string }) => {
+          clearTimeout(timer);
+          void w.terminate();
+          if (m.ok && m.r) resolve(m.r);
+          else reject(new Error(m.error ?? "test bench failed"));
+        });
+        w.once("error", (err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+      }),
+  );
 }

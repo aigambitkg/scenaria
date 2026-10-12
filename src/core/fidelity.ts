@@ -128,6 +128,16 @@ export function isDrift(anchor: number | null, type: string): boolean {
 }
 export { epistemicOf };
 
+/**
+ * What a decision contributes to the context of the line below it: its question, the option THIS line
+ * took and the rationale — not the alternatives that were not taken (they are not this line's context).
+ */
+export function decisionContext(d: ScenariaNode, child: ScenariaNode): Set<string> {
+  const via = child.viaOption ?? d.chosen;
+  const opt = (d.options ?? []).find((o) => o.id === via);
+  return stems(nodeText({ ...d, options: opt ? [opt] : [] }));
+}
+
 /** Fidelity of every node, computed in one pass over the tree (each node only sees its own path). */
 export function fidelityAll(nodes: ScenariaNode[], opts: { integrity?: Map<string, IntegrityState>; goalChanges?: string[] } = {}): Map<string, FidelityPoint> {
   const out = new Map<string, FidelityPoint>();
@@ -200,7 +210,7 @@ export function fidelityAll(nodes: ScenariaNode[], opts: { integrity?: Map<strin
     const nextTask = n.type === "goal" ? stems(`${n.title} ${n.goal ?? ""}`) : f.taskGoal;
     const nextMain = n.type === "mission" ? stems(n.goal ?? "") : f.mainGoal;
     for (const k of [...(kids.get(n.id) ?? [])].reverse()) {
-      stack.push({ n: k, anc: [...f.anc.slice(-8), { n, toks }], mainGoal: nextMain, taskGoal: nextTask, parent: point, tampered: f.tampered || integrity === "tampered" });
+      stack.push({ n: k, anc: [...f.anc.slice(-8), { n, toks: n.type === "decision" ? decisionContext(n, k) : toks }], mainGoal: nextMain, taskGoal: nextTask, parent: point, tampered: f.tampered || integrity === "tampered" });
     }
   }
   return out;
