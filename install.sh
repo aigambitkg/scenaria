@@ -4,7 +4,7 @@
 # Options (env): SCENARIA_REPO=owner/repo  SCENARIA_VERSION=0.3.0  SCENARIA_INSTALL_DIR=~/.local/bin
 set -eu
 
-REPO="${SCENARIA_REPO:-ai-gambit/scenaria}"
+REPO="${SCENARIA_REPO:-aigambitkg/scenaria}"
 VERSION="${SCENARIA_VERSION:-latest}"
 INSTALL_DIR="${SCENARIA_INSTALL_DIR:-$HOME/.local/bin}"
 

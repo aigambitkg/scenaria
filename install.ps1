@@ -2,7 +2,7 @@
 #   irm https://raw.githubusercontent.com/<owner>/scenaria/main/install.ps1 | iex
 # Options (env): SCENARIA_REPO=owner/repo  SCENARIA_VERSION=0.3.0
 $ErrorActionPreference = "Stop"
-$repo = if ($env:SCENARIA_REPO) { $env:SCENARIA_REPO } else { "ai-gambit/scenaria" }
+$repo = if ($env:SCENARIA_REPO) { $env:SCENARIA_REPO } else { "aigambitkg/scenaria" }
 $version = if ($env:SCENARIA_VERSION) { $env:SCENARIA_VERSION } else { "latest" }
 $asset = "scenaria-windows-x64.zip"
 $url = if ($version -eq "latest") { "https://github.com/$repo/releases/latest/download/$asset" } else { "https://github.com/$repo/releases/download/v$version/$asset" }

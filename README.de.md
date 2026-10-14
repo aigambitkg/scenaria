@@ -8,10 +8,10 @@
 
 ```bash
 # macOS / Linux: eine Datei, kein Node.js nötig
-curl -fsSL https://raw.githubusercontent.com/ai-gambit/scenaria/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/aigambitkg/scenaria/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/ai-gambit/scenaria/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/aigambitkg/scenaria/main/install.ps1 | iex
 
 # oder mit Node.js ≥ 20
 npm install -g scenaria

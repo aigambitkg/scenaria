@@ -22,10 +22,10 @@ Long agent tasks fail in the middle. Undo tools for files already exist (git, ed
 
 ```bash
 # macOS / Linux: single binary, no Node.js needed
-curl -fsSL https://raw.githubusercontent.com/ai-gambit/scenaria/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/aigambitkg/scenaria/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/ai-gambit/scenaria/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/aigambitkg/scenaria/main/install.ps1 | iex
 
 # or with Node.js ≥ 20
 npm install -g scenaria
@@ -363,7 +363,7 @@ Your own `.git`, branches, index and stash are never touched, unless you opt int
 ## From source
 
 ```bash
-git clone https://github.com/ai-gambit/scenaria && cd scenaria
+git clone https://github.com/aigambitkg/scenaria && cd scenaria
 npm install          # also builds
 npm link
 ```
