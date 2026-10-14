@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { join } from "node:path";
 import { Scenaria } from "../dist/core/index.js";
 import { tempProject } from "./helpers.mjs";
 
@@ -63,6 +64,57 @@ test("project .gitignore is honored and .scenaria is never snapshotted", () => {
   s.checkpoint({ title: "x" });
   s.rewind(cp.id);
   assert.equal(p.read("secret.env"), "TOKEN=1\n");
+});
+
+test("a project whose .gitignore lists .scenaria/ still snapshots (older git exits 1 there)", () => {
+  const p = tempProject();
+  p.write(".gitignore", ".scenaria/\nnode_modules/\n");
+  p.write("app.js", "console.log(1)\n");
+  const s = Scenaria.init(p.dir);
+  s.startMission({ title: "Self-recording", goal: "Record a repo that ignores .scenaria" });
+  p.write("app.js", "console.log(2)\n");
+  const cp = s.checkpoint({ title: "changed app" });
+  const files = s.repo.git(["ls-tree", "-r", "--name-only", cp.snapshot.commit]).split("\n");
+  assert.ok(files.includes("app.js"));
+  assert.ok(files.includes(".gitignore"));
+  assert.ok(!files.some((f) => f.startsWith(".scenaria")));
+  s.rewind(cp.id);
+  assert.equal(p.read("app.js"), "console.log(2)\n");
+});
+
+test("a nested repo without commits that is also gitignored does not break snapshots", () => {
+  const p = tempProject();
+  p.write(".gitignore", ".scenaria/\n");
+  p.write("app.js", "1\n");
+  execFileSync("git", ["init", "-q"], { cwd: join(p.dir, ".") });
+  p.write("vend/readme.txt", "nested\n");
+  execFileSync("git", ["init", "-q"], { cwd: join(p.dir, "vend") });
+  const s = Scenaria.init(p.dir);
+  s.startMission({ title: "Nested", goal: "Skip the nested repo" });
+  const first = s.checkpoint({ title: "with nested repo" });
+  assert.ok((first.snapshot.warnings ?? []).some((w) => w.includes("vend")));
+  // now the nested repo is also ignored: git lists "vend" (no slash) among ignored paths
+  p.write(".gitignore", ".scenaria/\nvend/\n");
+  p.write("app.js", "2\n");
+  const cp = s.checkpoint({ title: "nested repo ignored too" });
+  const files = s.repo.git(["ls-tree", "-r", "--name-only", cp.snapshot.commit]).split("\n");
+  assert.ok(files.includes("app.js"));
+  assert.ok(!files.some((f) => f.startsWith("vend/") || f.startsWith(".scenaria")));
+});
+
+test("a nested repo without commits next to an ignored .scenaria is excluded with a warning, not tolerated blindly", () => {
+  const p = tempProject();
+  p.write(".gitignore", ".scenaria/\n");
+  p.write("app.js", "1\n");
+  p.write("lab/x.txt", "x\n");
+  execFileSync("git", ["init", "-q"], { cwd: join(p.dir, "lab") });
+  const s = Scenaria.init(p.dir);
+  s.startMission({ title: "Nested", goal: "Retry with exclude" });
+  const cp = s.checkpoint({ title: "cp" });
+  assert.ok((cp.snapshot.warnings ?? []).some((w) => w.includes("lab") && w.includes("no commits")));
+  const files = s.repo.git(["ls-tree", "-r", "--name-only", cp.snapshot.commit]).split("\n");
+  assert.ok(files.includes("app.js"));
+  assert.ok(!files.some((f) => f.startsWith("lab/")));
 });
 
 test("the user's own git repo is untouched", () => {

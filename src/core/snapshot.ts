@@ -41,6 +41,13 @@ export class ShadowRepo {
     env.GIT_DIR = this.gitDir;
     env.GIT_WORK_TREE = this.root;
     env.GIT_INDEX_FILE = this.indexFile;
+    // Untranslated git messages: the parsers below match English text.
+    if (env.LC_ALL) {
+      env.LC_CTYPE ??= env.LC_ALL;
+      delete env.LC_ALL;
+    }
+    env.LC_MESSAGES = "C";
+    env.LANGUAGE = "";
     env.GIT_AUTHOR_NAME = env.GIT_COMMITTER_NAME = "Scenaria";
     env.GIT_AUTHOR_EMAIL = env.GIT_COMMITTER_EMAIL = "scenaria@localhost";
     return env;
@@ -116,6 +123,10 @@ export class ShadowRepo {
       const r = this.run(["add", "-A", ...this.pathspec()]);
       if (r.status === 0) break;
       const err = `${r.stderr}${r.stdout}`;
+      // git (seen with 2.34 and 2.43) exits 1 when an exclude pathspec names a path the
+      // project's .gitignore already ignores (".scenaria/"), although every other
+      // file was staged. That is harmless as long as only our own excludes are listed.
+      if (r.status === 1 && this.onlyOwnPathsIgnored(err)) break;
       const m = err.match(/'([^']+)' does not have a commit checked out/);
       if (!m) throw new Error(`git add failed: ${err.trim()}`);
       const p = m[1].replace(/\/$/, "");
@@ -130,6 +141,28 @@ export class ShadowRepo {
       const p = l.split("\t")[1];
       this.warnings.add(`nested repository "${p}": only its commit pointer is saved, uncommitted changes inside it are not`);
     }
+  }
+
+  /** True when git's only complaint is "paths are ignored" for .scenaria or runtime excludes. */
+  private onlyOwnPathsIgnored(err: string): boolean {
+    const head = "The following paths are ignored by one of your .gitignore files:";
+    const at = err.indexOf(head);
+    if (at < 0) return false;
+    const before = err.slice(0, at).trim();
+    if (before) return false;
+    const strip = (p: string) => p.replace(/\/+$/, "");
+    const own = [".scenaria", ...[...this.runtimeExcludes].map(strip)];
+    // git names the ignored path itself, or an ignored parent folder of an exclude.
+    const isOwn = (p: string) => own.some((e) => e === p || e.startsWith(`${p}/`));
+    const paths: string[] = [];
+    for (const raw of err.slice(at + head.length).split("\n")) {
+      const line = raw.trim();
+      if (!line) continue;
+      if (/^hint:/i.test(line)) continue;
+      if (/^(error|fatal|warning):/i.test(line)) return false;
+      paths.push(strip(line));
+    }
+    return paths.length > 0 && paths.every(isOwn);
   }
 
   /**
