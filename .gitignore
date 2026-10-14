@@ -1,10 +1,42 @@
+# --- build and dependencies
 node_modules/
 dist/
-scenaria-demo/
-.scenaria/
-*.log
-.DS_Store
-__pycache__/
-*.pyc
 build/
 release/
+coverage/
+__pycache__/
+*.pyc
+
+# --- Scenaria's own data (never publish a project's tree, snapshots or conversations)
+.scenaria/
+scenaria-demo/
+
+# --- local machine configuration (contains absolute paths of one computer)
+.mcp.json
+.vscode/
+.claude/
+.idea/
+CLAUDE.local.md
+AGENTS.local.md
+
+# --- internal notes and transfer files (not for the public repository)
+docs/intern/
+.xfer/
+*.tar
+*.tgz
+*.pack
+*.zip
+
+# --- secrets: never commit keys or environment files
+.env
+.env.*
+*.pem
+*.key
+*.p12
+approver-key*
+trusted-approvers.json
+
+# --- noise
+*.log
+.DS_Store
+Thumbs.db
