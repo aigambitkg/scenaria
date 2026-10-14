@@ -4,7 +4,7 @@ This is the working protocol for the next agent or developer who continues Scena
 
 - **Product owner:** Kev (Kevin Grundmann, AI-Gambit). He reads and writes German, so give your summaries to him in German. He is not a developer by trade, so explain results in plain words.
 - **License:** MIT. Vendor-neutral: any LLM, any agent, any framework.
-- **State at handoff:** v0.9.1 (2026-10-12), branch `main`. 182/182 tests pass (2026-10-14).
+- **State at handoff:** v0.9.2 (2026-10-14, Batch A), branch `main`. 213/213 tests pass.
 - **Current phase (since 2026-10-14): feature freeze.** Work only on the batch plan in §11, one batch at a time, and start a batch only after Kev's go.
 
 ---
@@ -43,7 +43,10 @@ Every review so far has enforced these. Treat them as hard requirements.
    - share one daily budget across all projects.
 9. **Signed records.** Forecasts, audits, backtests, expert reports and canon check results are signed with the approver key, bound to the project and to a content hash. Anything written or changed outside Scenaria is shown as *unverified* and never counts.
 10. **Reads are open, writes that matter are not.** GET endpoints such as `/api/forecasts` or `/api/audit/overview` may be read by agents and auditors. Keep it that way only for data that is not secret.
-11. **The tamper evidence belongs to the person.** Only the person, or a registered audit agent that is independent of Scenaria and of the working agent, may reseal the integrity ledger or give a verdict that counts as "verified". A working agent may never reset or certify its own work. (Decided 2026-10-14; enforced by Batch A in §11. Until then, add no new code path that reseals or self-certifies.)
+11. **The tamper evidence belongs to the person.** Only the person, or a registered audit agent that is independent of Scenaria and of the working agent, may reseal the integrity ledger or give a verdict that counts as "verified". A working agent may never reset or certify its own work (enforced since 0.9.2, see `docs/ARCHITECTURE.md` "Who may say verified").
+    - New code that counts something as verified must use `integrity().confirmed`, never `verification.status === "passed"`.
+    - New writes to the ledger go through `appendLedger()` (it raises the high-water mark). A new reseal path needs a `ResealAuthority`.
+    - Keys, registries and anchors live only in the global config, never in the project.
 12. **Nothing confidential in the repository.** No keys, no `.env` files, no absolute paths of a machine, no private project names, no Scenaria data (`.scenaria/`). Machine notes go to `CLAUDE.local.md`, internal analyses to `docs/intern/`; both are ignored by git. Check `git status` before every commit.
 
 ## 3. Build, test, run
@@ -58,8 +61,9 @@ node dist/cli.js start # dashboard + approval link (in a project folder)
 
 - **Node:** ≥ 20. Kev's Mac has Node 24.
 - **On Kev's Mac:** run the tests in two halves, because each tool call there is limited to 180 s.
-  - `node --test test/{canon,control,engine,expert,forecast,handoff,help}.test.mjs`
+  - `node --test test/{canon,control,engine,expert,forecast,handoff,help,integrity}.test.mjs`
   - `node --test test/{integration,oracle,overlay,predict,project,projects,safety,universal}.test.mjs`
+- Tests use a temporary `SCENARIA_HOME` (`test/helpers.mjs`), so they never touch the real `~/.config/scenaria`.
 - **Known flaky test:** `watch fingerprint writes no git objects while idle`. It is timing-sensitive, failed once on the Mac and passed on rerun.
 - **Done means:** build green, `npm test` green, `typecheck:ui` clean, and the relevant browser walkthrough (§7) without console or HTTP errors.
 
@@ -84,6 +88,9 @@ node dist/cli.js start # dashboard + approval link (in a project folder)
 |---|---|
 | `engine.ts` | The `Scenaria` class: missions, decide, choose, checkpoint, rewind, fork, verify, update. `remember()` keeps the field history (`meta.fieldHistory`) used for leak-free backtests. |
 | `store.ts`, `types.ts`, `ledger.ts`, `snapshot.ts` | Storage, data model, integrity ledger, shadow-git snapshots. |
+| **`verdict.ts`**, **`trust.ts`** | **Rule 11:** verdict origins, what counts, signature and work-hash checks (`verdict.ts` has no imports: shared with the UI). |
+| **`seal.ts`** | Anchor outside the project (genesis, high-water mark, used requests), reseal records, seal findings. |
+| **`auditors.ts`** | Registered audit agents: registry, signed requests (verdict / reseal), key generation. |
 | `fidelity.ts` | Context fidelity. The formula is shared with the forecast. |
 | `canon.ts`, `canon-llm.ts`, `gate.ts` | Fixed points, the archivist's proposals, canon gate per line. |
 | `analysis.ts` | Metrics, pattern analysis, **`callLlm`** (every model call goes through it: Anthropic / Ollama / OpenAI-compatible; `json` and `signal` options). |
@@ -176,6 +183,12 @@ From the latest reviews (all optional and low):
 - `e2e`: a chat-regression step clicks the last map node, which can be outside the viewport. Use `scrollIntoViewIfNeeded` or click HEAD.
 - This repository's own Scenaria tree is empty (old schema 2). If Kev wants the development itself recorded, start a mission there (`scenaria_start_mission`), with Kev's approval.
 
+Open after Batch A (from the reviews, documented limits):
+- The anchor is per machine. A project used from two computers, or from a devcontainer with another home, reports "extended" writes (medium, with the steps named). External anchoring (git remote / signed export) is on the roadmap.
+- After an update, restart agents and MCP servers. An older Scenaria version that keeps running writes without raising the mark ("extended").
+- On macOS, check that `realpath` gives the same folder spelling for every process; a different upper/lower case would mean a different anchor.
+- A process with the person's full user rights can still read the approver key or fake a terminal (keychain / hardware keys are on the roadmap).
+
 Product ideas already discussed or noted (see `docs/ROADMAP.md`; the batch plan in §11 has priority):
 - **Test with Kev's real local model.** It has only been tested with simulated models so far. Watch for JSON robustness, duration and the readability of the error messages.
 - **Commit an e2e suite** (§7).
@@ -193,6 +206,7 @@ Product ideas already discussed or noted (see `docs/ROADMAP.md`; the batch plan 
 | 0.8 | Forecasts and the multiverse, expert analyst, project switcher, help and onboarding |
 | 0.9.0 | Forecast core v2 (same quantity as the measurement, retraceable, backtest, quality), traceable oracle v2, Prüf-Experte |
 | 0.9.1 | Simple start (ready check, three paths), progress and stop, plain result, past-decision check, robust oracle for local models, auditor's area and report |
+| 0.9.2 | Batch A (rule 11): verdict origins; only the person or a registered audit agent can verify or reseal; signed, work-bound verdicts; anchor with high-water mark outside the project; reseal records; audit-agent registry and signed requests; dashboard reseal; two independent review rounds (K1–K11, R1–R7) |
 
 ## 11. Product decisions (2026-10-14) and the batch plan
 
@@ -213,14 +227,15 @@ Product ideas already discussed or noted (see `docs/ROADMAP.md`; the batch plan 
 - **Goal:** the repository is on GitHub (private first) and contains only what is needed. No secrets, no machine paths, no Scenaria data.
 - **Done:** hardened `.gitignore`, history checked for secrets, push done. Kev decides when it becomes public (recommended: after Batch A).
 
-### Batch A: integrity only by a person or an independent audit agent
+### Batch A: integrity only by a person or an independent audit agent — DONE in 0.9.2
 - **Goal:** a working agent can neither reset the tamper evidence nor certify its own work.
 - **Scope:**
   - `scenaria integrity --reseal` and `reseal()`: only by the person (interactive terminal or approval session) or by a request signed by a registered audit agent. Every reseal is a signed record. The previous ledger is kept and its chain head is anchored outside the project (global anchors).
   - **Registered audit agent:** it has its own Ed25519 key, created and kept outside Scenaria and outside the project (another machine, CI or a hardware key). The person registers its public key once (person-only, `trusted-auditors.json` in the global config). Scenaria only verifies; it never holds that private key.
-  - **Verdicts get an origin:** `self` (an agent on its own work), `person`, `auditor`, `hard` (a check command).
-    - "Verified" and `lastGood()` count only person, auditor and hard checks.
-    - Self verdicts are shown as "self-reported".
+  - **Verdicts get an origin:** `agent` (self-report), `person`, `auditor`, `auto` (automatic checks).
+    - "Verified" and `lastGood()` count only person and auditor.
+    - Agent verdicts are shown as "self-reported".
+    - *Changed while building:* there is no "hard" origin. `verifyCommand` lives in the project config, which agents can edit. Check commands the person adopted keep counting through canon and gate, which are signed.
   - The health check and the audit view list reseals and self-reported verdicts.
 - **Done:**
   - Tests: an agent shell (no terminal) cannot reseal through the CLI, HTTP or MCP; an unregistered or forged signature is rejected; self verdicts do not count.

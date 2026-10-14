@@ -15,7 +15,8 @@ Long agent tasks fail in the middle. Undo tools for files already exist (git, ed
 - **Decision points as first-class objects.** Each one holds the question, all options considered, the chosen one, the rationale, assumptions and confidence. Options that weren't taken stay on the map, and you can explore any of them later, even with a different model.
 - **Rewind = files + context.** Rewinding restores the files. It also gives the agent a resume capsule containing *only* the path that led there. Abandoned branches are left out; at most a one-line lesson carries over. So a hallucination doesn't leak into the next attempt.
 - **Nothing gets lost.** Unsaved work is autosaved before every rewind, so a rewind can be undone too. Ignored files that would be overwritten are backed up as well.
-- **Verification on the same objects.** Deterministic checks catch claimed files that don't exist, undocumented changes, low-confidence decisions and irreversible side effects. A verifier records a verdict per node, and that verifier can be a different model from a different vendor.
+- **Verification on the same objects.** Deterministic checks catch claimed files that don't exist, undocumented changes, low-confidence decisions and irreversible side effects. A verifier agent records a verdict per node, and that verifier can be a different model from a different vendor.
+- **Only you (or an independent audit agent) can say "verified".** An agent's own "passed" is shown as self-reported and never counts; a "failed" from anyone counts. Your verdicts are signed, and a registered audit agent with its own key (outside Scenaria) can give verdicts that count too.
 - **Fewer tokens.** The agent resumes from a capsule of a few hundred tokens instead of re-reading a long transcript.
 
 ## Install — one line
@@ -163,8 +164,10 @@ Markers show where context **broke off**, where the **main goal changed**, where
 
 Manipulation becomes visible through an append-only **integrity ledger** (`.scenaria/ledger.jsonl`):
 - Every write stores the node's content hash, and the ledger lines form a hash chain.
-- A node file edited by hand, or an edited ledger, shows up in `scenaria integrity`, in the health check and on the map.
-- Tamper-*evident*, not tamper-proof: someone who rewrites both the nodes and the entire ledger is not detected locally.
+- A node file edited by hand, or an edited ledger, shows up in `scenaria integrity`, in the health check and on the map. A later write never washes an edit clean.
+- An **anchor outside the project** (`~/.config/scenaria/anchors/`) remembers which ledger this machine accepted and how far it reaches. A deleted, replaced, shortened, rolled-back or extended ledger is reported.
+- **Only the person resets it** (`scenaria integrity --reseal` in a terminal, or the button in the dashboard with the approval link) — or a registered audit agent with a signed request. Every reseal is recorded and signed; the old ledger is kept.
+- Tamper-*evident*, not tamper-proof: a process with your full user rights could also edit the anchor and read your keys. For audits, keep the audit agent's key on another machine or in CI.
 
 Overlap is lexical: it works offline and costs no tokens. Decisions written in another language than the goal should state `servesGoal`.
 
@@ -281,8 +284,10 @@ All paths use **one tool registry**: the same 18 tools with the same validation 
 | `scenaria_rewind` | Jump back (files + HEAD), with a lesson |
 | `scenaria_fork` | Explore another option of a past decision |
 | `scenaria_diff` | Diff between nodes or against the working tree |
-| `scenaria_verify` | Checks + verdict (passed / warning / failed) |
-| `scenaria_last_good` | Safest rewind target |
+| `scenaria_verify` | Checks + a self-reported verdict (an agent's "passed" never counts as verified; "failed" does) |
+| `scenaria_last_good` | Safest rewind target (verified by the person or a registered audit agent) |
+| `scenaria_auditor_request` | Payload a registered, independent audit agent signs (verdict on a node, or reseal) |
+| `scenaria_auditor_submit` | Hand in an audit agent's signed request |
 | `scenaria_recall` | Keyword search over the whole project memory |
 | `scenaria_health` | Deterministic quality check of the tree (incl. manipulation) |
 | `scenaria_workspace` | Shared board by sections; with a reader name only the gap |

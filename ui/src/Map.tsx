@@ -18,6 +18,7 @@ import {
 import type { FidelityPoint, ScenariaNode } from "./api";
 import { scoreTone } from "./Fidelity";
 import type { Dict } from "./i18n";
+import { verdictView } from "../../src/core/verdict";
 import { COL, NODE_H, NODE_W, ROW, layoutTree, pathIds, type Placed } from "./layout";
 
 export function NodeId({ id, big }: { id: string; big?: boolean }) {
@@ -47,6 +48,8 @@ type ScData = {
   onToggleFold?: (id: string) => void;
   containsHead?: boolean;
   fid?: FidelityPoint;
+  /** The engine confirmed this node's "passed" (authentic, untampered); undefined while unknown. */
+  confirmed?: boolean;
 };
 
 /** Missing context/rationale is the most common quality gap — show it on the map. */
@@ -74,7 +77,8 @@ const ScNode = memo(({ data, selected }: NodeProps<Node<ScData>>) => {
     );
   }
   const n = placed.node!;
-  const v = n.verification?.status ?? "unverified";
+  // A "passed" counts only when the person or a registered audit agent gave it and it checks out (rule 11).
+  const vs = verdictView(n.verification, data.confirmed).cls;
   let sub = "";
   if (n.type === "decision") {
     const chosen = n.options?.find((o) => o.id === n.chosen)?.label;
@@ -88,7 +92,7 @@ const ScNode = memo(({ data, selected }: NodeProps<Node<ScData>>) => {
   const canFold = n.type === "goal" && data.onToggleFold;
   return (
     <div
-      className={`sc-node t-${n.type} v-${v} ${onPath ? "on-path" : ""} ${isHead ? "is-head" : ""} ${selected ? "is-sel" : ""} ${placed.folded ? "is-folded" : ""} ${n.type === "mission" && !n.goal ? "no-goal" : ""} ${n.status ? `st-${n.status}` : ""}`}
+      className={`sc-node t-${n.type} v-${vs} ${onPath ? "on-path" : ""} ${isHead ? "is-head" : ""} ${selected ? "is-sel" : ""} ${placed.folded ? "is-folded" : ""} ${n.type === "mission" && !n.goal ? "no-goal" : ""} ${n.status ? `st-${n.status}` : ""}`}
     >
       <Handle type="target" position={Position.Left} isConnectable={false} />
       {isHead && <span className="head-tab">{t.head}</span>}
@@ -118,7 +122,7 @@ const ScNode = memo(({ data, selected }: NodeProps<Node<ScData>>) => {
         </span>
         {via ? <span className="sc-kind via" title={t.types[n.type]}>↳ {via}</span> : <span className="sc-kind">{t.types[n.type]}</span>}
         {n.scenarioId && <span className="vlabel">{n.scenarioId}/v{n.version}</span>}
-        <span className={`vdot v-${v}`} title={t.verification[v]} />
+        <span className={`vdot v-${vs}`} title={vs === "self" ? t.passNotCounted[verdictView(n.verification, data.confirmed).reason ?? "agent"] : t.verification[vs]} />
       </div>
       <div className="sc-title">{n.type === "decision" ? n.question ?? n.title : n.title}</div>
       {sub && <div className="sc-sub">{sub}</div>}
@@ -191,9 +195,11 @@ export function ScenarioMap(props: {
   folded: Set<string>;
   onToggleFold: (id: string) => void;
   fidelity: Record<string, FidelityPoint> | null;
+  /** Node ids whose "passed" counts (from the engine); null while unknown. */
+  confirmed?: Set<string> | null;
   t: Dict;
 }) {
-  const { nodes, rootId, headId, selectedKey, onSelect, folded, onToggleFold, fidelity, t } = props;
+  const { nodes, rootId, headId, selectedKey, onSelect, folded, onToggleFold, fidelity, confirmed, t } = props;
   const { flowNodes, flowEdges, shape, focus } = useMemo(() => {
     const { placed, maxDepth, rows } = layoutTree(nodes, rootId, folded);
     const onPath = pathIds(nodes, headId);
@@ -210,6 +216,7 @@ export function ScenarioMap(props: {
         onToggleFold,
         containsHead: Boolean(p.folded && headId && !visible.has(headId) && onPath.has(p.key)),
         fid: p.kind === "node" ? fidelity?.[p.key] : undefined,
+        confirmed: confirmed && p.kind === "node" ? confirmed.has(p.key) : undefined,
       } satisfies ScData,
       draggable: false,
       connectable: false,
@@ -249,7 +256,7 @@ export function ScenarioMap(props: {
       .filter((p) => p.depth >= minDepth && p.depth <= (head?.depth ?? 0) + 1)
       .map((p) => p.key);
     return { flowNodes, flowEdges, shape: `${rootId}:${placed.length}:${headId}`, focus };
-  }, [nodes, rootId, headId, selectedKey, t, folded, onToggleFold, fidelity]);
+  }, [nodes, rootId, headId, selectedKey, t, folded, onToggleFold, fidelity, confirmed]);
 
   return (
     <ReactFlow

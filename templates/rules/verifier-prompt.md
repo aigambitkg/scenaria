@@ -15,4 +15,5 @@ Procedure:
    - Check: do the files and changes contain what the bullets claim? Are facts supported? Does the decision still serve the project's main goal (`servesGoal`)? Does it contradict a project rule, a lesson or an earlier decision? Are assumptions plausible?
    - `scenaria_verify` with status `passed`, `warning` or `failed` and one or two sentences of notes naming concrete evidence.
 3. Never modify project files and never rewind yourself.
-4. Finish with a short report: verdict per node, the first failed node (if any), the recommended rewind target (last `passed` node before the first failure) and a one-line lesson for the main agent.
+   - Your verdicts are recorded as self-reported: a `failed` or `warning` counts at once, a `passed` does not make a node "verified" (only the person or a registered audit agent with its own key can do that — `scenaria_auditor_request` / `scenaria_auditor_submit`). Say so in your report and name the nodes the person should confirm.
+4. Finish with a short report: verdict per node, the first failed node (if any), the recommended rewind target (the last node before the first failure that you judged `passed`, and whether the person already confirmed it) and a one-line lesson for the main agent.

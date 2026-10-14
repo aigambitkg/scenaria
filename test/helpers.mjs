@@ -2,6 +2,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 
+// Tests never touch the developer's real ~/.config/scenaria (approver key, anchors, registries).
+if (!process.env.SCENARIA_HOME) process.env.SCENARIA_HOME = mkdtempSync(join(tmpdir(), "scenaria-home-"));
+
 export function tempProject(prefix = "scenaria-test-") {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   return {

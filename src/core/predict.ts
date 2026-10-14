@@ -38,6 +38,7 @@ import type { Scenaria } from "./engine.js";
 import type { ScenariaEvent, ScenariaNode } from "./types.js";
 import { canonState, type CanonEvent } from "./canon.js";
 import { nearestGoal } from "./context.js";
+import { effectiveStatus } from "./verdict.js";
 import { combine, epistemicOf, fidelityAll, isBreak, overlap, stems, stepComponents, type FidelityPoint } from "./fidelity.js";
 import { nodeText } from "./recall.js";
 
@@ -79,7 +80,7 @@ function childrenOf(nodes: ScenariaNode[]) {
 function lessonsOf(nodes: ScenariaNode[], known: (n: ScenariaNode, lesson: string) => boolean) {
   return nodes.flatMap((n) => [
     ...(n.lessons ?? []).filter((l) => known(n, l)).map((l) => ({ node: n.id, text: l })),
-    ...(n.verification?.status === "failed" && known(n, "") ? [{ node: n.id, text: `${n.title}: ${n.verification.notes ?? "failed verification"}` }] : []),
+    ...(effectiveStatus(n.verification) === "failed" && known(n, "") ? [{ node: n.id, text: `${n.title}: ${n.verification?.notes ?? "failed verification"}` }] : []),
   ]).map((l) => ({ ...l, toks: stems(l.text) }));
 }
 

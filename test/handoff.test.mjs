@@ -6,6 +6,7 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { Scenaria } from "../dist/core/index.js";
+import { ledgerAnchorFile } from "../dist/core/seal.js";
 import { createApp } from "../dist/server.js";
 import { callTool } from "../dist/tools.js";
 import { applyBlocks } from "../dist/core/blocks.js";
@@ -55,8 +56,9 @@ test("integrity ledger: edits outside Scenaria and an edited ledger are detected
 test("existing projects are sealed once on upgrade (no false alarms)", () => {
   const { p } = project();
   const lf = join(p.dir, ".scenaria/ledger.jsonl");
-  rmSync(lf); // pretend: project from before the ledger
+  rmSync(lf); // pretend: project from before the ledger (so this machine never anchored one either)
   rmSync(join(p.dir, ".scenaria/ledger.sealed"));
+  rmSync(ledgerAnchorFile(p.dir), { force: true });
   const s2 = Scenaria.open(p.dir);
   assert.ok([...s2.integrity().state.values()].every((x) => x === "ok"));
   assert.match(readFileSync(lf, "utf8"), /"op":"seal"/);
@@ -72,9 +74,15 @@ test("a deleted ledger is reported, never resealed silently; reseal keeps the ol
   s.verify(d.id, { status: "passed" }); // a later write must not hide the gap for the other nodes
   assert.equal(s.integrity().ledgerMissing, false);
   assert.ok([...s.integrity().state.values()].includes("unsealed") || [...s.integrity().state.values()].includes("tampered"));
-  const r = s.reseal({ user: "kev" });
+  assert.equal(s.integrity().ledgerReplaced, true, "the recreated ledger is not the anchored one");
+  assert.throws(() => s.reseal({ user: "kev" }), /person's action/);
+  const r = s.reseal({ kind: "person", via: "terminal" }, { user: "kev" });
   assert.ok(r.nodes > 0);
-  assert.ok([...s.integrity().state.values()].every((x) => x === "ok"));
+  assert.equal(r.record.verified, true);
+  const after = s.integrity();
+  assert.ok([...after.state.values()].every((x) => x === "ok"));
+  assert.equal(after.ledgerReplaced, false);
+  assert.deepEqual(after.resealsUnproven, []);
 });
 
 test("ledger: a torn line from an interrupted write is no alarm; verification edits count as tampering", () => {

@@ -42,8 +42,27 @@ export interface GlobalConfig {
  * so the global settings must never live at that path.
  */
 export function globalConfigPath() {
+  const fallback = join(homedir(), ".config", "scenaria");
   const base = process.env.SCENARIA_HOME ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "scenaria");
-  return join(base, "config.json");
+  // The person's keys, trusted approvers, audit agents and anchors must never come from inside a project:
+  // an agent could point SCENARIA_HOME / XDG_CONFIG_HOME there and bring its own registry (rule 11).
+  return join(base !== fallback && insideProject(base) ? fallback : base, "config.json");
+}
+
+const insideCache = new Map<string, boolean>();
+function insideProject(dir: string): boolean {
+  const hit = insideCache.get(dir);
+  if (hit !== undefined) return hit;
+  let found = false;
+  for (let cur = resolve(dir); ; cur = dirname(cur)) {
+    if (existsSync(join(cur, ".scenaria", "config.json"))) {
+      found = true;
+      break;
+    }
+    if (dirname(cur) === cur) break;
+  }
+  insideCache.set(dir, found);
+  return found;
 }
 
 export function readGlobalConfig(): GlobalConfig {

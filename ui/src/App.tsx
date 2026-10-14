@@ -9,6 +9,7 @@ import type { HelpAction } from "./helpContent";
 import { layoutTree, taskOf } from "./layout";
 import { NodeId, ScenarioMap } from "./Map";
 import { NodePanel } from "./NodePanel";
+import { isConfirmedPass, isUnconfirmedPass } from "../../src/core/verdict";
 import { AnalysisDialog, CanonDialog, ConversationsDialog, DiffDialog, PromptDialog, ProtocolDialog, RewindDialog } from "./Dialogs";
 import { ChatPanel, RelayDialog, SettingsDialog, type SessionKeys } from "./Control";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -149,6 +150,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
     return layoutTree(graph.nodes, rootId, folded).placed.find((p) => p.key === selected) ?? null;
   }, [graph, rootId, selected, folded]);
 
+  const confirmedSet = useMemo(() => (fidelity?.confirmed ? new Set(fidelity.confirmed) : null), [fidelity]);
   const stats = useMemo(() => {
     const ns = graph?.nodes ?? [];
     return {
@@ -156,11 +158,11 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
       tasks: ns.filter((n) => n.type === "goal").length,
       decisions: ns.filter((n) => n.type === "decision").length,
       branches: ns.filter((n) => n.type === "branch").length,
-      verified: ns.filter((n) => n.verification?.status === "passed").length,
+      verified: fidelity?.confirmed ? fidelity.confirmed.length : ns.filter((n) => isConfirmedPass(n.verification)).length,
       checked: ns.filter((n) => n.type !== "mission" && n.type !== "goal").length,
       failed: ns.filter((n) => n.verification?.status === "failed").length,
     };
-  }, [graph]);
+  }, [graph, fidelity]);
 
   const saveGoal = async (goal: string) => {
     if (!goal.trim()) return;
@@ -394,7 +396,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
           )}
           {graph && rootId ? (
             <ReactFlowProvider>
-              <ScenarioMap nodes={graph.nodes} rootId={rootId} headId={headId} selectedKey={selected} onSelect={setSelected} folded={folded} onToggleFold={toggleFold} fidelity={fidelity?.points ?? null} t={t} />
+              <ScenarioMap nodes={graph.nodes} rootId={rootId} headId={headId} selectedKey={selected} onSelect={setSelected} folded={folded} onToggleFold={toggleFold} fidelity={fidelity?.points ?? null} confirmed={confirmedSet} t={t} />
             </ReactFlowProvider>
           ) : graph ? (
             <div className="empty">
@@ -463,10 +465,24 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
               toast(e?.message ?? String(e));
             }
           }}
+          approved={approved}
+          onReseal={async () => {
+            try {
+              const r = await api.reseal();
+              toast(`${t.resealedOk} ${r.record}`);
+              await load();
+            } catch (e: any) {
+              toast(e?.message ?? String(e));
+            }
+          }}
           onVerify={async (id, body) => {
-            const n = await api.verify(id, body);
-            toast(`${n.id}: ${t.verification[n.verification?.status ?? "unverified"]}`);
-            await load();
+            try {
+              const n = await api.verify(id, body);
+              toast(`${n.id}: ${isUnconfirmedPass(n.verification) ? t.selfReported : t.verification[n.verification?.status ?? "unverified"]}`);
+              await load();
+            } catch (e: any) {
+              toast(e?.message ?? String(e));
+            }
           }}
           onForecast={(id) => setForecastFocus(id)}
           onChoose={async (id, option, rationale) => {

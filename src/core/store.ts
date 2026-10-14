@@ -184,6 +184,15 @@ export class Store {
    * process is gone (or it is very old), and only its owner removes it.
    */
   withLock<T>(fn: () => T): T {
+    // Re-entrant within this Store instance (a locked operation may call another one that locks).
+    if (this.lockDepth > 0) {
+      this.lockDepth++;
+      try {
+        return fn();
+      } finally {
+        this.lockDepth--;
+      }
+    }
     const lock = this.path("lock");
     mkdirSync(this.dir, { recursive: true });
     const token = `${process.pid}:${randomUUID()}`;
@@ -208,14 +217,17 @@ export class Store {
         sleepSync(25);
       }
     }
+    this.lockDepth = 1;
     try {
       return fn();
     } finally {
+      this.lockDepth = 0;
       try {
         if (readFileSync(lock, "utf8") === token) unlinkSync(lock);
       } catch {}
     }
   }
+  private lockDepth = 0;
 
   /** Read-modify-write a scratch file under the lock. */
   updateScratch<T extends object>(name: string, fallback: T, fn: (cur: T) => void): T {

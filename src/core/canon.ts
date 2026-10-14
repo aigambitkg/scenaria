@@ -35,6 +35,7 @@ import { optionLabel } from "./context.js";
 import { tokenize } from "./recall.js";
 import { globalConfigPath } from "./global.js";
 import type { ScenariaNode } from "./types.js";
+import { isConfirmedPass } from "./verdict.js";
 
 export type CanonKind = "past" | "future";
 /**
@@ -547,6 +548,24 @@ export async function runCheckCommand(cmd: string, cwd: string, timeoutMs = 300_
 
 // ------------------------------------------------------------------ signed records for other modules (gate)
 
+/** The project's identity for signatures (created on the first signed change when `create`). */
+export function projectIdentity(store: Store, create = false): string {
+  return projectId(store, create);
+}
+/** Short id of an Ed25519 public key (base64 SPKI DER). */
+export const publicKeyId = (pub: string) => keyIdOf(pub);
+/** Ed25519 signature check over a UTF-8 payload. */
+export const verifyEd25519 = (pub: string | undefined, sig: string | undefined, payload: string) => verifySig(pub, sig, payload);
+/** The approver keys this machine trusts (own + trusted teammates), read once for many checks. */
+export function trustedApproverIdSet(): Set<string> {
+  return trustedIds();
+}
+
+/** The person's own approver key id on this machine, if it exists (never created here). */
+export function ownApproverKeyId(): string | null {
+  return loadOwnKey(false)?.id ?? null;
+}
+
 /** Sign any payload with the person's approver key (bound to this project). */
 export function signRecord(store: Store, parts: unknown[]): { pid: string; pub: string; sig: string } {
   const pid = projectId(store, true);
@@ -620,7 +639,7 @@ export interface CanonSuggestion extends CanonInput {
  * line, rules, and facts phrased as obligations. Nothing is stored — a person accepts or ignores them.
  * Anything already active, proposed, rejected or retired is not suggested again.
  */
-export function suggestCanon(store: Store, nodes: ScenariaNode[], path: ScenariaNode[], rules: { id: string; text: string }[]): CanonSuggestion[] {
+export function suggestCanon(store: Store, nodes: ScenariaNode[], path: ScenariaNode[], rules: { id: string; text: string }[], confirmed?: Set<string>): CanonSuggestion[] {
   const existing = readCanon(store);
   const known = existing.map((e) => new Set(tokenize(e.text)));
   const isKnown = (text: string) => {
@@ -638,7 +657,7 @@ export function suggestCanon(store: Store, nodes: ScenariaNode[], path: Scenaria
   path.forEach((n, i) => {
     if (n.type !== "decision" || !n.chosen) return;
     const taken = path[i + 1]?.viaOption ?? n.chosen;
-    const verified = n.verification?.status === "passed";
+    const verified = confirmed ? confirmed.has(n.id) : isConfirmedPass(n.verification);
     const confident = (n.confidence ?? 0) >= 0.8 && Boolean(n.rationale);
     if (!verified && !confident) return;
     const label = optionLabel(n, taken) ?? "";

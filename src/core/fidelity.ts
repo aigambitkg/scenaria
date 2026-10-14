@@ -16,6 +16,7 @@
 import type { ScenariaNode } from "./types.js";
 import type { IntegrityState } from "./ledger.js";
 import { nodeText, tokenize } from "./recall.js";
+import { effectiveStatus } from "./verdict.js";
 
 export type FidelityFlag = "break" | "drift" | "goalChanged" | "branch" | "tampered" | "builtOnTampered" | "lowSignal" | "noGoal" | "task" | "failed" | "canonBroken" | "canonRespected";
 
@@ -54,8 +55,11 @@ export function overlap(a: Set<string>, b: Set<string>): number {
 
 const norm = (x: number, full: number) => Math.max(0, Math.min(1, x / full));
 
-function epistemicOf(n: ScenariaNode): number {
-  const v = n.verification?.status;
+function epistemicOf(n: ScenariaNode, confirmed?: Set<string>): number {
+  // Only a pass from the person or a registered audit agent raises reliability; a self-report never does (rule 11).
+  // With `confirmed` (from the engine's integrity check) a pass also has to be authentic.
+  let v = effectiveStatus(n.verification);
+  if (v === "passed" && confirmed && !confirmed.has(n.id)) v = "unverified";
   if (v === "passed") return 1;
   if (v === "warning") return 0.6;
   if (v === "failed") return 0.15;
@@ -139,7 +143,7 @@ export function decisionContext(d: ScenariaNode, child: ScenariaNode): Set<strin
 }
 
 /** Fidelity of every node, computed in one pass over the tree (each node only sees its own path). */
-export function fidelityAll(nodes: ScenariaNode[], opts: { integrity?: Map<string, IntegrityState>; goalChanges?: string[] } = {}): Map<string, FidelityPoint> {
+export function fidelityAll(nodes: ScenariaNode[], opts: { integrity?: Map<string, IntegrityState>; goalChanges?: string[]; confirmed?: Set<string> } = {}): Map<string, FidelityPoint> {
   const out = new Map<string, FidelityPoint>();
   const kids = new Map<string, ScenariaNode[]>();
   for (const n of nodes) if (n.parentId) kids.set(n.parentId, [...(kids.get(n.parentId) ?? []), n]);
@@ -188,12 +192,12 @@ export function fidelityAll(nodes: ScenariaNode[], opts: { integrity?: Map<strin
     if (c.lowSignal) flags.push("lowSignal");
     if (!hasGoal && n.parentId) flags.push("noGoal");
     if (n.forkedFrom) flags.push("branch");
-    if (n.verification?.status === "failed") flags.push("failed");
+    if (effectiveStatus(n.verification) === "failed") flags.push("failed");
     if (f.parent && n.parentId) {
       const from = f.anc[f.anc.length - 1]?.n.createdAt ?? "";
       if (goalChanges.some((t) => t > from && t <= n.createdAt)) flags.push("goalChanged");
     }
-    const epistemic = epistemicOf(n);
+    const epistemic = epistemicOf(n, opts.confirmed);
     const integScore = integrity === "tampered" ? 0 : integrity === "inherited" ? 0.5 : 1;
     let score = combine(anchor, continuity, integScore, epistemic);
     if (integrity === "tampered") score = Math.min(score, 25);

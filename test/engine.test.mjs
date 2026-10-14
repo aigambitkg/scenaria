@@ -198,8 +198,12 @@ test("auto verification catches hallucinated files and low confidence", () => {
   const v = s.verify(cp.id);
   assert.equal(v.verification.status, "failed");
   assert.match(JSON.stringify(v.verification.checks), /imaginary/);
+  // An agent's "passed" can never lift a failure (rule 11): it stays failed until the person confirms.
   const manual = s.verify(cp.id, { status: "passed", notes: "imaginary was renamed", by: "reviewer" });
-  assert.equal(manual.verification.status, "passed");
+  assert.equal(manual.verification.status, "failed");
+  assert.equal(s.lastGood(), null);
+  const person = s.verify(cp.id, { status: "passed", notes: "checked myself", origin: "person", via: "terminal" });
+  assert.equal(person.verification.origin, "person");
   assert.equal(s.lastGood().id, cp.id);
 });
 

@@ -90,8 +90,8 @@
 
 The core stays as it is. New features come only through these batches, in this order and one at a time. Details: `docs/HANDOFF.md` §11.
 
-- [ ] **0, publish:** repository on GitHub (private first), only what is needed, no secrets or machine data
-- [ ] **A, integrity by a person or an independent audit agent:** reseal only by the person or a registered audit agent (own key outside Scenaria); verdicts carry their origin; self-reported work no longer counts as verified
+- [x] **0, publish:** repository on GitHub (private first), only what is needed, no secrets or machine data
+- [x] **A, integrity by a person or an independent audit agent (0.9.2):** reseal only by the person or a registered audit agent (own key outside Scenaria); verdicts carry their origin; self-reported work no longer counts as verified
 - [ ] **B, easy to use for office users:** three views (Simple / Audit / Manage), plain wording, one model by default, forecasts and relay moved to "Extensions", start without terminal knowledge
 - [ ] **C, audit file for ISO/IEC 42001:** every Annex A control with evidence from Scenaria, status and fields for organisational evidence; period filter; signed PDF/Markdown/JSON export; read-only access for auditors
 - [ ] **D, the AI manager's view:** cross-project overview, agents and models over time, token use, rules and policies for all projects

@@ -26,6 +26,7 @@ import { stringPayload } from "./workspace.js";
 import { effectiveLlm, upstreams } from "./settings.js";
 import { listProjects, personalDir } from "./projects.js";
 import { writeJsonAtomic } from "./store.js";
+import { effectiveStatus } from "./verdict.js";
 
 export type Lens = "architecture" | "goal" | "workflow" | "governance";
 export const LENSES: Lens[] = ["architecture", "goal", "workflow", "governance"];
@@ -164,6 +165,7 @@ export function factSheet(s: Scenaria, scope: FactSheet["scope"] = { kind: "proj
   const all = s.store.listNodes();
   const m = projectMetrics(s);
   const fid = s.fidelity().points;
+  const confirmedIds = s.integrity().confirmed;
   const head = s.store.readState().head;
   const onScope = scope.kind === "line" ? new Set(s.path(scope.head).map((n) => n.id)) : null;
   const nodes = onScope ? all.filter((n) => onScope.has(n.id)) : all;
@@ -207,8 +209,8 @@ export function factSheet(s: Scenaria, scope: FactSheet["scope"] = { kind: "proj
     openDecisions: decisions.filter((d) => !d.chosen).length,
     lines: lines.length,
     rewinds: onScope ? nodes.filter((n) => (n.lessons ?? []).length).length : m.counts.rewinds,
-    verifiedPassed: nodes.filter((n) => n.verification?.status === "passed").length,
-    verifiedFailed: nodes.filter((n) => n.verification?.status === "failed").length,
+    verifiedPassed: nodes.filter((n) => confirmedIds.has(n.id)).length,
+    verifiedFailed: nodes.filter((n) => effectiveStatus(n.verification) === "failed").length,
     rationaleRate: Math.min(100, pct(decisions.filter((d) => d.chosen && d.rationale).length, decisions.filter((d) => d.chosen).length)),
     decisionQuality: clamp((quality || 0) * 100),
     fidelity: fidVals.length ? Math.round(fidVals.reduce((a, b) => a + b, 0) / fidVals.length) : 0,

@@ -15,16 +15,21 @@ import type {
   ScenariaNode,
   SnapshotFolderConfig,
   Source,
+  Verification,
   VerificationStatus,
 } from "./types.js";
 import { autoChecks, commandCheck, worst } from "./verify.js";
+import { effectiveStatus, isAuthoritative, isConfirmedPass, isUnconfirmedPass, verdictOrigin } from "./verdict.js";
+import { verdictParts, verdictTrustAll } from "./trust.js";
+import { checkEnvelopeKey, parseEnvelope, verifyAuditorRequest } from "./auditors.js";
+import { authenticVerdicts, confirmHighWater, listResealIds, registerVerdict, ensureLedgerAnchor, markRequestUsed, markerTime, raiseHighWater, readLedgerAnchor, recordResealInAnchor, requestHash, requestUsed, saveReseal, sealFindings, startNewProjectAnchor, type ResealAuthority, type ResealRecord } from "./seal.js";
 import { Conversations, renderConversation, type MessageInput, type SessionInput } from "./conversations.js";
 import { DEFAULT_SNAPSHOT_FOLDERS, SnapshotFolders, versionReadme } from "./folders.js";
 import { ulid, versionLabel } from "./ids.js";
 import { isForbiddenRoot } from "./global.js";
-import { Ledger, checkIntegrity, contentHash } from "./ledger.js";
+import { Ledger, checkIntegrity, contentHash, workHash } from "./ledger.js";
 import { fidelityAll } from "./fidelity.js";
-import { activeCanon, addCanon, canonLines, canonState, decideCanon, readCanon, runCanonChecks, suggestCanon, type CanonAction, type CanonInput } from "./canon.js";
+import { activeCanon, addCanon, canonLines, canonState, decideCanon, readCanon, runCanonChecks, signRecord, suggestCanon, type CanonAction, type CanonInput } from "./canon.js";
 
 export interface Actor {
   agent?: string;
@@ -126,12 +131,25 @@ export interface RewindOptions extends Actor {
   restoreFiles?: boolean;
 }
 
+/** How negative a verdict is (a self-report may only move it up this scale, never down). */
+const RANK: Record<string, number> = { unverified: 0, passed: 1, warning: 2, failed: 3 };
+
 export interface VerifyInput {
   status?: VerificationStatus;
   notes?: string;
   by?: string;
   auto?: boolean;
   runCommand?: boolean;
+  /**
+   * Who gives the verdict. "person" only from the person's own paths (approval session, interactive
+   * terminal) — the caller enforces that. Without it, an explicit status is an agent's self-report.
+   * An audit agent's verdict comes only through `auditor` (a signed request), never through this field.
+   */
+  origin?: "person" | "agent";
+  /** How the person gave it ("dashboard", "terminal"). */
+  via?: string;
+  /** A signed request of a registered audit agent (see core/auditors.ts). Its status and notes win. */
+  auditor?: { payload: string; pub: string; sig: string };
 }
 
 export interface ContextResult {
@@ -218,18 +236,93 @@ export class Scenaria {
     return new Ledger(this.store.path("ledger.jsonl"));
   }
 
-  /** Which nodes still match what Scenaria wrote (ok), were changed outside it (tampered), or predate the ledger (unsealed). */
+  /**
+   * Which nodes still match what Scenaria wrote (ok), were changed outside it (tampered), or predate the
+   * ledger (unsealed) — plus the seal findings: a ledger that was deleted or replaced, and reseals
+   * without an authentic record (rule 11, see core/seal.ts).
+   */
   integrity() {
     // Nodes are re-hashed on every call (a hand edit shows up immediately); the parsed ledger is cached by size/mtime.
-    return checkIntegrity(this.store.listNodes(), this.ledger, { expectSealed: existsSync(this.store.path("ledger.sealed")) });
+    const st = this.ledger.state();
+    const seal = sealFindings(this.store, st);
+    const nodes = this.store.listNodes();
+    const r = checkIntegrity(nodes, this.ledger, { expectSealed: seal.anchored || existsSync(this.store.path("ledger.sealed")), inflight: this.inflight() });
+    // A verdict that claims the person or an audit agent but does not verify is tampering; untrusted/revoked ones simply do not count.
+    const trust = verdictTrustAll(this.store, nodes);
+    for (const [id, tr] of trust) if (tr === "forged") r.state.set(id, "tampered");
+    // The person's / audit agents' verdicts as this machine recorded them: one that vanished or changed is tampering.
+    const registered = readLedgerAnchor(this.root)?.verdicts ?? {};
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    const verdictsRemoved: string[] = [];
+    for (const [id, reg] of Object.entries(registered)) {
+      const v = byId.get(id)?.verification;
+      if (!v || !isAuthoritative(v) || v.at !== reg.at || v.status !== reg.status) {
+        verdictsRemoved.push(id);
+        if (byId.has(id)) r.state.set(id, "tampered");
+      }
+    }
+    // Steps written by something this machine's Scenaria did not see: their verdicts do not count until the person reviews and reseals.
+    const unseenWrites = seal.ledgerDiverged?.kind === "extended" ? seal.ledgerDiverged.since : [];
+    const confirmed = new Set(nodes.filter((n) => isConfirmedPass(n.verification) && r.state.get(n.id) === "ok" && trust.get(n.id) === "ok" && !unseenWrites.includes(n.id)).map((n) => n.id));
+    const pick = (k: string) => [...trust].filter(([, v]) => v === k).map(([id]) => id);
+    return {
+      ...r,
+      ledgerReplaced: seal.ledgerReplaced,
+      ledgerDiverged: seal.ledgerDiverged,
+      resealsUnproven: seal.resealsUnproven,
+      reseals: seal.reseals,
+      restarted: seal.restarted,
+      /** Nodes whose "passed" counts as verified: the person's or a registered audit agent's, authentic, on an untampered node. */
+      confirmed,
+      verdictsUntrusted: pick("untrusted"),
+      verdictsRevoked: pick("revoked"),
+      /** Verdicts whose work changed afterwards: they no longer apply and need a new verdict. */
+      verdictsSuperseded: pick("superseded"),
+      /** Verdicts of the person / an audit agent this machine recorded, that vanished or changed outside Scenaria. */
+      verdictsRemoved,
+      /** Steps written in ledger lines this machine's Scenaria did not write. */
+      unseenWrites,
+    };
+  }
+
+  /** Append to the ledger and raise the high-water mark outside the project first (call under the lock). */
+  private appendLedger(entries: { id: string; hash: string; op: string }[], opts: { inflight?: { id: string; hash: string }; deferConfirm?: boolean } = {}) {
+    let next: { lines: number; head: string | null } | null = null;
+    this.ledger.append(entries, (cur, n) => {
+      next = n;
+      raiseHighWater(this.root, cur, n, opts.inflight);
+    });
+    if (next && !opts.deferConfirm) this.confirmLedger(next);
+    return next as { lines: number; head: string | null } | null;
+  }
+  private confirmLedger(next: { lines: number; head: string | null } | null) {
+    if (!next) return;
+    try {
+      confirmHighWater(this.root, next);
+    } catch {}
+  }
+  /** The node whose write is in flight on this machine (after a crash its file may still be the previous version). */
+  private inflight(): { id: string; hash: string }[] {
+    const hw = readLedgerAnchor(this.root)?.hw;
+    return [...(hw?.interrupted ?? []), ...(hw?.pending && hw.inflight ? [hw.inflight] : [])];
   }
 
   /**
    * Accept the current state as the new baseline (after a torn ledger, a restore from backup or a
-   * reviewed manual fix). The old ledger is kept as evidence; the event log records who resealed.
+   * reviewed manual fix). Only with an authority (rule 11): the person — the caller makes sure it really
+   * is the person (interactive terminal, approval session) — or a registered audit agent's signed
+   * request, which is verified here. The old ledger is kept; a signed record and the anchor outside the
+   * project make the reseal visible.
    */
-  reseal(actor: Actor = {}): { archived: string | null; nodes: number } {
+  reseal(auth: ResealAuthority, actor: Actor = {}): { archived: string | null; nodes: number; record: ResealRecord } {
+    if (!auth || (auth.kind !== "person" && auth.kind !== "auditor")) {
+      throw new Error("Resealing the integrity ledger is the person's action (or a registered audit agent's signed request) — an agent cannot reset the tamper evidence.");
+    }
     return this.store.withLock(() => {
+      const before = this.ledger.state();
+      const audit = auth.kind === "auditor" ? verifyAuditorRequest(this.store, auth.request, { action: "reseal", ledger: before }) : null;
+      const reqHash = audit ? requestHash(parseEnvelope(auth.kind === "auditor" ? auth.request : null).payload) : undefined;
+      if (reqHash && requestUsed(this.root, reqHash)) throw new Error("This signed request was already used — make a new one (scenaria auditor request reseal).");
       const lf = this.store.path("ledger.jsonl");
       let archived: string | null = null;
       if (existsSync(lf)) {
@@ -239,9 +332,51 @@ export class Scenaria {
       const nodes = this.store.listNodes();
       this.ledger.append(nodes.map((n) => ({ id: n.id, hash: contentHash(n), op: "reseal" })));
       writeFileSync(this.store.path("ledger.sealed"), new Date().toISOString() + "\n");
-      this.store.appendEvent({ type: "update", data: { message: `integrity ledger resealed by ${actor.user ?? defaultUser() ?? "?"} (${nodes.length} nodes)${archived ? `, previous ledger kept as ${archived}` : ""}` } });
-      return { archived, nodes: nodes.length };
+      const after = this.ledger.state();
+      const by = audit ? `auditor:${audit.key.name ?? audit.key.id}` : actor.user ?? defaultUser() ?? "person";
+      const record = saveReseal(this.store, {
+        at: new Date().toISOString(),
+        kind: auth.kind,
+        by,
+        via: auth.kind === "person" ? auth.via : "signed request",
+        archived,
+        archivedLines: before.lines,
+        archivedHead: before.head,
+        newGenesis: after.genesis,
+        nodes: nodes.length,
+        ...(audit ? { auditor: { keyId: audit.key.id, name: audit.key.name, request: parseEnvelope(auth.kind === "auditor" ? auth.request : null) } } : {}),
+      });
+      recordResealInAnchor(this.root, record, after, reqHash, listResealIds(this.store), authenticVerdicts(this.store));
+      this.store.appendEvent({ type: "update", data: { message: `integrity ledger resealed by ${by} via ${record.via} (${nodes.length} nodes, record ${record.id})${archived ? `, previous ledger kept as ${archived}` : ""}` } });
+      return { archived, nodes: nodes.length, record };
     });
+  }
+
+  /**
+   * Apply a registered audit agent's signed request (verdict or reseal). Anyone may hand it in — the
+   * signature is the authority; an invalid, foreign, stale or expired request is refused with a reason.
+   */
+  applyAuditorRequest(input: unknown): { action: "verdict"; node: ScenariaNode } | { action: "reseal"; archived: string | null; nodes: number; record: ResealRecord } {
+    const { env } = checkEnvelopeKey(input);
+    let action: unknown;
+    let nodeId: unknown;
+    try {
+      const p = JSON.parse(env.payload);
+      action = p?.action;
+      nodeId = p?.verdict?.node;
+    } catch {
+      /* verifyAuditorRequest reports it */
+    }
+    if (action === "verdict") {
+      if (typeof nodeId !== "string" || !this.store.hasNode(nodeId)) throw new Error("The request names a node that does not exist in this project.");
+      const h = requestHash(env.payload);
+      if (requestUsed(this.root, h)) throw new Error("This signed request was already used — make a new one (scenaria auditor request verdict …).");
+      const node = this.verify(nodeId, { auditor: env, auto: false });
+      this.store.withLock(() => markRequestUsed(this.root, h));
+      return { action: "verdict", node };
+    }
+    if (action === "reseal") return { action: "reseal", ...this.reseal({ kind: "auditor", request: env }) };
+    throw new Error('The signed request must be a "verdict" or a "reseal" (scenaria auditor request …).');
   }
 
   /** Context fidelity of every node (0–100) plus ledger state — see core/fidelity.ts. */
@@ -250,12 +385,27 @@ export class Scenaria {
     const integ = this.integrity();
     const root = nodes.find((n) => n.id === (this.store.readState().projectRoot ?? ROOT_ID));
     const goalChanges = ((root?.meta?.goalHistory as { until?: string }[] | undefined) ?? []).map((g) => g.until).filter((x): x is string => typeof x === "string");
-    const points = fidelityAll(nodes, { integrity: integ.state, goalChanges });
-    return { points: Object.fromEntries(points), ledgerBrokenAt: integ.ledgerBrokenAt, ledgerEntries: integ.entries, ledgerMissing: integ.ledgerMissing, ledgerTorn: integ.torn };
+    const points = fidelityAll(nodes, { integrity: integ.state, goalChanges, confirmed: integ.confirmed });
+    return {
+      points: Object.fromEntries(points),
+      ledgerBrokenAt: integ.ledgerBrokenAt,
+      ledgerEntries: integ.entries,
+      ledgerMissing: integ.ledgerMissing,
+      ledgerTorn: integ.torn,
+      ledgerReplaced: integ.ledgerReplaced,
+      ledgerDiverged: integ.ledgerDiverged,
+      resealsUnproven: integ.resealsUnproven,
+      restarted: integ.restarted,
+      /** Node ids whose "passed" counts as verified (authentic verdict of the person or a registered audit agent). */
+      confirmed: [...integ.confirmed],
+      verdictsUntrusted: integ.verdictsUntrusted,
+      verdictsSuperseded: integ.verdictsSuperseded,
+      verdictsRemoved: integ.verdictsRemoved,
+    };
   }
 
   // ------------------------------------------------------------------ setup
-  static init(root?: string, opts: { projectName?: string; exclude?: string[]; force?: boolean } = {}): Scenaria {
+  static init(root?: string, opts: { projectName?: string; exclude?: string[]; force?: boolean; newProjectInFolder?: boolean } = {}): Scenaria {
     const r = resolveRoot(root);
     if (!opts.force && isForbiddenRoot(r)) {
       throw new Error(`Refusing to initialize Scenaria in ${r} (home folder, filesystem root or a config folder). Run it inside a project folder.`);
@@ -278,12 +428,27 @@ export class Scenaria {
       store.writeState({ head: null, activeMission: null, counter: 0, schema: 3, scenarioCounter: 0, messageCounter: 0, projectRoot: null });
       writeFileSync(store.path(".gitignore"), GITIGNORE_LINES.join("\n") + "\n");
       store.appendEvent({ type: "init", data: { message: `initialized in ${r}` } });
+      // A previous Scenaria project in this folder (e.g. .scenaria deleted): only the PERSON may start over
+      // (newProjectInFolder, confirmed in a terminal). Otherwise the old anchor stays and the new ledger is
+      // reported as replaced until the person reviews and reseals — an agent cannot wipe the evidence this way.
+      if (opts.newProjectInFolder) {
+        try {
+          const prev = startNewProjectAnchor(r);
+          if (prev) store.appendEvent({ type: "update", data: { message: `a new project was started in this folder by the person; the previous project's integrity anchor (since ${prev.since}) is archived` } });
+        } catch {}
+      }
     }
     const repo = ShadowRepo.gitAvailable() ? new ShadowRepo(r, store.dir) : null;
     repo?.init(store.readConfig().exclude);
     const s = new Scenaria(store, repo);
     s.upgrade();
     return s;
+  }
+
+  /** Did this machine anchor an earlier Scenaria project in this folder? (Asked before starting a new one.) */
+  static previousProjectSince(root?: string): string | null {
+    const r = resolveRoot(root);
+    return new Store(r).exists ? null : readLedgerAnchor(r)?.since ?? null;
   }
 
   static open(root?: string): Scenaria {
@@ -314,13 +479,17 @@ export class Scenaria {
     if ((st0.schema ?? 1) < 3 || st0.migrating) this.upgradeSchema();
     // Seal existing history once, so later edits outside Scenaria become visible.
     // A ledger that existed and disappeared is NOT resealed silently (integrity reports it missing).
-    if (!this.ledger.exists && !existsSync(this.store.path("ledger.sealed")) && this.store.listNodes().length) {
+    // Nor when the anchor outside the project says this folder already had one (ledger.sealed deleted too).
+    if (!this.ledger.exists && !existsSync(this.store.path("ledger.sealed")) && !readLedgerAnchor(this.root) && this.store.listNodes().length) {
       this.store.withLock(() => {
         if (this.ledger.exists) return;
-        this.ledger.append(this.store.listNodes().map((n) => ({ id: n.id, hash: contentHash(n), op: "seal" })));
+        this.appendLedger(this.store.listNodes().map((n) => ({ id: n.id, hash: contentHash(n), op: "seal" })));
         writeFileSync(this.store.path("ledger.sealed"), new Date().toISOString() + "\n");
       });
     }
+    try {
+      this.store.withLock(() => ensureLedgerAnchor(this.store, this.ledger.state(), markerTime(this.store)));
+    } catch {}
   }
 
   private upgradeSchema() {
@@ -513,7 +682,7 @@ export class Scenaria {
       }
       done.set(n.id, n);
     }
-    if (this.ledger.exists) this.ledger.append(all.map((n) => ({ id: n.id, hash: contentHash(n), op: "migrate" })));
+    if (this.ledger.exists) this.appendLedger(all.map((n) => ({ id: n.id, hash: contentHash(n), op: "migrate" })));
     for (const n of all) this.store.writeNode(n);
     // Refs and notes in bulk (one git process, one node listing) — fast even for thousands of nodes.
     if (this.repo) {
@@ -610,12 +779,13 @@ export class Scenaria {
     return out;
   }
 
-  /** Nearest ancestor-or-self with verification status "passed". */
+  /** Nearest ancestor-or-self that the person or a registered audit agent verified as "passed" (rule 11). */
   lastGood(id?: string): ScenariaNode | null {
     const target = id ?? this.store.readState().head;
     if (!target) return null;
     const p = this.path(target);
-    for (let i = p.length - 1; i >= 0; i--) if (p[i].verification?.status === "passed") return p[i];
+    const ok = this.integrity().confirmed;
+    for (let i = p.length - 1; i >= 0; i--) if (ok.has(p[i].id)) return p[i];
     return null;
   }
 
@@ -654,8 +824,9 @@ export class Scenaria {
         decisions: decisions.length,
         checkpoints: nodes.filter((n) => n.type === "checkpoint").length,
         branches: nodes.filter((n) => n.type === "branch").length,
-        verified: nodes.filter((n) => n.verification?.status === "passed").length,
-        failed: nodes.filter((n) => n.verification?.status === "failed").length,
+        verified: this.integrity().confirmed.size,
+        selfReported: nodes.filter((n) => isUnconfirmedPass(n.verification) && n.verification?.origin !== "auto").length,
+        failed: nodes.filter((n) => effectiveStatus(n.verification) === "failed").length,
         withoutRationale: decisions.filter((d) => d.chosen && !d.rationale).length,
         withoutContext: decisions.filter((d) => !d.context && !d.trigger).length,
       },
@@ -915,14 +1086,23 @@ export class Scenaria {
 
   private save(n: ScenariaNode) {
     // Hash first, then the file: a crash in between leaves the previous version, which still verifies.
+    let next: { lines: number; head: string | null } | null = null;
     try {
       const fresh = !this.ledger.exists;
-      this.ledger.append([{ id: n.id, hash: contentHash(n), op: "write" }]);
+      // A brand-new project (no marker, no other node): this ledger is the first one — anchor it outside the project.
+      const newborn = fresh && !existsSync(this.store.path("ledger.sealed")) && !this.store.listNodes().some((x) => x.id !== n.id);
+      // Writing over a node file that was changed outside Scenaria must not launder it: the evidence stays.
+      const overTampered = !fresh && this.store.hasNode(n.id) && this.ledger.nodeTampered(this.store.readNode(n.id), this.inflight());
+      const hash = contentHash(n);
+      // The mark outside the project names this node as "in flight" until its file is written too.
+      next = this.appendLedger([{ id: n.id, hash, op: overTampered ? "write-over-tampered" : "write" }], { inflight: { id: n.id, hash }, deferConfirm: true });
       if (fresh && !existsSync(this.store.path("ledger.sealed"))) writeFileSync(this.store.path("ledger.sealed"), new Date().toISOString() + "\n");
+      if (newborn) ensureLedgerAnchor(this.store, this.ledger.state());
     } catch {
       /* the ledger is evidence, never a reason to fail a write */
     }
     this.store.writeNode(n);
+    this.confirmLedger(next);
     this.writeNote(n);
   }
 
@@ -930,19 +1110,26 @@ export class Scenaria {
     try {
       const kids = new Map<string, ScenariaNode[]>();
       for (const n of nodes) if (n.parentId) kids.set(n.parentId, [...(kids.get(n.parentId) ?? []), n]);
-      for (const n of nodes) writeTextAtomic(this.store.path("kb", `${n.id}.md`), renderNodeNote(n, kids.get(n.id) ?? []));
+      const ok = this.integrity().confirmed;
+      for (const n of nodes) writeTextAtomic(this.store.path("kb", `${n.id}.md`), renderNodeNote(n, kids.get(n.id) ?? [], ok.has(n.id)));
     } catch {
       /* knowledge-base notes are best effort */
     }
   }
 
+  /** Cheap per-node version of integrity().confirmed (for the knowledge-base note written with every save). */
+  private noteConfirmed(n: ScenariaNode): boolean {
+    if (!isConfirmedPass(n.verification)) return false;
+    return verdictTrustAll(this.store, [n]).get(n.id) === "ok" && checkIntegrity([n], this.ledger, { expectSealed: true, inflight: this.inflight() }).state.get(n.id) === "ok";
+  }
+
   private writeNote(n: ScenariaNode) {
     try {
       const nodes = this.store.listNodes();
-      writeTextAtomic(this.store.path("kb", `${n.id}.md`), renderNodeNote(n, this.children(n.id, nodes)));
+      writeTextAtomic(this.store.path("kb", `${n.id}.md`), renderNodeNote(n, this.children(n.id, nodes), this.noteConfirmed(n)));
       if (n.parentId) {
         const p = nodes.find((x) => x.id === n.parentId);
-        if (p) writeTextAtomic(this.store.path("kb", `${p.id}.md`), renderNodeNote(p, this.children(p.id, nodes)));
+        if (p) writeTextAtomic(this.store.path("kb", `${p.id}.md`), renderNodeNote(p, this.children(p.id, nodes), this.noteConfirmed(p)));
       }
     } catch {
       /* knowledge-base notes are best effort */
@@ -1404,17 +1591,49 @@ export class Scenaria {
     return this.store.withLock(() => {
       const node = this.store.readNode(id);
       const checks = pre.checks;
-      const status = input.status ?? (checks.length ? worst(checks.map((c) => c.status)) : "unverified");
+      // An audit agent's verdict: only with a valid signed request bound to exactly this node content.
+      const audit = input.auditor ? verifyAuditorRequest(this.store, input.auditor, { action: "verdict", node }) : null;
+      const status = audit?.verdict?.status ?? input.status ?? (checks.length ? worst(checks.map((c) => c.status)) : "unverified");
+      const origin: NonNullable<Verification["origin"]> = audit ? "auditor" : input.origin === "person" ? "person" : input.status ? "agent" : "auto";
+      const notes = (audit ? audit.verdict?.notes : input.notes)?.trim();
+      const at = new Date().toISOString();
+      const by = audit ? `auditor:${audit.key.name ?? audit.key.id}` : origin === "auto" ? (input.by ?? "scenaria-auto") : (input.by ?? (origin === "person" ? "person" : "agent"));
+      // A self-report or an automatic check may lower trust, never raise it (rule 11): a negative outcome
+      // stays until the person or a registered audit agent gives a new verdict.
+      if (origin === "agent" || origin === "auto") {
+        const cur = effectiveStatus(node.verification);
+        if ((cur === "failed" || cur === "warning") && RANK[status] < RANK[cur]) {
+          this.store.appendEvent({ type: "verify", nodeId: id, data: { status, by, origin, ignored: `a ${cur} verdict stays until the person or a registered audit agent confirms` } });
+          return node;
+        }
+      }
       this.remember(node, ["verification"]);
-      node.verification = {
-        status,
-        notes: input.notes?.trim() || node.verification?.notes,
-        checks: checks.length ? checks : node.verification?.checks,
-        by: input.by ?? "scenaria-auto",
-        at: new Date().toISOString(),
-      };
+      if ((origin === "agent" || origin === "auto") && isAuthoritative(node.verification)) {
+        // Never replace the person's or an audit agent's verdict: keep the report next to it (a negative one lowers the outcome).
+        node.verification = { ...node.verification!, report: { status, origin, ...(notes ? { notes } : {}), by, at, ...(checks.length ? { checks } : {}) } };
+      } else {
+        const v: Verification = {
+          status,
+          notes: notes || (isAuthoritative(node.verification) ? undefined : node.verification?.notes),
+          checks: checks.length ? checks : node.verification?.checks,
+          by,
+          at,
+          origin,
+          ...(origin === "person" && input.via ? { via: input.via } : {}),
+          ...(audit ? { auditor: { keyId: audit.key.id, name: audit.key.name, request: { payload: input.auditor!.payload, pub: input.auditor!.pub, sig: input.auditor!.sig } } } : {}),
+        };
+        if (!v.notes) delete v.notes;
+        // The person's verdict is signed with the approver key, so an edited node file cannot fake one.
+        if (origin === "person") {
+          v.work = workHash(node);
+          const { pub, sig } = signRecord(this.store, verdictParts(node.id, v));
+          Object.assign(v, { pub, sig });
+        }
+        node.verification = v;
+      }
       this.save(node);
-      this.store.appendEvent({ type: "verify", nodeId: id, data: { status, notes: input.notes, by: node.verification.by } });
+      if ((origin === "person" || origin === "auditor") && node.verification?.at === at) registerVerdict(this.root, id, { status, at, origin });
+      this.store.appendEvent({ type: "verify", nodeId: id, data: { status, notes: notes || undefined, by, origin, ...(node.verification?.report?.at === at ? { kept: node.verification.origin } : {}) } });
       return node;
     });
   }
@@ -1533,7 +1752,7 @@ export class Scenaria {
   /** The archivist's candidate fixed points from the recorded history (nothing is stored). */
   suggestCanon() {
     const head = this.store.readState().head;
-    return suggestCanon(this.store, this.store.listNodes(), head ? this.path(head) : [], this.rules());
+    return suggestCanon(this.store, this.store.listNodes(), head ? this.path(head) : [], this.rules(), this.integrity().confirmed);
   }
 
   /** Run the check commands of approved canon events (a person's action; async). */
@@ -1616,7 +1835,8 @@ export class Scenaria {
     const headPath = new Set(state.head ? this.path(state.head).map((n) => n.id) : []);
     const current = state.head ? nearestGoal(this.path(state.head)) : null;
     const icon: Record<string, string> = { mission: "◎", goal: "◉", decision: "❖", checkpoint: "◆", branch: "⑂", autosave: "⟲" };
-    const vmark: Record<string, string> = { passed: " ✔", failed: " ✘", warning: " !", unverified: "" };
+    const vmark: Record<string, string> = { passed: " ✔", failed: " ✘", warning: " !", unverified: "", self: " ✔?" };
+    const confirmedSet = this.integrity().confirmed;
     const lines: string[] = [];
     // Linear stretches are printed one step per line without extra indentation; only real branches indent.
     const walk = (n: ScenariaNode, prefix: string, last: boolean, isRoot: boolean, cont = false) => {
@@ -1624,7 +1844,8 @@ export class Scenaria {
       const via = parent?.type === "decision" && n.viaOption ? `[${optionLabel(parent, n.viaOption)}] ` : "";
       let label = `${icon[n.type] ?? "·"} ${n.id} ${via}${n.type === "decision" ? n.question ?? n.title : n.title}`;
       if (n.type === "decision") label += ` → ${optionLabel(n, n.chosen) ?? "open"}`;
-      label += vmark[n.verification?.status ?? "unverified"];
+      const eff = effectiveStatus(n.verification);
+      label += vmark[n.verification?.status === "passed" && eff !== "failed" && eff !== "warning" && !confirmedSet.has(n.id) ? "self" : eff];
       if (n.type === "mission" && n.goal) label += ` — goal: ${n.goal.replace(/\s+/g, " ").slice(0, 120)}`;
       const fold = !opts.full && n.type === "goal" && n.id !== current?.id && n.id !== root.id;
       let kids = nodes.filter((x) => x.parentId === n.id);

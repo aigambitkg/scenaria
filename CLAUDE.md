@@ -26,4 +26,5 @@ Talk to Kev in German and in plain words.
 - **Feature freeze.** Work only on the batch plan in `docs/HANDOFF.md` §11 (order 0 → A → B → C → D, then E and F after Kev's go). Start a batch only after Kev says go; one batch at a time.
 - Every decision is checked against three personas: an office user new to AI, an ISO/IEC 42001 auditor, and a company's AI manager.
 - **Never commit anything confidential:** no keys or `.env` files, no absolute paths of a machine, no private project names, no `.scenaria/` data. Machine notes live in `CLAUDE.local.md`, internal analyses in `docs/intern/`; both are ignored by git. Run `git status` before every commit.
-- Security rules 11 and 12 in `docs/HANDOFF.md` §2 are new: only the person or a registered independent audit agent may reseal the ledger or give a verdict that counts as verified.
+- Security rules 11 and 12 in `docs/HANDOFF.md` §2: only the person or a registered independent audit agent may reseal the ledger or give a verdict that counts as verified (enforced since 0.9.2, Batch A). Anything that counts "verified" uses `integrity().confirmed`.
+- Batch 0 and A are done; Batch B (office users) starts only after Kev's go.

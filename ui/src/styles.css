@@ -156,6 +156,8 @@ code { font-family: var(--mono); font-size: 0.88em; }
 .vdot.v-passed { background: var(--pass); border-color: var(--pass); }
 .vdot.v-warning { background: var(--warn); border-color: var(--warn); }
 .vdot.v-failed { background: var(--fail); border-color: var(--fail); }
+/* "passed" reported only by the agent: an outline, never the filled "verified" dot (rule 11) */
+.vdot.v-self { background: transparent; border-color: var(--pass); border-style: dashed; }
 
 /* edges: straight lines, the active path traced with a highlighter */
 .edge { stroke: var(--ink) !important; stroke-width: 1.4 !important; }
@@ -188,6 +190,7 @@ code { font-family: var(--mono); font-size: 0.88em; }
 .chip { font-size: 11.5px; font-weight: 600; padding: 1px 7px; border-radius: 2px; border: 1px solid var(--ink-3); color: var(--ink-2); align-self: flex-start; }
 .chip.v-passed { border-color: var(--pass); color: var(--pass); }
 .chip.v-warning { border-color: var(--warn); color: var(--warn); }
+.chip.v-self { border-color: var(--pass); border-style: dashed; color: var(--ink-2); }
 .chip.v-failed { border-color: var(--fail); color: var(--fail); background: color-mix(in srgb, var(--fail) 8%, transparent); }
 
 .p-body { overflow: auto; flex: 1; padding: 4px 20px 16px; }

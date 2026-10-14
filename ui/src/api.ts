@@ -79,6 +79,22 @@ export interface Fidelity {
   ledgerEntries: number;
   ledgerMissing?: boolean;
   ledgerTorn?: number;
+  /** The ledger is not the one this machine accepted (deleted and recreated, or reset without the person). */
+  ledgerReplaced?: boolean;
+  /** Reseals without an authentic record. */
+  resealsUnproven?: string[];
+  /** The ledger does not end where this machine last saw it. */
+  ledgerDiverged?: { expected: { lines: number }; found: { lines: number }; kind: "extended" | "rewritten"; since: string[] } | null;
+  /** A new project was started in this folder. */
+  restarted?: { at: string; since: string } | null;
+  /** Node ids whose "passed" counts as verified (checked by the engine: authentic and untampered). */
+  confirmed?: string[];
+  /** Verdicts signed by a key this machine does not trust. */
+  verdictsUntrusted?: string[];
+  /** Verdicts whose work changed afterwards (no longer apply). */
+  verdictsSuperseded?: string[];
+  /** The person's / audit agents' verdicts that vanished or changed outside Scenaria. */
+  verdictsRemoved?: string[];
 }
 
 export interface Graph {
@@ -117,6 +133,8 @@ export const api = {
     req<{ branch: ScenariaNode; autosave: ScenariaNode | null; warnings: string[] }>("/api/fork", { decisionId, option, lesson }),
   verify: (id: string, body: { status?: string; notes?: string; auto?: boolean; runCommand?: boolean }) =>
     req<ScenariaNode>("/api/verify", { id, ...body }),
+  /** The person's: accept the current state as the new integrity baseline (approval session). */
+  reseal: () => req<{ archived: string | null; nodes: number; record: string }>("/api/integrity/reseal", {}),
   checkpoint: (title: string) => req<ScenariaNode | null>("/api/checkpoint", { title }),
   nodeMessages: (id: string) => req<{ leading: ConversationMessage[]; after: ConversationMessage[] }>(`/api/node/${id}/messages`),
   folder: (id: string, open: boolean) => req<{ folder: string | null }>(`/api/node/${id}/folder`, { open }),

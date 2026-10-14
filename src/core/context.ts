@@ -1,4 +1,13 @@
 import type { ScenariaNode } from "./types.js";
+import { effectiveStatus, isUnconfirmedPass, verdictOrigin } from "./verdict.js";
+
+/** "passed (by the person)", "passed (self-reported — not verified)", "failed (reported by the agent)" … */
+function verdictLine(v: { status?: string; origin?: string; by?: string; report?: { status?: string; origin?: string } | null }): string {
+  const o = verdictOrigin(v);
+  if (isUnconfirmedPass(v)) return `passed (${o === "auto" ? "automatic checks only" : o === "legacy" ? "earlier version, origin not recorded" : "self-reported"} — not verified)`;
+  const low = v.report && (v.report.status === "failed" || v.report.status === "warning") ? `; later reported ${v.report.status} by ${v.report.origin}` : "";
+  return `${v.status} (by ${o ?? "?"}${low})`;
+}
 
 export function estimateTokens(text: string): number {
   // Rough heuristic (~4 chars per token for mixed EN/DE prose + code).
@@ -66,7 +75,7 @@ export function taskRollup(goal: ScenariaNode, inside: ScenariaNode[], taken?: (
   else if (!decisions.length) parts.push("no recorded steps");
   const lessons = inside.flatMap((n) => n.lessons ?? []);
   if (lessons.length) parts.push(`lesson: ${short(lessons[lessons.length - 1], 120)}`);
-  const failed = inside.filter((n) => n.verification?.status === "failed").length;
+  const failed = inside.filter((n) => effectiveStatus(n.verification) === "failed").length;
   if (failed) parts.push(`${failed} failed check(s)`);
   return short(parts.join(" · "), 420);
 }
@@ -205,7 +214,7 @@ export function composeContext(path: ScenariaNode[], opts: CapsuleOptions = {}):
       const g = n.type === "branch" ? "⑂" : n.type === "autosave" ? "⟲" : n.type === "goal" ? "◉" : "◆";
       const lines = [`- ${n.id} ${g} ${short(n.title, 200)}`];
       if (fullSet.has(i)) lines.push(...bullets(n.outputs?.slice(0, 6).map((o) => short(o, 200)), "  "));
-      if (n.verification && n.verification.status !== "unverified") lines.push(`  - verification: ${n.verification.status}${n.verification.notes ? ` — ${short(n.verification.notes, 160)}` : ""}`);
+      if (n.verification && n.verification.status !== "unverified") lines.push(`  - verification: ${verdictLine(n.verification)}${n.verification.notes ? ` — ${short(n.verification.notes, 160)}` : ""}`);
       add("task", fullSet.has(i) ? 5 : 5.5, lines);
     }
   }

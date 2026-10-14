@@ -143,8 +143,11 @@ Marker zeigen, wo der Kontext **abbrach**, das **Hauptziel geändert** wurde, di
 
 Sichtbar wird Manipulation durch ein **Integritäts-Protokoll** (`.scenaria/ledger.jsonl`):
 - Jeder Schreibvorgang legt den Inhalts-Hash des Knotens ab, und die Zeilen bilden eine Hash-Kette.
-- Eine von Hand bearbeitete Knotendatei oder ein bearbeitetes Protokoll fällt auf: in `scenaria integrity`, im Projekt-Check und auf der Karte.
-- Das Protokoll macht Manipulation erkennbar, verhindert sie aber nicht: Wer Knoten *und* das gesamte Protokoll neu schreibt, wird lokal nicht erkannt.
+- Eine von Hand bearbeitete Knotendatei oder ein bearbeitetes Protokoll fällt auf: in `scenaria integrity`, im Projekt-Check und auf der Karte. Ein späterer Schreibvorgang wäscht eine Änderung nie rein.
+- Ein **Anker außerhalb des Projekts** (`~/.config/scenaria/anchors/`) merkt sich, welches Protokoll dieser Rechner kennt und wie weit es reicht. Ein gelöschtes, ersetztes, gekürztes, zurückgesetztes oder verlängertes Protokoll wird gemeldet.
+- **Zurücksetzen darf nur die Person** (`scenaria integrity --reseal` im Terminal oder der Knopf im Dashboard mit Freigabe-Link) – oder ein registrierter Prüfagent mit signiertem Antrag. Jedes Neuversiegeln wird signiert festgehalten; das alte Protokoll bleibt erhalten.
+- **Geprüft sagen dürfen nur du und ein registrierter Prüfagent.** Das „bestanden“ eines Agenten wird als selbst gemeldet angezeigt und zählt nie; ein „fehlgeschlagen“ zählt von jedem. Deine Urteile sind signiert und an genau den geprüften Inhalt gebunden.
+- Das Protokoll macht Manipulation erkennbar, verhindert sie aber nicht: Ein Programm mit deinen vollen Benutzerrechten könnte auch den Anker bearbeiten und deine Schlüssel lesen. Für Audits gehört der Schlüssel des Prüfagenten auf einen anderen Rechner oder in die CI.
 
 Die Überschneidung ist rein lexikalisch: offline und ohne Token. Entscheidungen in einer anderen Sprache als das Ziel sollten deshalb `servesGoal` angeben.
 

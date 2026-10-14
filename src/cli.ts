@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Scenaria } from "./core/engine.js";
 import { Store, resolveRoot } from "./core/store.js";
@@ -9,9 +9,11 @@ import { agentPrompt, type PromptKind } from "./core/prompts.js";
 import { recall, renderRecall } from "./core/recall.js";
 import { applyBlocks } from "./core/blocks.js";
 import { SECTIONS, checkExpectations, renderExpectations, renderWorkspace, resolveRefs, stringPayload, workspace, type Section } from "./core/workspace.js";
-import { renderCanon } from "./core/canon.js";
+import { publicKeyId, renderCanon } from "./core/canon.js";
+import { addAuditor, auditorKeygen, buildAuditorRequest, listAuditors, normalizePub, removeAuditor, signAuditorRequest } from "./core/auditors.js";
 import { dossier, analysisPrompt, projectMetrics, renderMetrics, runAnalysis } from "./core/analysis.js";
 import type { ScenariaNode } from "./core/types.js";
+import { isUnconfirmedPass, verdictOrigin } from "./core/verdict.js";
 
 const HELP = `Scenaria — quicksave & checkpoints for AI agents (any LLM, any framework)
 
@@ -45,7 +47,8 @@ Navigate
 
 Context integrity & handoffs
   fidelity [id]                         Context fidelity (0–100 %) along the path to a node, with breaks/drift/manipulation
-  integrity [--reseal]                  Ledger check: nodes changed outside Scenaria (--reseal: accept current state, keep old ledger)
+  integrity [--reseal]                  Ledger check: nodes changed outside Scenaria, deleted or replaced ledger, reseals
+                                        (--reseal: accept the current state, keep the old ledger — the person only, interactive)
   workspace [--sections facts,decisions] [--reader <name>] [--full]
                                         Shared board; with --reader only what that reader does not know yet
   resolve <ref> [<ref> …]               Resolve references (n12, n12.f2, n9.q1, r3)
@@ -97,7 +100,19 @@ Prompts, analysis & rules
 
 Verify & document
   verify <id> [--status passed|warning|failed] [--notes ..] [--by ..] [--run] [--no-auto]
-  last-good [id]
+                                        In an interactive terminal your verdict counts (person); from an agent's
+                                        shell it is recorded as self-reported and never counts as verified
+  last-good [id]                        Newest step the person or a registered audit agent verified
+
+Independent audit agents (own key outside Scenaria; only they and you can verify or reseal)
+  auditor [list]                        Registered audit agents on this machine
+  auditor add <public key|file> [--name ..]   Register an audit agent's public key (interactive only)
+  auditor remove <id>                   Unregister (interactive only)
+  auditor keygen --dir <folder>         Create a key pair for an audit agent (folder outside every project)
+  auditor request verdict <id> --status passed|warning|failed [--notes ..] | auditor request reseal
+                                        The payload the audit agent signs (bound to the node / the ledger, 24 h)
+  auditor sign --key <pem> [file|-]     Sign a payload with an audit key (or use: openssl pkeyutl -sign -rawin)
+  auditor submit [file|-]               Hand in a signed request (verdict or reseal)
   protocol                              Write .scenaria/protocol.md
   export [--format json|md] [--out-file f]  Full export for audits / BI / governance tools
 
@@ -195,6 +210,8 @@ const opts = {
   sections: { type: "string" },
   reader: { type: "string" },
   reseal: { type: "boolean" },
+  key: { type: "string" },
+  dir: { type: "string" },
   past: { type: "string" },
   future: { type: "string" },
   check: { type: "string" },
@@ -226,7 +243,7 @@ function describe(n: ScenariaNode): string {
   if (n.snapshot) lines.push(`  ${C.dim}snapshot ${n.snapshot.commit.slice(0, 10)} · ${n.snapshot.files} files${C.reset}`);
   if (n.verification) {
     const col = n.verification.status === "passed" ? C.green : n.verification.status === "failed" ? C.red : C.yellow;
-    lines.push(`  verification: ${col}${n.verification.status}${C.reset}${n.verification.notes ? " — " + n.verification.notes : ""}`);
+    lines.push(`  verification: ${col}${n.verification.status}${C.reset} ${C.dim}(by ${verdictOrigin(n.verification) ?? "?"}${isUnconfirmedPass(n.verification) ? " — does not count as verified" : ""})${C.reset}${n.verification.notes ? " — " + n.verification.notes : ""}`);
     for (const c of n.verification.checks ?? []) lines.push(`   ${c.status === "passed" ? "✔" : c.status === "failed" ? "✘" : "!"} ${c.name}${c.detail ? C.dim + " — " + c.detail + C.reset : ""}`);
   }
   return lines.join("\n");
@@ -269,6 +286,40 @@ async function readStdinText(): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+/** The person at an interactive terminal (stdin and stdout are TTYs). Agents' shells are not. */
+function isPersonTerminal() {
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
+}
+
+/** A person's action: an interactive terminal AND typing the confirmation word on it. */
+async function personConfirm(confirm: string, what: string, notInteractive: string) {
+  if (!isPersonTerminal()) throw new Error(notInteractive);
+  const { createInterface } = await import("node:readline/promises");
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await rl.question(`${what}\nType "${confirm}" to confirm: `)).trim();
+    if (answer !== confirm) throw new Error("Not confirmed — nothing changed.");
+  } finally {
+    rl.close();
+  }
+}
+
+/**
+ * Starting over in a folder whose earlier project this machine anchored: only the person may archive the
+ * old integrity anchor (typed confirmation). Without a terminal the old anchor stays (the new ledger then
+ * shows as "replaced" until the person reviews and reseals).
+ */
+async function confirmNewProject(root?: string): Promise<boolean> {
+  const since = Scenaria.previousProjectSince(root);
+  if (!since) return false;
+  if (!isPersonTerminal()) {
+    process.stderr.write(`! An earlier Scenaria project in this folder (since ${since.slice(0, 10)}) is still anchored on this machine. The new project will show "ledger replaced" until you review and reseal it (dashboard or: scenaria integrity --reseal).\n`);
+    return false;
+  }
+  await personConfirm("new", `An earlier Scenaria project in this folder (since ${since.slice(0, 10)}) is anchored on this machine. Start a NEW project here and archive the old integrity anchor?`, "");
+  return true;
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const cmd = argv[0];
@@ -298,7 +349,7 @@ async function main() {
 
   switch (cmd) {
     case "init": {
-      const s = Scenaria.init(v.root, { projectName: v.name, force: v.force });
+      const s = Scenaria.init(v.root, { projectName: v.name, force: v.force, newProjectInFolder: await confirmNewProject(v.root) });
       (await import("./core/projects.js")).registerProject(s.root, s.config().projectName);
       let msg = `${C.green}✔${C.reset} Scenaria initialized in ${s.store.dir}${s.repo ? "" : `\n${C.yellow}! git not found — file snapshots disabled${C.reset}`}`;
       const spec = [v.for, v.claude ? "claude" : ""].filter(Boolean).join(",");
@@ -340,7 +391,7 @@ async function main() {
       const { setupAgents, parseTargets, detectAgents } = await import("./setup.js");
       const { startServer } = await import("./server.js");
       const startRoot = v.root ?? process.cwd();
-      const s = new Store(resolveRoot(startRoot)).exists ? Scenaria.open(startRoot) : Scenaria.init(startRoot, { force: v.force });
+      const s = new Store(resolveRoot(startRoot)).exists ? Scenaria.open(startRoot) : Scenaria.init(startRoot, { force: v.force, newProjectInFolder: await confirmNewProject(startRoot) });
       const targets = v.for ? parseTargets(v.for) : detectAgents();
       const r = setupAgents(s.root, [...targets, "generic"].filter((t, i, a) => a.indexOf(t) === i) as any, { rulesFiles: !v["no-rules"] });
       // Baseline AFTER wiring, so agent config files are part of the starting state.
@@ -732,18 +783,53 @@ async function main() {
     case "integrity": {
       const s = Scenaria.open(v.root);
       if (v.reseal) {
-        const rs = s.reseal({ user: v.user, agent: "cli", source: "cli" });
-        return out(`Resealed ${rs.nodes} nodes${rs.archived ? `; previous ledger kept as .scenaria/${rs.archived}` : ""}.`, rs);
+        await personConfirm(
+          "reseal",
+          "Accept the current state of every node as the new integrity baseline? The old ledger is kept and the reseal is recorded and signed.",
+          "Resealing the integrity ledger is the person's action (rule 11): run it yourself in an interactive terminal. An independent audit agent can hand in a signed request instead: scenaria auditor submit.",
+        );
+        const rs = s.reseal({ kind: "person", via: "terminal" }, { user: v.user, agent: "cli", source: "cli" });
+        return out(`Resealed ${rs.nodes} nodes (record ${rs.record.id})${rs.archived ? `; previous ledger kept as .scenaria/${rs.archived}` : ""}.`, rs);
       }
       const r = s.integrity();
       const tampered = [...r.state.entries()].filter(([, st]) => st === "tampered").map(([id]) => id);
       const unsealed = [...r.state.entries()].filter(([, st]) => st === "unsealed").map(([id]) => id);
       const human = [
         tampered.length ? `${C.red}✘ changed outside Scenaria: ${tampered.join(", ")}${C.reset}` : `${C.green}✔ all ${r.state.size} nodes match the ledger${C.reset}`,
+        r.ledgerReplaced ? `${C.red}✘ the ledger is not the one this machine accepted (deleted and recreated, or reset without the person) — review, then: scenaria integrity --reseal${C.reset}` : "",
+        r.resealsUnproven.length ? `${C.red}✘ reseal without an authentic record: ${r.resealsUnproven.join(", ")}${C.reset}` : "",
+        r.ledgerDiverged && !r.ledgerMissing
+          ? r.ledgerDiverged.kind === "extended"
+            ? `${C.yellow}! ${r.ledgerDiverged.found.lines - r.ledgerDiverged.expected.lines} ledger line(s) were written by something this computer's Scenaria did not see (an older version still running? another computer?) — review steps ${r.ledgerDiverged.since.slice(0, 8).join(", ")}, then: scenaria integrity --reseal${C.reset}`
+            : `${C.red}✘ the ledger does not end where this machine last saw it (${r.ledgerDiverged.expected.lines} lines expected, ${r.ledgerDiverged.found.lines} found): shortened, rewritten or rolled back — review, then: scenaria integrity --reseal${C.reset}`
+          : "",
+        r.verdictsUntrusted.length ? `${C.red}✘ verdicts signed by a key this machine does not trust (do not count): ${r.verdictsUntrusted.join(", ")}${C.reset}` : "",
+        r.verdictsRemoved.length ? `${C.red}✘ your (or an audit agent's) verdict was removed or changed outside Scenaria: ${r.verdictsRemoved.join(", ")}${C.reset}` : "",
+        r.verdictsSuperseded.length ? `${C.yellow}! changed after they were verified (verdict no longer applies): ${r.verdictsSuperseded.join(", ")}${C.reset}` : "",
+        r.verdictsRevoked.length ? `${C.dim}verdicts of an unregistered audit agent (no longer count): ${r.verdictsRevoked.join(", ")}${C.reset}` : "",
+        r.restarted ? `${C.dim}a new project was started in this folder on ${r.restarted.at.slice(0, 10)}${C.reset}` : "",
+        `${C.dim}verified by the person or a registered audit agent: ${r.confirmed.size} step(s)${C.reset}`,
+        r.reseals.length ? `${C.dim}reseals: ${r.reseals.map((x) => `${x.id} ${x.at.slice(0, 10)} by ${x.by} (${x.kind})`).join("; ")}${C.reset}` : "",
         r.ledgerMissing ? `${C.red}✘ the ledger was deleted — review, then: scenaria integrity --reseal${C.reset}` : r.ledgerBrokenAt ? `${C.red}✘ ledger edited at line ${r.ledgerBrokenAt} — review, then: scenaria integrity --reseal${C.reset}` : `ledger chain intact (${r.entries} entries${r.torn ? `, ${r.torn} torn line(s) from interrupted writes` : ""})`,
         unsealed.length ? `${C.dim}never sealed: ${unsealed.join(", ")}${C.reset}` : "",
       ].filter(Boolean);
-      return out(human.join("\n"), { tampered, unsealed, ledgerBrokenAt: r.ledgerBrokenAt });
+      return out(human.filter(Boolean).join("\n"), {
+        tampered,
+        unsealed,
+        ledgerBrokenAt: r.ledgerBrokenAt,
+        ledgerMissing: r.ledgerMissing,
+        ledgerReplaced: r.ledgerReplaced,
+        ledgerDiverged: r.ledgerDiverged,
+        resealsUnproven: r.resealsUnproven,
+        reseals: r.reseals,
+        restarted: r.restarted,
+        confirmed: [...r.confirmed],
+        verdictsUntrusted: r.verdictsUntrusted,
+        verdictsSuperseded: r.verdictsSuperseded,
+        verdictsRevoked: r.verdictsRevoked,
+        verdictsRemoved: r.verdictsRemoved,
+        unseenWrites: r.unseenWrites,
+      });
     }
     case "workspace": {
       const s = Scenaria.open(v.root);
@@ -965,19 +1051,73 @@ async function main() {
     }
     case "verify": {
       const s = Scenaria.open(v.root);
+      // A verdict counts only from the person: an interactive terminal. From an agent's shell it is a self-report.
+      const person = Boolean(v.status) && isPersonTerminal();
+      if (person) await personConfirm(String(v.status), `Your verdict "${v.status}" on ${p[0] ?? "HEAD"} will count as the person's and is signed with your approver key.`, "");
       const n = s.verify(p[0] ?? s.head()?.id ?? "", {
         status: v.status as any,
         notes: v.notes,
-        by: v.by ?? "cli",
+        by: v.by ?? (person ? v.user ?? "person" : "cli"),
         auto: !v["no-auto"],
         runCommand: v.run,
+        ...(person ? { origin: "person" as const, via: "terminal" } : {}),
       });
-      return out(describe(n), n);
+      const note = v.status && !person ? `\n${C.yellow}Recorded as self-reported (not from an interactive terminal): it does not count as verified. The person or a registered audit agent can confirm it.${C.reset}` : "";
+      return out(describe(n) + note, n);
+    }
+    case "auditor": {
+      const sub = p[0] ?? "list";
+      if (sub === "list") {
+        const ks = listAuditors();
+        return out(ks.length ? ks.map((k) => `${k.id}  ${k.name ?? ""}  ${C.dim}since ${k.addedAt.slice(0, 10)}${C.reset}`).join("\n") : "No audit agents registered on this machine (scenaria auditor add <public key>).", ks);
+      }
+      if (sub === "add") {
+        const arg = p[1] ?? "";
+        const pub = normalizePub(arg && existsSync(arg) ? readFileSync(arg, "utf8") : arg);
+        const id = pub ? publicKeyId(pub) : "?";
+        await personConfirm("trust", `Register audit agent ${id}${v.name ? ` (${v.name})` : ""}? Its signed verdicts will count as verified and it may reseal the integrity ledger of your projects on this machine.`, "Registering an audit agent is the person's action: run it in an interactive terminal.");
+        const k = addAuditor(pub, v.name);
+        return out(`Registered audit agent ${k.id}${k.name ? ` (${k.name})` : ""}.`, k);
+      }
+      if (sub === "remove") {
+        await personConfirm("remove", `Unregister audit agent ${p[1]}? Its earlier verdicts stay recorded with their signature.`, "Unregistering an audit agent is the person's action: run it in an interactive terminal.");
+        const ok = removeAuditor(String(p[1] ?? ""));
+        return out(ok ? `Removed ${p[1]}.` : `No audit agent ${p[1]}.`, { removed: ok });
+      }
+      if (sub === "keygen") {
+        if (!v.dir) throw new Error("Give the folder for the key: scenaria auditor keygen --dir <folder outside every project>");
+        const k = auditorKeygen(v.dir);
+        return out(`Audit key ${k.id} created.\n  private key: ${k.keyFile}  (keep it there or move it to the audit agent's machine — never into a project)\n  public key:  ${k.pubFile}\nRegister it (as the person): scenaria auditor add ${k.pubFile} --name "<name>"`, { id: k.id, pub: k.pub, keyFile: k.keyFile, pubFile: k.pubFile });
+      }
+      if (sub === "request") {
+        const s = Scenaria.open(v.root);
+        const action = p[1];
+        const payload =
+          action === "verdict" ? buildAuditorRequest(s.store, { action: "verdict", node: String(p[2] ?? ""), status: String(v.status ?? ""), notes: v.notes }) : action === "reseal" ? buildAuditorRequest(s.store, { action: "reseal" }) : null;
+        if (!payload) throw new Error("scenaria auditor request verdict <id> --status passed|warning|failed [--notes ..]  |  scenaria auditor request reseal");
+        if (v["out-file"]) writeFileSync(v["out-file"], payload);
+        return out(payload, JSON.parse(payload));
+      }
+      if (sub === "sign") {
+        if (!v.key) throw new Error("scenaria auditor sign --key <private key file> [payload file|-]");
+        const payload = (p[1] && p[1] !== "-" ? readFileSync(p[1], "utf8") : readFileSync(0, "utf8")).trim();
+        const env = signAuditorRequest(payload, readFileSync(v.key, "utf8"));
+        const text = JSON.stringify(env);
+        if (v["out-file"]) writeFileSync(v["out-file"], text);
+        return out(text, env);
+      }
+      if (sub === "submit") {
+        const s = Scenaria.open(v.root);
+        const raw = p[1] && p[1] !== "-" ? readFileSync(p[1], "utf8") : readFileSync(0, "utf8");
+        const r = s.applyAuditorRequest(raw);
+        return out(r.action === "verdict" ? `${r.node.id}: ${r.node.verification?.status} (audit agent ${r.node.verification?.auditor?.name ?? r.node.verification?.auditor?.keyId})` : `Resealed ${r.nodes} nodes by the audit agent (record ${r.record.id}).`, r);
+      }
+      throw new Error(`Unknown: scenaria auditor ${sub} (list | add | remove | keygen | request | sign | submit)`);
     }
     case "last-good": {
       const s = Scenaria.open(v.root);
       const n = s.lastGood(p[0]);
-      return out(n ? describe(n) : "No verified-good node on this path yet.", n);
+      return out(n ? describe(n) : "No step on this path was verified by the person or a registered audit agent yet.", n);
     }
     case "protocol": {
       const s = Scenaria.open(v.root);

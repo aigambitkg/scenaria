@@ -21,6 +21,7 @@ import { writeJsonAtomic } from "./store.js";
 import type { ScenariaNode } from "./types.js";
 import { canonState, readCanon } from "./canon.js";
 import { gateEvidence } from "./gate.js";
+import { effectiveStatus, isUnconfirmedPass } from "./verdict.js";
 
 export const SECTIONS = ["goals", "canon", "decisions", "facts", "questions", "rules", "lessons", "risks"] as const;
 export type Section = (typeof SECTIONS)[number];
@@ -46,7 +47,16 @@ function itemHash(i: BoardItem) {
 }
 
 /** The board for the path root → `at` (default HEAD). */
+/** The board's word for a verdict: only an engine-confirmed pass says "passed". */
+function verdictWord(n: ScenariaNode, confirmed: Set<string>): string | undefined {
+  const eff = effectiveStatus(n.verification);
+  if (eff === "failed" || eff === "warning") return eff;
+  if (n.verification?.status === "passed") return confirmed.has(n.id) ? "passed" : isUnconfirmedPass(n.verification) ? "self-reported" : "not confirmed";
+  return undefined;
+}
+
 export function board(s: Scenaria, opts: { sections?: Section[]; at?: string } = {}): BoardItem[] {
+  const confirmed = s.integrity().confirmed;
   const want = new Set<Section>(opts.sections?.length ? opts.sections : SECTIONS);
   const head = opts.at ?? s.store.readState().head;
   const path = head ? s.path(head) : [];
@@ -67,18 +77,18 @@ export function board(s: Scenaria, opts: { sections?: Section[]; at?: string } =
         section: "decisions",
         text: `${one(n.question ?? n.title, 160)} → ${optionLabel(n, taken) ?? "open"}${n.rationale ? ` (why: ${one(n.rationale, 140)})` : ""}`,
         confidence: n.confidence,
-        status: n.verification?.status !== "unverified" ? n.verification?.status : undefined,
+        status: verdictWord(n, confirmed),
         basedOn: n.basedOn,
         node: n.id,
       });
     }
     (n.facts ?? []).forEach((f, k) =>
-      add({ ref: `${n.id}.f${k + 1}`, section: "facts", text: one(f), confidence: n.factInfo?.[k]?.confidence, basedOn: n.factInfo?.[k]?.basedOn, status: n.verification?.status === "failed" ? "failed" : undefined, node: n.id }),
+      add({ ref: `${n.id}.f${k + 1}`, section: "facts", text: one(f), confidence: n.factInfo?.[k]?.confidence, basedOn: n.factInfo?.[k]?.basedOn, status: effectiveStatus(n.verification) === "failed" ? "failed" : undefined, node: n.id }),
     );
     if (idx >= taskStart) (n.openQuestions ?? []).forEach((q, k) => add({ ref: `${n.id}.q${k + 1}`, section: "questions", text: one(q), node: n.id }));
     (n.lessons ?? []).forEach((l, k) => add({ ref: `${n.id}.l${k + 1}`, section: "lessons", text: one(l), node: n.id }));
     (n.irreversible ?? []).forEach((x, k) => add({ ref: `${n.id}.i${k + 1}`, section: "risks", text: `irreversible: ${one(x)}`, node: n.id }));
-    if (n.verification?.status === "failed") add({ ref: `${n.id}.v`, section: "risks", text: `failed check on ${n.id}: ${one(n.verification.notes ?? n.title, 200)}`, node: n.id });
+    if (effectiveStatus(n.verification) === "failed") add({ ref: `${n.id}.v`, section: "risks", text: `failed check on ${n.id}: ${one((n.verification?.report?.status === "failed" ? n.verification.report.notes : n.verification?.notes) ?? n.title, 200)}`, node: n.id });
   });
   for (const r of s.rules()) add({ ref: r.id, section: "rules", text: one(r.text, 300), node: "n0" });
   for (const k of readCanon(s.store)) {
@@ -112,7 +122,7 @@ export function resolveRefs(s: Scenaria, refs: string[]) {
     }
     if (!s.store.hasNode(m[1])) return { ref, error: "no such node" };
     const n = s.node(m[1]);
-    const base = { ref, node: n.id, onPath: onPath.has(n.id), verification: n.verification?.status };
+    const base = { ref, node: n.id, onPath: onPath.has(n.id), verification: verdictWord(n, s.integrity().confirmed) ?? "unverified" };
     if (!m[2]) return { ...base, section: n.type, node_: compactNode(n) };
     const k = Number(m[3]) - 1;
     const list = m[2] === "f" ? n.facts : m[2] === "q" ? n.openQuestions : m[2] === "o" ? n.outputs : m[2] === "l" ? n.lessons : n.irreversible;
@@ -287,9 +297,14 @@ export function checkExpectations(s: Scenaria, expectations: string[]): Expectat
     }
     if ((m = e.match(/^(n\d+)\s+(verified|passed|geprüft|failed|warning)$/i))) {
       if (!s.store.hasNode(m[1])) return { expectation: e, status: "contradicted", detail: `${m[1]} does not exist` };
-      const v = s.node(m[1]).verification?.status ?? "unverified";
+      const ver = s.node(m[1]).verification;
+      // "passed" counts only if the engine confirmed it (authentic, untampered); failures from anyone count.
+      const eff = effectiveStatus(ver);
+      const v = eff === "passed" && !s.integrity().confirmed.has(m[1]) ? "unverified" : eff;
       const want = /fail/i.test(m[2]) ? "failed" : /warn/i.test(m[2]) ? "warning" : "passed";
-      return v === want ? { expectation: e, status: "confirmed", evidence: m[1], detail: v } : { expectation: e, status: v === "unverified" ? "unknown" : "contradicted", evidence: m[1], detail: `verification is ${v}` };
+      if (v === want) return { expectation: e, status: "confirmed", evidence: m[1], detail: v };
+      if (want === "passed" && (isUnconfirmedPass(ver) || eff === "passed")) return { expectation: e, status: "unknown", evidence: m[1], detail: "passed only as a self-report — not verified by the person or a registered audit agent" };
+      return { expectation: e, status: v === "unverified" ? "unknown" : "contradicted", evidence: m[1], detail: `verification is ${v}` };
     }
     if ((m = e.match(/^(n\d+)\s*(?:=|chose|chosen|→|->)\s*(.+)$/i))) {
       if (!s.store.hasNode(m[1])) return { expectation: e, status: "contradicted", detail: `${m[1]} does not exist` };

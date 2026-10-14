@@ -13,7 +13,7 @@ Every decision point of an agent run leaves a **restorable, verifiable state**. 
    Gemini, Codex…) │                  │                  │                                │            │
                    ▼                  ▼                  ▼                                ▼            ▼
              ┌──────────────────────────────────────────────────────────────────────────────────────┐
-             │  tools.ts — ONE vendor-neutral tool registry (18 tools, zod schemas, validation)      │
+             │  tools.ts — ONE vendor-neutral tool registry (22 tools, zod schemas, validation)      │
              └───────────────────────────────────────────┬──────────────────────────────────────────┘
                                                          ▼
                      ┌─────────────────────┐        ┌──────────────────┐
@@ -40,6 +40,9 @@ Every decision point of an agent run leaves a **restorable, verifiable state**. 
 | Blocks | `src/core/blocks.ts` | ` ```scenaria ` decision blocks from plain chats |
 | Prompts | `src/core/prompts.ts` | Ready-made agent prompts and the per-prompt reminder |
 | Verify | `src/core/verify.ts` | Deterministic checks |
+| Verdicts | `src/core/verdict.ts`, `src/core/trust.ts` | Verdict origins, what counts (rule 11), signature/content checks |
+| Seal | `src/core/seal.ts` | Anchor outside the project, high-water mark, reseal records |
+| Audit agents | `src/core/auditors.ts` | Registry, signed requests, key generation |
 | Protocol | `src/core/protocol.ts` | Knowledge-base notes, audit protocol |
 | **Tools** | `src/tools.ts` | Vendor-neutral tool registry + schema export (OpenAI, Anthropic, Gemini, JSON, MCP) |
 | MCP | `src/mcp.ts` | Registers the registry over stdio |
@@ -161,6 +164,49 @@ On a 30-task project a 600-token capsule still holds the goal, the rules, the cu
     - `branch`: the node has `forkedFrom`;
     - `tampered` / `builtOnTampered`.
   - A tampered node is capped at 25.
+
+## Who may say "verified", and who may reset the tamper evidence (0.9.2, security rule 11)
+
+Only the person, or a registered audit agent that is independent of Scenaria and of the working agent, can make a step count as verified or reset the integrity ledger. A working agent can report, never certify or reset.
+
+- **Verdict origins** (`verification.origin`, `core/verdict.ts`): `person` (approval session, or an interactive terminal with a typed confirmation), `auditor` (signed request), `agent` (self-report through tools/CLI without a terminal), `auto` (deterministic checks). Verdicts from before 0.9.2 are `legacy`.
+  - A "passed" counts only from the person or an audit agent. Agent, automatic and legacy passes are shown as such ("Reported by the agent", "Automatic checks only", "Earlier check — please confirm") and never count.
+  - A "failed" or "warning" counts from anyone, and it stays until the person or an audit agent gives a new verdict. A self-report may lower trust, never raise it.
+  - An agent's or the automatic checks' later report never replaces a person's or an audit agent's verdict. It is kept next to it as `verification.report`, and only a negative report lowers the outcome.
+- **Authenticity** (`core/trust.ts`), checked on every `integrity()`:
+  - The person's verdict is signed with the approver key (`verdict/v2`: project, node, status, time, by, via, notes and the **work hash**).
+  - An audit agent's verdict keeps its signed request, which must name this project, this node, this status and the work hash, with a key registered on this machine.
+  - Results:
+    - `forged`: the node counts as tampered;
+    - `untrusted`: a valid signature by a key this machine does not trust (high finding);
+    - `revoked`: an audit agent the person unregistered;
+    - `superseded`: the work changed after the verdict.
+  - The work hash (`ledger.workHash`) covers the node without `verification`, `meta`, `snapshotFolder` and `lessons`, so a lesson attached by a rewind does not supersede a verdict.
+  - Only `integrity().confirmed` counts: `lastGood()`, status counts, the health check, fidelity reliability, expectations, the analyst's facts, the archivist, the board and the knowledge-base notes all use it.
+- **No laundering:** when Scenaria writes over a node file that was changed outside it, the ledger line gets `op: "write-over-tampered"`, and the node stays tampered until the person reseals.
+- **The anchor outside the project** (`core/seal.ts`, `~/.config/scenaria/anchors/ledger-<folder hash>.json`, trust on first use).
+  - It remembers the ledger's first chain hash (genesis), every authorised reseal, the hashes of applied audit-agent requests (no replay), and a **high-water mark**.
+  - The mark is the line count and last chain hash. It is raised before every append with `pending` and the node in flight, and confirmed after the node file is written.
+  - Findings:
+    - `ledgerMissing`: deleted, also when `ledger.sealed` was deleted too;
+    - `ledgerReplaced`: a different ledger;
+    - `ledgerDiverged`, kind `rewritten`: shortened, rewritten or rolled back (high);
+    - `ledgerDiverged`, kind `extended`: lines this machine's Scenaria did not write, e.g. an older version still running, another computer, or a hand-made line (medium; the steps are named);
+    - `resealsUnproven`: a reseal without an authentic record.
+  - A divergence found during a write is kept until the person reseals.
+- **Reseal** (`Scenaria.reseal(authority)`): `{kind: "person", via: "terminal" | "dashboard"}` or `{kind: "auditor", request}`. Without an authority it throws.
+  - The CLI asks for a typed confirmation in an interactive terminal. The dashboard uses `POST /api/integrity/reseal`, which needs the approval session.
+  - An audit agent's reseal request is bound to the ledger state and to a digest of every node's content (it also lists the tampered nodes). It is valid 24 h and can be used once.
+  - Every reseal writes a record (`.scenaria/reseals/rsN.json`): the person's is signed; an audit agent's carries its request. The old ledger is kept, and the anchor is updated.
+- **Starting over in a folder** whose earlier project this machine anchored: only the person, confirmed in a terminal (`scenaria init` / `start` ask), archives the old anchor. An agent's auto-init keeps it, so the new ledger shows as replaced until the person reviews and reseals.
+- **Audit agents** (`core/auditors.ts`):
+  - **Keys.** The registry is `~/.config/scenaria/trusted-auditors.json`, with keys and removed keys; adding and removing are person-only (CLI with a typed confirmation, or `/api/auditors/*` with the approval session). `scenaria auditor keygen` refuses folders inside a project or Scenaria's config. The person's own approver key cannot be registered as an audit agent.
+  - **Wire format.** `{payload, pub, sig}`: Ed25519 over the exact payload bytes, which plain `openssl pkeyutl -sign -rawin` can produce. Tools: `scenaria_auditor_request` (read-only) and `scenaria_auditor_submit` (the signature is the authority).
+- **Config folder:** `SCENARIA_HOME` / `XDG_CONFIG_HOME` that point inside a Scenaria project are ignored. Keys, registries and anchors never come from the project.
+- **Limits (documented, not hidden):**
+  - A process with the person's full user rights can read the approver key, edit the anchor and the registries, or fake a terminal.
+  - The anchor is per machine. A project used from two computers, or from a container with another home, shows "extended" writes.
+  - After updating Scenaria, restart agents and MCP servers so no older version keeps writing.
 
 ## Canon events (fixed points)
 
@@ -295,6 +341,8 @@ The person's projects are remembered in `~/.config/scenaria/projects.json` (dash
 
 ## Verification
 
+(Who may give a verdict that counts: see "Who may say verified" above.)
+
 `verify(id)` runs these checks:
 
 - the snapshot exists,
@@ -304,7 +352,7 @@ The person's projects are remembered in `~/.config/scenaria/projects.json` (dash
 - irreversible effects are flagged,
 - optionally `verifyCommand`, run only if the node is HEAD and the tree is clean.
 
-A human or a verifier agent can then set a verdict, which overrides the automatic result. `lastGood()` is the nearest node on the path with the verdict `passed`.
+A verdict of the person or a registered audit agent overrides the automatic result; a verifier agent's verdict is a self-report. `lastGood()` is the nearest node on the path whose `passed` is confirmed (`integrity().confirmed`).
 
 ## Concurrency and safety
 

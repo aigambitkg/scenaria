@@ -43,6 +43,26 @@ export interface Verification {
   checks?: VerificationCheck[];
   by?: string;
   at?: string;
+  /**
+   * Who gave the verdict (security rule 11, see core/verdict.ts): the person (approval session or
+   * interactive terminal), a registered audit agent (signed request), an agent (self-reported, never
+   * counts as verified) or the automatic checks. Missing on verdicts from before 0.9.2 ("legacy").
+   */
+  origin?: "person" | "auditor" | "agent" | "auto";
+  /** How the person gave it: "dashboard" or "terminal". */
+  via?: string;
+  /** For an audit agent's verdict: its key id and name, and the signed request as received. */
+  auditor?: { keyId: string; name?: string; request: { payload: string; pub: string; sig: string } };
+  /** For the person's verdict: signature with the person's approver key (verdict/v2, bound to the project). */
+  pub?: string;
+  sig?: string;
+  /** Hash of the work the verdict was given on (see ledger.workHash); a later change supersedes the verdict. */
+  work?: string;
+  /**
+   * A later report by an agent or the automatic checks, kept NEXT TO a verdict of the person or an audit
+   * agent instead of replacing it. A failed/warning report lowers the outcome; a passed one changes nothing.
+   */
+  report?: { status: VerificationStatus; origin: "agent" | "auto"; notes?: string; by?: string; at: string; checks?: VerificationCheck[] };
 }
 
 export interface ScenariaNode {

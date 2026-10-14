@@ -36,6 +36,18 @@ export function contentHash(n: ScenariaNode): string {
   return createHash("sha256").update(JSON.stringify(stable(copy))).digest("hex").slice(0, 32);
 }
 
+/**
+ * Hash of the WORK a verdict is about: everything except the verdict itself and bookkeeping that Scenaria
+ * adds later (field history, snapshot folder, lessons attached by a rewind). If the work changes after a
+ * verdict, the verdict no longer applies to it (it is "superseded").
+ */
+const NOT_WORK = new Set(["verification", "meta", "snapshotFolder", "lessons", "status", "summary"]);
+export function workHash(n: ScenariaNode): string {
+  const copy: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(n)) if (!NOT_WORK.has(k)) copy[k] = v;
+  return createHash("sha256").update(JSON.stringify(stable(copy))).digest("hex").slice(0, 32);
+}
+
 export interface LedgerLine {
   ts: string;
   id: string;
@@ -146,7 +158,18 @@ export class Ledger {
     return { c: "", endsWithNewline: t.endsWith("\n") };
   }
 
-  append(entries: { id: string; hash: string; op: string }[]) {
+  /** Where the chain stands now: does the file exist, how many lines, and the chain hash of the first and last line. */
+  state(): LedgerState {
+    if (!existsSync(this.file)) return { exists: false, lines: 0, head: null, genesis: null, genesisAt: null };
+    const { lines } = this.read();
+    return { exists: true, lines: lines.length, head: lines[lines.length - 1]?.c ?? null, genesis: lines[0]?.c ?? null, genesisAt: lines[0]?.ts ?? null };
+  }
+
+  /**
+   * Append entries. `before` is called with the current and the resulting end of the chain right before
+   * the bytes are written (Scenaria raises its high-water mark outside the project there).
+   */
+  append(entries: { id: string; hash: string; op: string }[], before?: (cur: { lines: number; head: string | null }, next: { lines: number; head: string | null }) => void) {
     if (!entries.length) return;
     const last = this.lastChain();
     let prev = last.c;
@@ -157,14 +180,45 @@ export class Ledger {
       prev = c;
       return JSON.stringify({ ...l, c });
     });
+    if (before) {
+      const cur = this.state();
+      try {
+        before({ lines: cur.lines, head: cur.head }, { lines: cur.lines + entries.length, head: prev });
+      } catch {
+        /* the mark is evidence, never a reason to fail a write */
+      }
+    }
     appendFileSync(this.file, (last.endsWithNewline ? "" : "\n") + out.join("\n") + "\n", "utf8");
+  }
+
+  /** Is this node's file different from what Scenaria last wrote for it (same rule as checkIntegrity)? */
+  nodeTampered(n: ScenariaNode, inflight?: { id: string; hash: string }[] | null): boolean {
+    if (!existsSync(this.file)) return false;
+    const { lines } = this.read();
+    let h0: string | undefined;
+    let h1: string | undefined;
+    for (const l of lines) if (l.id === n.id) [h0, h1] = [l.hash, h0];
+    if (!h0) return lines.length > 0;
+    const c = contentHash(n);
+    return !(c === h0 || (c === h1 && (lines[lines.length - 1]?.id === n.id || Boolean(inflight?.some((x) => x.id === n.id && x.hash === h0)))));
   }
 }
 
 export type IntegrityState = "ok" | "tampered" | "unsealed";
 
+export interface LedgerState {
+  exists: boolean;
+  lines: number;
+  /** Chain hash of the last line (null when empty or missing). */
+  head: string | null;
+  /** Chain hash of the first line: identifies this ledger file. */
+  genesis: string | null;
+  /** Time of the first line. */
+  genesisAt: string | null;
+}
+
 /** Compare every node with its last ledger hash. */
-export function checkIntegrity(nodes: ScenariaNode[], ledger: Ledger, opts: { expectSealed?: boolean } = {}) {
+export function checkIntegrity(nodes: ScenariaNode[], ledger: Ledger, opts: { expectSealed?: boolean; inflight?: { id: string; hash: string }[] | null } = {}) {
   const missing = Boolean(opts.expectSealed) && !ledger.exists;
   const { lines, brokenAt, torn } = ledger.read();
   // The hash is written BEFORE the node file, so a process killed in between leaves the node
@@ -172,9 +226,12 @@ export function checkIntegrity(nodes: ScenariaNode[], ledger: Ledger, opts: { ex
   // The previous hash only counts while the node's newest entry is the very last ledger line
   // (= a write that was interrupted); otherwise restoring an older file version would go unnoticed.
   const last = new Map<string, [string, string?]>();
+  // A node that Scenaria wrote over while its file was already tampered stays tampered (no laundering by a later write).
+  const overTampered = new Set<string>();
   for (const l of lines) {
     const cur = last.get(l.id);
     last.set(l.id, [l.hash, cur?.[0]]);
+    if (l.op === "write-over-tampered") overTampered.add(l.id);
   }
   const lastLine = lines[lines.length - 1];
   const state = new Map<string, IntegrityState>();
@@ -184,7 +241,9 @@ export function checkIntegrity(nodes: ScenariaNode[], ledger: Ledger, opts: { ex
     if (!h) state.set(n.id, missing || opts.expectSealed ? "tampered" : "unsealed");
     else {
       const c = contentHash(n);
-      state.set(n.id, c === h[0] || (c === h[1] && lastLine?.id === n.id) ? "ok" : "tampered");
+      // An interrupted write (ledger written, node file not yet): the node file is still the previous version.
+      const interrupted = c === h[1] && (lastLine?.id === n.id || Boolean(opts.inflight?.some((x) => x.id === n.id && x.hash === h[0])));
+      state.set(n.id, !overTampered.has(n.id) && (c === h[0] || interrupted) ? "ok" : "tampered");
     }
   }
   return { state, ledgerBrokenAt: brokenAt, entries: lines.length, torn, ledgerMissing: missing };

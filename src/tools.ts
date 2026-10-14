@@ -18,6 +18,8 @@ import { baselineReport, listReports } from "./core/expert.js";
 import { listForecasts, quickDecision, quickSummary, snapshotQuick } from "./core/forecast.js";
 import { explainText, forecastQuality } from "./core/predict.js";
 import { auditForecast, auditText } from "./core/auditor.js";
+import { buildAuditorRequest } from "./core/auditors.js";
+import { isUnconfirmedPass } from "./core/verdict.js";
 import type { ScenariaNode, Source } from "./core/types.js";
 
 export interface ToolContext {
@@ -65,7 +67,7 @@ export function brief(n: ScenariaNode): string {
   }
   if (n.snapshot) s += `\nsnapshot: ${n.snapshot.commit.slice(0, 10)} (${n.snapshot.files} files)`;
   if (n.changedFiles?.length) s += `\nchanged: ${n.changedFiles.slice(0, 12).join(", ")}${n.changedFiles.length > 12 ? " …" : ""}`;
-  if (n.verification) s += `\nverification: ${n.verification.status}`;
+  if (n.verification) s += `\nverification: ${n.verification.status}${isUnconfirmedPass(n.verification) ? " (self-reported — does not count as verified)" : ""}`;
   for (const w of n.snapshot?.warnings ?? []) s += `\nwarning: ${w}`;
   return s;
 }
@@ -309,7 +311,7 @@ export const TOOLS: ToolDef[] = [
     name: "scenaria_verify",
     title: "Verify node",
     description:
-      "Verifier tool: runs deterministic checks (snapshot restorable, claimed files exist, decision documented, irreversible effects) and records your verdict. Use status 'failed' with notes when you find a hallucination or error.",
+      "Runs deterministic checks (snapshot restorable, claimed files exist, decision documented, irreversible effects) and records your verdict. Your verdict is recorded as self-reported: a 'passed' from an agent never counts as verified (only the person or a registered audit agent can verify). Use status 'failed' with notes when you find a hallucination or error — that always counts.",
     input: {
       id: str,
       status: z.enum(["passed", "warning", "failed"]).optional().describe("Your verdict; omit to use the automatic result"),
@@ -317,9 +319,10 @@ export const TOOLS: ToolDef[] = [
       runCommand: z.boolean().optional().describe("Also run the configured verifyCommand (only if node is HEAD and clean)"),
     },
     run(s, a, c) {
-      const n = s.verify(a.id, { status: a.status, notes: a.notes, by: c.agent ?? c.user, runCommand: a.runCommand });
+      const n = s.verify(a.id, { status: a.status, notes: a.notes, by: c.agent ?? c.user, runCommand: a.runCommand, origin: "agent" });
       const checks = (n.verification?.checks ?? []).map((x) => `- ${x.status.toUpperCase()} ${x.name}${x.detail ? ` — ${x.detail}` : ""}`);
-      return { text: [`${n.id}: ${n.verification?.status}`, ...checks].join("\n"), data: n };
+      const note = isUnconfirmedPass(n.verification) ? "(self-reported: does not count as verified — the person or a registered audit agent can confirm it)" : "";
+      return { text: [`${n.id}: ${n.verification?.status} ${note}`.trim(), ...checks].join("\n"), data: n };
     },
   },
   {
@@ -447,12 +450,42 @@ export const TOOLS: ToolDef[] = [
   {
     name: "scenaria_last_good",
     title: "Last good node",
-    description: "Nearest node on the path (from HEAD or given id) that was verified as passed — the safest rewind target.",
+    description: "Nearest node on the path (from HEAD or given id) that the person or a registered audit agent verified as passed — the safest rewind target. Self-reported verdicts do not count.",
     input: { id: str.optional() },
     annotations: { readOnlyHint: true },
     run(s, a) {
       const n = s.lastGood(a.id);
-      return { text: n ? brief(n) : "No verified-good node on this path yet. Use scenaria_tree to choose a target.", data: n };
+      return { text: n ? brief(n) : "No step on this path was verified by the person or a registered audit agent yet. Use scenaria_tree to choose a target.", data: n };
+    },
+  },
+  {
+    name: "scenaria_auditor_request",
+    title: "Request for an audit agent",
+    description:
+      "Builds the payload an independent, registered audit agent signs with its own key (outside Scenaria): a verdict on one node (bound to its exact content) or a reseal of the integrity ledger (bound to its current state). Valid 24 h. Building it changes nothing; only the signed request can.",
+    input: {
+      action: z.enum(["verdict", "reseal"]),
+      id: str.optional().describe("Node id (for a verdict)"),
+      status: z.enum(["passed", "warning", "failed"]).optional().describe("The verdict (for a verdict)"),
+      notes: str.optional(),
+    },
+    annotations: { readOnlyHint: true },
+    run(s, a) {
+      const payload = a.action === "verdict" ? buildAuditorRequest(s.store, { action: "verdict", node: String(a.id ?? ""), status: String(a.status ?? ""), notes: a.notes }) : buildAuditorRequest(s.store, { action: "reseal" });
+      return { text: `Sign these exact bytes with the audit agent's Ed25519 key, then hand in {"payload", "pub", "sig"} with scenaria_auditor_submit:\n${payload}`, data: { payload } };
+    },
+  },
+  {
+    name: "scenaria_auditor_submit",
+    title: "Hand in an audit agent's signed request",
+    description:
+      "Applies a registered audit agent's signed request {payload, pub, sig}: its verdict counts as verified, or it reseals the integrity ledger. The signature is the authority — an unregistered key, a wrong signature, another project, a changed node or ledger, or an expired request is refused.",
+    input: { request: z.union([str, z.object({ payload: str, pub: str, sig: str })]).describe("The signed request (object or JSON string)") },
+    annotations: { destructiveHint: true },
+    run(s, a) {
+      const r = s.applyAuditorRequest(a.request);
+      if (r.action === "verdict") return { text: `${r.node.id}: ${r.node.verification?.status} — verified by audit agent ${r.node.verification?.auditor?.name ?? r.node.verification?.auditor?.keyId}`, data: r.node };
+      return { text: `Integrity ledger resealed by the audit agent (record ${r.record.id}, ${r.nodes} nodes).`, data: r };
     },
   },
 ];

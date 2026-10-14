@@ -5,6 +5,38 @@ import { FidelityChart } from "./Fidelity";
 import type { Dict } from "./i18n";
 import type { Placed } from "./layout";
 import { NodeId, qualityFlag } from "./Map";
+import { verdictOrigin, verdictView } from "../../src/core/verdict";
+
+/** Two clicks: the person accepts the current state as the new integrity baseline (approval session). */
+function ResealButton(props: { t: Dict; onReseal: () => Promise<void> }) {
+  const [sure, setSure] = useState(false);
+  const [busy, setBusy] = useState(false);
+  return (
+    <p className="row">
+      {!sure ? (
+        <button className="btn" onClick={() => setSure(true)}>
+          {props.t.resealNow}
+        </button>
+      ) : (
+        <button
+          className="btn bad"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await props.onReseal();
+            } finally {
+              setBusy(false);
+              setSure(false);
+            }
+          }}
+        >
+          {props.t.resealSure}
+        </button>
+      )}
+    </p>
+  );
+}
 
 function List({ title, items, tone }: { title: string; items?: string[]; tone?: string }) {
   if (!items?.length) return null;
@@ -98,6 +130,10 @@ export function NodePanel(props: {
   onEditGoal: () => void;
   onUpdate: (id: string, patch: Record<string, string>) => Promise<void>;
   fidelity: Fidelity | null;
+  /** The approval session is active (the person's verdicts count). */
+  approved?: boolean;
+  /** The person reseals the integrity ledger (approval session). */
+  onReseal?: () => Promise<void>;
   onSelect: (id: string) => void;
   onChoose?: (id: string, option: string, rationale: string) => Promise<void>;
   onForecast?: (id: string) => void;
@@ -160,7 +196,12 @@ export function NodePanel(props: {
   }
 
   const n = node!;
-  const v = n.verification?.status ?? "unverified";
+  const confirmedSet = props.fidelity?.confirmed ? new Set(props.fidelity.confirmed) : null;
+  const view = verdictView(n.verification, confirmedSet ? confirmedSet.has(n.id) : undefined);
+  const origin = verdictOrigin(n.verification);
+  const report = n.verification?.report;
+  const superseded = Boolean(props.fidelity?.verdictsSuperseded?.includes(n.id));
+  const integrityAlarm = Boolean(props.fidelity && (props.fidelity.ledgerBrokenAt || props.fidelity.ledgerMissing || props.fidelity.ledgerReplaced || props.fidelity.ledgerDiverged || props.fidelity.resealsUnproven?.length || props.fidelity.verdictsRemoved?.length));
   const kids = allNodes.filter((k) => k.parentId === n.id);
   const exploredOptions = new Set(kids.map((k) => k.viaOption));
   const transcriptTokens =
@@ -195,7 +236,9 @@ export function NodePanel(props: {
           <NodeId id={n.id} big />
           <div>
             <span className="p-kind">{t.types[n.type]}</span>
-            <span className={`chip v-${v}`}>{t.verification[v]}</span>
+            <span className={`chip v-${view.cls}`} title={view.cls === "self" ? t.passNotCountedHint : origin ? `${t.verdictBy} ${t.verdictOrigin[origin]}` : undefined}>
+              {view.cls === "self" ? t.passNotCounted[superseded ? "superseded" : view.reason ?? "agent"] : t.verification[view.cls]}
+            </span>
           </div>
         </div>
         <h2 className="p-title">{n.type === "decision" ? n.question ?? n.title : n.title}</h2>
@@ -214,6 +257,17 @@ export function NodePanel(props: {
 
       <div className="p-body">
         {props.fidelity?.ledgerBrokenAt || props.fidelity?.ledgerMissing ? <p className="qnote q-bad">⛔ {props.fidelity.ledgerMissing ? t.ledgerMissing : t.ledgerBroken}</p> : null}
+        {props.fidelity?.ledgerReplaced && !props.fidelity.ledgerMissing ? <p className="qnote q-bad">⛔ {t.ledgerReplaced}</p> : null}
+        {props.fidelity?.ledgerDiverged && !props.fidelity.ledgerMissing ? (
+          <p className={`qnote ${props.fidelity.ledgerDiverged.kind === "extended" ? "q-warn" : "q-bad"}`}>
+            {props.fidelity.ledgerDiverged.kind === "extended" ? `⚠ ${t.ledgerExtended} ${props.fidelity.ledgerDiverged.since.slice(0, 8).join(", ")}` : `⛔ ${t.ledgerDiverged}`}
+          </p>
+        ) : null}
+        {props.fidelity?.resealsUnproven?.length ? <p className="qnote q-bad">⛔ {t.resealUnproven} ({props.fidelity.resealsUnproven.join(", ")})</p> : null}
+        {props.fidelity?.verdictsUntrusted?.length ? <p className="qnote q-bad">⛔ {t.verdictsUntrusted} ({props.fidelity.verdictsUntrusted.join(", ")})</p> : null}
+        {props.fidelity?.verdictsRemoved?.length ? <p className="qnote q-bad">⛔ {t.verdictsRemoved} {props.fidelity.verdictsRemoved.join(", ")}</p> : null}
+        {props.fidelity?.restarted ? <p className="qnote">ℹ {t.restartedNote}</p> : null}
+        {integrityAlarm && props.approved && props.onReseal ? <ResealButton t={t} onReseal={props.onReseal} /> : null}
         {fidPath.length > 1 && <FidelityChart path={fidPath} selectedId={n.id} t={t} onSelect={props.onSelect} />}
         {n.type === "mission" && (
           <section className={`p-sec goal ${n.goal ? "" : "missing"}`}>
@@ -495,15 +549,28 @@ export function NodePanel(props: {
         )}
 
         <section className="p-sec verdict">
-          <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={t.notesPlaceholder} rows={2} />
+          {origin && (
+            <p className="muted">
+              {t.verdictBy} {t.verdictOrigin[origin]}
+              {n.verification?.auditor?.name ? ` · ${n.verification.auditor.name}` : ""}
+              {view.reason === "unconfirmed" ? ` · ${t.passNotCounted[superseded ? "superseded" : "unconfirmed"]}` : ""}
+            </p>
+          )}
+          {report && (
+            <p className="muted">
+              {t.laterReport}: {t.verification[report.status]} ({t.verdictOrigin[report.origin]}){report.notes ? ` — ${report.notes}` : ""}
+            </p>
+          )}
+          {!props.approved && <p className="qnote">{t.verdictNeedsApproval}</p>}
+          <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={t.notesPlaceholder} rows={2} disabled={!props.approved} />
           <div className="row">
             <button className="btn" disabled={busy} onClick={() => verify({ auto: true })}>
               {t.runChecks}
             </button>
-            <button className="btn ok" disabled={busy} onClick={() => verify({ status: "passed", notes })}>
+            <button className="btn ok" disabled={busy || !props.approved} onClick={() => verify({ status: "passed", notes })}>
               {t.looksRight}
             </button>
-            <button className="btn bad" disabled={busy} onClick={() => verify({ status: "failed", notes })}>
+            <button className="btn bad" disabled={busy || !props.approved} onClick={() => verify({ status: "failed", notes })}>
               {t.problem}
             </button>
           </div>

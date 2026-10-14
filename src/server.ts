@@ -22,6 +22,7 @@ import { applyBlocks } from "./core/blocks.js";
 import { recall } from "./core/recall.js";
 import { SECTIONS, checkExpectations, resolveRefs, stringPayload, workspace, type Section } from "./core/workspace.js";
 import { archivistProposals } from "./core/canon-llm.js";
+import { addAuditor, listAuditors, removeAuditor } from "./core/auditors.js";
 import { gateMatrix, runGate } from "./core/gate.js";
 import { effectiveLlm, listModels, readSettings, upstreams, writeSettings } from "./core/settings.js";
 import { listRelays, runRelay } from "./core/relay.js";
@@ -35,7 +36,7 @@ import { adoptRecommendation, expertAnalysis, factSheet, getReport, listPersonal
 import { forgetProject, listProjects, registerProject } from "./core/projects.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
-export const VERSION = "0.9.1";
+export const VERSION = "0.9.2";
 
 const KEY_ENVS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "AZURE_OPENAI_API_KEY"];
 
@@ -437,13 +438,33 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         // Binding canon actions, the person's settings, the built-in chat and the relay: only with the
         // approval session (not with the API/agent token) — they act for the person or use the person's keys.
         // (The archivist and the analysis also spend the person's quota with the person's keys.)
-        const personOnly = p.startsWith("/api/canon") || p.startsWith("/api/settings") || p.startsWith("/api/agents") || p === "/api/chat" || p === "/api/relay" || p.startsWith("/api/forecast") || p === "/api/analysis/run" || p === "/api/analysis/config" || p.startsWith("/api/expert") || p.startsWith("/api/projects");
+        const personOnly = p.startsWith("/api/auditors") || p.startsWith("/api/integrity") || p.startsWith("/api/canon") || p.startsWith("/api/settings") || p.startsWith("/api/agents") || p === "/api/chat" || p === "/api/relay" || p.startsWith("/api/forecast") || p === "/api/analysis/run" || p === "/api/analysis/config" || p.startsWith("/api/expert") || p.startsWith("/api/projects");
         if (personOnly && req.method === "POST" && !isApprover(req)) {
           return send(res, 403, { error: "This is the person's action (approvals, settings, chat, relay, analysis with your keys): open the approval link from the terminal running Scenaria (scenaria start/ui). Agents can only propose.", code: "approval_required" });
         }
         // The approver is the person at this machine (local) — client-supplied names are only a claim in team mode.
         const approver = token ? `${ctx.user ?? "approver"} (team approver link)` : `${defaultUserName()} (local approval link)`;
         if (req.method === "GET" && p === "/api/v1/string") return send(res, 200, stringPayload(s, url.searchParams.get("at") ?? undefined));
+
+        // ---------- registered audit agents (rule 11): list is open (public keys), changes are the person's ----------
+        if (req.method === "GET" && p === "/api/auditors") return send(res, 200, { auditors: listAuditors(), approval: isApprover(req) });
+        if (req.method === "POST" && p === "/api/auditors/add") {
+          const b = await readBody(req);
+          const k = addAuditor(String(b?.pub ?? ""), b?.name ? String(b.name) : undefined);
+          s.store.appendEvent({ type: "update", data: { message: `audit agent ${k.id}${k.name ? ` (${k.name})` : ""} registered by ${approver}` } });
+          return send(res, 200, k);
+        }
+        // Reseal the integrity ledger: the person's (approval session), after reviewing the findings.
+        if (req.method === "POST" && p === "/api/integrity/reseal") {
+          const r = s.reseal({ kind: "person", via: "dashboard" }, { user: approver, agent: "dashboard", source: "ui" });
+          return send(res, 200, { archived: r.archived, nodes: r.nodes, record: r.record.id });
+        }
+        if (req.method === "POST" && p === "/api/auditors/remove") {
+          const b = await readBody(req);
+          const ok = removeAuditor(String(b?.id ?? ""));
+          if (ok) s.store.appendEvent({ type: "update", data: { message: `audit agent ${b.id} unregistered by ${approver}` } });
+          return send(res, 200, { removed: ok });
+        }
 
         // ---------- settings: models, keys (never stored), agents ----------
         if (req.method === "GET" && p === "/api/settings") {
@@ -811,7 +832,11 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         }
         if (req.method === "POST" && p === "/api/verify") {
           const b = await readBody(req);
-          return send(res, 200, s.verify(String(b.id), { status: b.status, notes: b.notes, by: "dashboard", auto: b.auto !== false, runCommand: Boolean(b.runCommand) }));
+          // A verdict counts only from the person (rule 11): the approval session. Without it, only the automatic checks run.
+          if (b?.status && !isApprover(req)) {
+            return send(res, 403, { error: "A verdict is the person's: open the approval link from the terminal running Scenaria (scenaria start/ui). Without it you can run the automatic checks; agents record self-reported verdicts with scenaria_verify.", code: "approval_required" });
+          }
+          return send(res, 200, s.verify(String(b.id), { status: b.status, notes: b.notes, by: b.status ? approver : "dashboard", auto: b.auto !== false, runCommand: Boolean(b.runCommand), ...(b.status ? { origin: "person" as const, via: "dashboard" } : {}) }));
         }
         if (req.method === "POST" && p === "/api/choose") {
           const b = await readBody(req);

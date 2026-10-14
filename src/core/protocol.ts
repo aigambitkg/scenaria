@@ -1,5 +1,8 @@
 import type { ScenariaEvent, ScenariaNode } from "./types.js";
 import { optionLabel } from "./context.js";
+import { isUnconfirmedPass, verdictOrigin, type VerdictOrigin } from "./verdict.js";
+
+const ORIGIN_LABEL: Record<VerdictOrigin, string> = { person: "the person", auditor: "a registered audit agent", agent: "the agent (self-reported)", auto: "the automatic checks", legacy: "an earlier version (origin not recorded)" };
 
 const TYPE_LABEL: Record<string, string> = {
   mission: "Project",
@@ -15,7 +18,7 @@ function yamlStr(s: string) {
 }
 
 /** One Obsidian-compatible markdown note per node (local knowledge base). */
-export function renderNodeNote(n: ScenariaNode, children: ScenariaNode[]): string {
+export function renderNodeNote(n: ScenariaNode, children: ScenariaNode[], confirmed?: boolean): string {
   const fm = [
     "---",
     `id: ${n.id}`,
@@ -28,6 +31,7 @@ export function renderNodeNote(n: ScenariaNode, children: ScenariaNode[]): strin
     n.agent ? `agent: ${yamlStr(n.agent)}` : null,
     `source: ${n.source}`,
     `verification: ${n.verification?.status ?? "unverified"}`,
+    n.verification && n.verification.status !== "unverified" ? `verification_by: ${verdictOrigin(n.verification)}` : null,
     n.confidence !== undefined ? `confidence: ${n.confidence}` : null,
     n.snapshot ? `snapshot: ${n.snapshot.commit}` : null,
     `tags: [scenaria, ${n.type}${(n.tags ?? []).map((t) => ", " + t).join("")}]`,
@@ -66,7 +70,9 @@ export function renderNodeNote(n: ScenariaNode, children: ScenariaNode[]): strin
   section("Irreversible side effects", n.irreversible);
   section("Changed files", n.changedFiles);
   if (n.verification && n.verification.status !== "unverified") {
-    body.push(`## Verification: ${n.verification.status}`);
+    const counts = n.verification.status === "passed" ? confirmed ?? !isUnconfirmedPass(n.verification) : true;
+    body.push(`## Verification: ${n.verification.status} — by ${ORIGIN_LABEL[verdictOrigin(n.verification) ?? "legacy"]}${!counts ? (isUnconfirmedPass(n.verification) ? " (does not count as verified)" : " (NOT CONFIRMED: signature, key or content does not check out — does not count)") : ""}`);
+    if (n.verification.report) body.push(`Later report (${n.verification.report.origin}): ${n.verification.report.status}${n.verification.report.notes ? ` — ${n.verification.report.notes}` : ""}`);
     if (n.verification.notes) body.push(n.verification.notes);
     for (const c of n.verification.checks ?? []) body.push(`- ${c.status.toUpperCase()} · ${c.name}${c.detail ? ` — ${c.detail}` : ""}`);
     body.push("");
@@ -108,7 +114,7 @@ export function renderProtocol(projectName: string, events: ScenariaEvent[], nod
         details = `from ${d.from ?? "?"} to ${d.to ?? "?"}${d.restoreFiles === false ? " (state only)" : ""}${d.autosave ? `, autosave ${d.autosave}` : ""}${d.lesson ? ` · lesson: ${d.lesson}` : ""}`;
         break;
       case "verify":
-        details = `${d.status ?? ""}${d.notes ? ` — ${d.notes}` : ""}${d.by ? ` (by ${d.by})` : ""}`;
+        details = `${d.status ?? ""}${d.notes ? ` — ${d.notes}` : ""}${d.by ? ` (by ${d.by}${d.origin ? `, ${d.origin}` : ""})` : ""}${d.ignored ? ` — not applied: ${d.ignored}` : ""}${d.kept ? ` — kept next to the ${d.kept}'s verdict` : ""}`;
         break;
       default:
         details = d.message ? String(d.message) : "";

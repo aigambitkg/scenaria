@@ -76,6 +76,26 @@ const de: HelpTopic[] = [
     ],
   },
   {
+    id: "verify",
+    title: "Geprüft – und wer das sagen darf",
+    what: "Ein Schritt gilt nur dann als „geprüft“, wenn du selbst oder ein von dir registrierter, unabhängiger Prüfagent ihn bestätigt. Ein Agent kann seine eigene Arbeit melden, aber nie selbst als geprüft markieren.",
+    when: "Wenn du sicher wissen willst, zu welchem Stand du gefahrlos zurückspringen kannst – und wenn ein Audit belegen soll, dass ein Mensch oder eine unabhängige Stelle kontrolliert hat.",
+    how: [
+      "Knoten anklicken → „Stimmt so“ oder „Problem gefunden“. Das geht nur mit dem Freigabe-Link aus dem Terminal, damit kein Programm in deinem Namen urteilt.",
+      "Im Terminal: scenaria verify <id> --status passed (zählt nur in einem echten Terminal, nicht in der Shell eines Agenten).",
+      "Unabhängiger Prüfagent: einmalig scenaria auditor keygen --dir <Ordner außerhalb jedes Projekts>, dann scenaria auditor add <öffentlicher Schlüssel>. Seine signierten Urteile zählen wie deine.",
+    ],
+    terms: [
+      ["Vom Agenten gemeldet", "Der Agent hat „passt“ gesagt. Wird angezeigt, zählt aber nicht als geprüft und ist nie das Ziel für „sicher zurückspringen“."],
+      ["Fälschungsschutz", "Jede Änderung wird in einer Kette festgehalten, und dieser Rechner merkt sich außerhalb des Projekts, wie weit sie reicht. Wird etwas außerhalb von Scenaria geändert, gelöscht, ersetzt oder zurückgesetzt, zeigt Scenaria es an – auch dein eigenes Urteil ist signiert."],
+      ["Neu versiegeln", "Den aktuellen Stand als neue Grundlage annehmen – nur du (mit Freigabe-Link im Knoten-Panel oder im Terminal: scenaria integrity --reseal) oder ein registrierter Prüfagent. Das alte Protokoll bleibt als Beweis erhalten."],
+    ],
+    notes: [
+      "Ein „Problem gefunden“ zählt immer, auch vom Agenten: Eine Selbstauskunft darf das Vertrauen senken, nie heben. Und ein Agent kann dein Urteil nie ersetzen – seine spätere Meldung steht daneben.",
+      "Grenze: Ein Programm mit deinen vollen Benutzerrechten kann deine Dateien lesen. Für Audits gehört der Schlüssel des Prüfagenten deshalb auf einen anderen Rechner oder in die CI.",
+    ],
+  },
+  {
     id: "forecasts",
     title: "Prognosen – vor der Wahl sehen, was passiert",
     what: "Für jede offene Entscheidung (und für Prompts) sagt Scenaria voraus, wie treu die Linie nach dieser Option bei Kontext und Hauptziel bleibt – bevor du wählst. Es ist dieselbe Größe, die Scenaria danach misst (Kontext-Treue), daher lässt sich jede Prognose später überprüfen.",
@@ -313,6 +333,26 @@ const en: HelpTopic[] = [
     terms: [
       ["Rationale", "The why of a choice. Without it later agents do not know why — quality and fidelity drop."],
       ["Lesson", "An insight from a discarded path (\"Redis cache lost counters after a restart\")."],
+    ],
+  },
+  {
+    id: "verify",
+    title: "Verified — and who may say so",
+    what: "A step counts as verified only when you, or an independent audit agent you registered, confirm it. An agent can report on its own work, but never mark it as verified itself.",
+    when: "When you want to know for sure which state you can safely go back to — and when an audit must show that a person or an independent party checked the work.",
+    how: [
+      "Click a node → “Looks right” or “Found a problem”. This needs the approval link from the terminal, so no program can judge in your name.",
+      "In a terminal: scenaria verify <id> --status passed (counts only in a real terminal, not in an agent's shell).",
+      "Independent audit agent: once scenaria auditor keygen --dir <folder outside every project>, then scenaria auditor add <public key>. Its signed verdicts count like yours.",
+    ],
+    terms: [
+      ["Reported by the agent", "The agent said “fine”. Shown, but it does not count as verified and is never the target for “go back safely”."],
+      ["Tamper protection", "Every change is recorded in a chain, and this machine remembers outside the project how far it reaches. If something is changed, deleted, replaced or rolled back outside Scenaria, Scenaria shows it — your own verdicts are signed too."],
+      ["Reseal", "Accept the current state as the new baseline — only you (with the approval link in the node panel, or in a terminal: scenaria integrity --reseal) or a registered audit agent. The old ledger is kept as evidence."],
+    ],
+    notes: [
+      "A “Found a problem” always counts, also from an agent: a self-report may lower trust, never raise it. And an agent can never replace your verdict — its later report is shown next to it.",
+      "Limit: a program with your full user rights can read your files. For audits, keep the audit agent's key on another machine or in CI.",
     ],
   },
   {
