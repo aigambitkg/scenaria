@@ -24,7 +24,7 @@ import { evaluateForecasts } from "./forecast.js";
 import { gateLines } from "./gate.js";
 import { stringPayload } from "./workspace.js";
 import { effectiveLlm, upstreams } from "./settings.js";
-import { listProjects, personalDir } from "./projects.js";
+import { listProjects, personalDir, realRoot } from "./projects.js";
 import { writeJsonAtomic } from "./store.js";
 import { effectiveStatus } from "./verdict.js";
 
@@ -443,13 +443,15 @@ function draft(s: Scenaria, req: ExpertRequest): Draft {
   const sheets: { s: Scenaria; f: FactSheet }[] = [];
   if (scopeKind === "all") {
     sheets.push({ s, f: factSheet(s) });
-    const seen = new Set([s.root]);
+    // Compare real folders: the same project may be open under another spelling (macOS /var vs /private/var, a symlink).
+    const seen = new Set([realRoot(s.root)]);
     for (const p of listProjects()) {
       if (sheets.length >= 12) break;
       try {
         const other = Scenaria.open(p.root);
-        if (seen.has(other.root)) continue;
-        seen.add(other.root);
+        const key = realRoot(other.root);
+        if (seen.has(key)) continue;
+        seen.add(key);
         sheets.push({ s: other, f: factSheet(other) });
       } catch {
         /* a project that cannot be opened is skipped */

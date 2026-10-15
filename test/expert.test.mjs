@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
@@ -11,7 +11,7 @@ import { createApp } from "../dist/server.js";
 import { callTool } from "../dist/tools.js";
 import { chat } from "../dist/chat.js";
 import { expertAnalysis, factSheet, listReports, adoptRecommendation, baselineReport } from "../dist/core/expert.js";
-import { registerProject, listProjects } from "../dist/core/projects.js";
+import { registerProject, listProjects, forgetProject } from "../dist/core/projects.js";
 import { writeSettings } from "../dist/core/settings.js";
 import { tempProject } from "./helpers.mjs";
 
@@ -171,6 +171,20 @@ test("a report written around Scenaria (e.g. by an agent) is unconfirmed: not ad
   j.recommendations.push({ ...fake.recommendations[0] });
   writeFileSync(file, JSON.stringify(j));
   assert.equal(listReports(s).find((x) => x.id === real.id).verified, false);
+});
+
+test("all projects: the same folder under another path counts once (macOS /var vs /private/var, symlinks)", async () => {
+  const { s } = project("Linked once");
+  const link = join(mkdtempSync(join(tmpdir(), "link-")), "same-project");
+  symlinkSync(s.root, link);
+  registerProject(s.root, "Linked once");
+  try {
+    const viaLink = Scenaria.open(link);
+    const all = await expertAnalysis(viaLink, { scope: "all", noModel: true, lang: "en" });
+    assert.equal(all.facts.filter((f) => f.project === "Linked once").length, 1, "the project opened through a symlink is not listed twice");
+  } finally {
+    forgetProject(s.root); // the registry is shared by the tests in this file
+  }
 });
 
 test("scope: one line of work, and all registered projects", async () => {

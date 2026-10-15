@@ -18,7 +18,8 @@ export interface KnownProject {
   exists?: boolean;
 }
 
-function real(p: string) {
+/** The folder's real path (macOS: /var → /private/var, symlinks resolved); the path itself if it is gone. */
+export function realRoot(p: string) {
   try {
     return realpathSync(p);
   } catch {
@@ -60,13 +61,13 @@ export function listProjects(opts: { includeMissing?: boolean } = {}): KnownProj
 /** Remember a project (best effort; never throws). */
 export function registerProject(root: string, name?: string) {
   try {
-    const r = real(root);
+    const r = realRoot(root);
     if (!isProject(r)) return;
     const all = read();
-    const prev = all.find((p) => real(p.root) === r);
+    const prev = all.find((p) => realRoot(p.root) === r);
     // Write at most once per hour per project (the MCP server opens projects often).
     if (prev && Date.now() - Date.parse(prev.lastSeen) < 3_600_000 && prev.name === (name ?? prev.name) && prev.root === r) return;
-    const rest = all.filter((p) => real(p.root) !== r);
+    const rest = all.filter((p) => realRoot(p.root) !== r);
     write([{ root: r, name: name ?? prev?.name ?? basename(r), lastSeen: new Date().toISOString() }, ...rest].slice(0, 100));
   } catch {
     /* best effort */
@@ -75,6 +76,6 @@ export function registerProject(root: string, name?: string) {
 
 /** Forget a project (does not touch its files). */
 export function forgetProject(root: string) {
-  const r = real(root);
-  write(read().filter((p) => real(p.root) !== r && p.root !== root));
+  const r = realRoot(root);
+  write(read().filter((p) => realRoot(p.root) !== r && p.root !== root));
 }

@@ -157,7 +157,11 @@ test("snapshot folders: complete files, metadata, conversation, hardlinked and r
   const f2 = join(p.dir, s.node(c2.id).snapshotFolder);
   assert.equal(readFileSync(join(f1, "notes.md"), "utf8"), "n1");
   assert.equal(readFileSync(join(f2, "notes.md"), "utf8"), "n2");
-  assert.equal(statSync(join(f1, "src/big.txt")).ino, statSync(join(f2, "src/big.txt")).ino, "unchanged file shared via hardlink");
+  // Unchanged files take no extra space: a hardlink (Linux), or an APFS clone with its own inode (macOS).
+  const big1 = join(f1, "src/big.txt");
+  const big2 = join(f2, "src/big.txt");
+  assert.equal(readFileSync(big1, "utf8"), readFileSync(big2, "utf8"));
+  if (process.platform !== "darwin") assert.equal(statSync(big1).ino, statSync(big2).ino, "unchanged file shared via hardlink");
   assert.equal(statSync(join(f2, "notes.md")).mode & 0o222, 0, "read-only");
   assert.match(readFileSync(join(f1, ".scenaria-version/conversation.md"), "utf8"), /please add notes/);
   assert.equal(JSON.parse(readFileSync(join(f1, ".scenaria-version/node.json"), "utf8")).uid, c1.uid);
