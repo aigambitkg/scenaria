@@ -30,13 +30,13 @@ import { benchmarkInWorker, calibrationFor, forecastQuality } from "./core/predi
 import { autoBudget, evaluateForecasts, forecast, listForecasts, markUsed, openWithoutForecast, quickDecision, quickPrompt } from "./core/forecast.js";
 import { auditForecast, auditOverview, auditReportMarkdown, deepAudit, listOracleBacktests, oracleBacktest, oracleQuality, pastDecisions } from "./core/auditor.js";
 import { chat } from "./chat.js";
-import { TARGETS, agentStatus, connectionSnippets, setupAgents, type Target } from "./setup.js";
+import { TARGETS, agentStatus, connectionSnippets, setupAgents, writeLauncher, type Target } from "./setup.js";
 import { callLlm } from "./core/analysis.js";
 import { adoptRecommendation, expertAnalysis, factSheet, getReport, listPersonalReports, listReports } from "./core/expert.js";
 import { forgetProject, listProjects, registerProject } from "./core/projects.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
-export const VERSION = "0.9.2";
+export const VERSION = "0.9.3";
 
 const KEY_ENVS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "AZURE_OPENAI_API_KEY"];
 
@@ -89,9 +89,23 @@ async function readRaw(req: IncomingMessage, limit: number): Promise<Buffer> {
 /** Reveal a folder in Finder / Explorer / the file manager (local mode only). */
 function openPath(path: string) {
   const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
-  try {
-    spawn(cmd, [path], { stdio: "ignore", detached: true }).unref();
-  } catch {}
+  void launch(cmd, [path]);
+}
+
+/** Start a helper program; resolves false when it does not exist (never crashes the server). */
+function launch(cmd: string, args: string[]): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const c = spawn(cmd, args, { stdio: "ignore", detached: true });
+      c.once("error", () => resolve(false)); // ENOENT arrives as an event, not as an exception
+      c.once("spawn", () => {
+        c.unref();
+        resolve(true);
+      });
+    } catch {
+      resolve(false);
+    }
+  });
 }
 
 async function readBody(req: IncomingMessage, limit = 1_000_000): Promise<any> {
@@ -138,11 +152,23 @@ export interface AppOptions {
   /** Automatic multiverse forecasts for open decisions (default: per the person's Settings). */
   autoForecast?: boolean;
   /** Shared between the apps of one server when the person switches projects (single-use link state). */
-  linkState?: { secret?: string };
+  linkState?: { secret?: string; extra?: Map<string, number> };
   /** The server can switch the dashboard to another of the person's projects (local mode only). */
   onSwitch?: (root: string) => Promise<{ name: string; root: string }>;
   /** The project agents' HTTP/proxy endpoints of this server stay on (the one it was started with). */
   agentsProject?: { name: string; root: string };
+  /**
+   * Local mode only: open a fresh single-use approval link in the person's default browser. The code
+   * never appears in an HTTP answer — it goes from this process straight to the OS browser.
+   */
+  openApproval?: (fromDashboard: boolean) => Promise<{ opened: true } | { opened: false; reason: "busy"; retryIn: number } | { opened: false; reason: "no_browser" }>;
+  /** The project the dashboard shows right now (it can differ from the one agents write to). */
+  viewRoot?: () => string;
+}
+
+/** Identifies a project folder without naming it (lets a second `scenaria start` find a running one). */
+export function rootKey(root: string): string {
+  return createHash("sha256").update(realRoot(root)).digest("hex").slice(0, 16);
 }
 
 function approvalCookie(req: IncomingMessage): string | undefined {
@@ -316,13 +342,29 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
     }
     // Approval link: sets the approval session cookie (never shown to scripts: HttpOnly, SameSite=Strict).
     if (!p.startsWith("/api/") && url.searchParams.has("approve")) {
-      if (isApprover(req)) {
-        res.writeHead(302, { location: "/" });
+      // The code is used up FIRST, also when this browser is already approved — otherwise an unused
+      // code would stay valid (in the browser history) for anyone who replays it.
+      const given = url.searchParams.get("approve") ?? undefined;
+      let redeemed = false;
+      if (link.secret && tokenMatches(given, link.secret)) {
+        redeemed = true;
+        if (!opts.token) link.secret = undefined; // single use (also across project switches)
+      } else if (link.extra) {
+        const now = Date.now();
+        for (const [code, until] of link.extra) {
+          if (until < now) link.extra.delete(code);
+          else if (tokenMatches(given, code)) {
+            link.extra.delete(code);
+            redeemed = true;
+          }
+        }
+      }
+      if (redeemed) {
+        res.writeHead(302, { location: "/", "set-cookie": `scenaria_approval=${encodeURIComponent(approvalSecret)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000` });
         return res.end();
       }
-      if (link.secret && tokenMatches(url.searchParams.get("approve") ?? undefined, link.secret)) {
-        if (!opts.token) link.secret = undefined; // single use (also across project switches)
-        res.writeHead(302, { location: "/", "set-cookie": `scenaria_approval=${encodeURIComponent(approvalSecret)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000` });
+      if (isApprover(req)) {
+        res.writeHead(302, { location: "/" });
         return res.end();
       }
       // Never a dead page: open the dashboard without approval rights and say why (the dashboard shows it).
@@ -340,7 +382,12 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         if (req.method === "POST" && !viaBearer && req.headers["x-scenaria"] !== "1") return send(res, 403, { error: "missing X-Scenaria header" });
 
         // ---------- vendor-neutral v1 API (any LLM / framework) ----------
-        if (req.method === "GET" && p === "/api/v1/health") return send(res, 200, { ok: true, name: "scenaria", version: VERSION, project: s.config().projectName });
+        if (req.method === "GET" && p === "/api/head-at") {
+          const until = url.searchParams.get("until") ?? "";
+          if (Number.isNaN(Date.parse(until))) return send(res, 400, { error: "until must be a date (ISO 8601)" });
+          return send(res, 200, { id: s.headAt(new Date(until).toISOString()) });
+        }
+        if (req.method === "GET" && p === "/api/v1/health") return send(res, 200, { ok: true, name: "scenaria", version: VERSION, project: s.config().projectName, rootKey: rootKey(s.root), viewKey: rootKey(opts.viewRoot?.() ?? s.root) });
         if (req.method === "GET" && p === "/api/v1/tools") {
           try {
             return send(res, 200, toolSchemas((url.searchParams.get("format") ?? "json") as SchemaFormat));
@@ -439,8 +486,22 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         // approval session (not with the API/agent token) — they act for the person or use the person's keys.
         // (The archivist and the analysis also spend the person's quota with the person's keys.)
         const personOnly = p.startsWith("/api/auditors") || p.startsWith("/api/integrity") || p.startsWith("/api/canon") || p.startsWith("/api/settings") || p.startsWith("/api/agents") || p === "/api/chat" || p === "/api/relay" || p.startsWith("/api/forecast") || p === "/api/analysis/run" || p === "/api/analysis/config" || p.startsWith("/api/expert") || p.startsWith("/api/projects");
+        // The person gets the approval mode without copying a link: Scenaria opens a fresh single-use link
+        // in the default browser itself. Nothing secret is returned; at most once per 15 s; logged.
+        if (req.method === "POST" && p === "/api/approval/open") {
+          if (token) return send(res, 400, { error: "Team mode: open the dashboard with the approver link (SCENARIA_APPROVER_TOKEN).", code: "team_mode" });
+          if (isApprover(req)) return send(res, 200, { ok: true, already: true });
+          if (!opts.openApproval) return send(res, 409, { error: "This Scenaria cannot open your browser. Start it with scenaria start (or the start icon).", code: "no_browser" });
+          const fromDashboard = req.headers["x-scenaria-view"] === "dashboard";
+          const r = await opts.openApproval(fromDashboard);
+          if (!r.opened && r.reason === "busy") return send(res, 429, { error: `Just opened — try again in ${r.retryIn} s.`, code: "busy", retryIn: r.retryIn });
+          if (!r.opened) return send(res, 409, { error: "This Scenaria cannot open your browser. Start it with scenaria start (or the start icon).", code: "no_browser" });
+          // The dashboard mark is only a claim (any local client can send it): logged as such, with the client's name.
+          s.store.appendEvent({ type: "update", data: { message: `approval link opened in the default browser (asked by ${fromDashboard ? "a client marked as the dashboard" : `${ctx.agent}, not marked as the dashboard`}; user agent: ${String(req.headers["user-agent"] ?? "-").slice(0, 80)})` } });
+          return send(res, 200, { ok: true, opened: true });
+        }
         if (personOnly && req.method === "POST" && !isApprover(req)) {
-          return send(res, 403, { error: "This is the person's action (approvals, settings, chat, relay, analysis with your keys): open the approval link from the terminal running Scenaria (scenaria start/ui). Agents can only propose.", code: "approval_required" });
+          return send(res, 403, { error: "This is the person's action (approvals, settings, chat, relay, analysis with your keys): click the lock (Open approval mode) in the dashboard (or open the approval link from the terminal running Scenaria). Agents can only propose.", code: "approval_required" });
         }
         // The approver is the person at this machine (local) — client-supplied names are only a claim in team mode.
         const approver = token ? `${ctx.user ?? "approver"} (team approver link)` : `${defaultUserName()} (local approval link)`;
@@ -505,6 +566,12 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           const r = setupAgents(s.root, targets, { rulesFiles: b?.rulesFiles !== false });
           s.store.appendEvent({ type: "update", data: { message: `agents connected by ${approver}: ${targets.join(", ")}` } });
           return send(res, 200, { ...r, agents: agentStatus(s.root) });
+        }
+        if (req.method === "POST" && p === "/api/agents/launcher") {
+          if (token) return send(res, 400, { error: "Start icons are for local use only." });
+          const file = writeLauncher(s.root);
+          s.store.appendEvent({ type: "update", data: { message: `start icon created by ${approver}` } });
+          return send(res, 200, { ok: true, file });
         }
 
         // ---------- built-in chat & relay (the person's own surface) ----------
@@ -834,7 +901,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           const b = await readBody(req);
           // A verdict counts only from the person (rule 11): the approval session. Without it, only the automatic checks run.
           if (b?.status && !isApprover(req)) {
-            return send(res, 403, { error: "A verdict is the person's: open the approval link from the terminal running Scenaria (scenaria start/ui). Without it you can run the automatic checks; agents record self-reported verdicts with scenaria_verify.", code: "approval_required" });
+            return send(res, 403, { error: "A verdict is the person's: click the lock (Open approval mode) in the dashboard. Without it you can run the automatic checks; agents record self-reported verdicts with scenaria_verify.", code: "approval_required" });
           }
           return send(res, 200, s.verify(String(b.id), { status: b.status, notes: b.notes, by: b.status ? approver : "dashboard", auto: b.auto !== false, runCommand: Boolean(b.runCommand), ...(b.status ? { origin: "person" as const, via: "dashboard" } : {}) }));
         }
@@ -897,14 +964,17 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
   };
 }
 
-function openBrowser(url: string) {
+/** For tests: SCENARIA_NO_BROWSER=1 records the URL instead of opening a browser. */
+export const browserLog: string[] = [];
+
+function openBrowser(url: string): Promise<boolean> {
+  if (process.env.SCENARIA_NO_BROWSER) {
+    browserLog.push(url);
+    return Promise.resolve(process.env.SCENARIA_NO_BROWSER !== "fail");
+  }
   const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
   const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-  try {
-    spawn(cmd, args, { stdio: "ignore", detached: true }).unref();
-  } catch {
-    /* ignore */
-  }
+  return launch(cmd, args);
 }
 
 function realRoot(p: string) {
@@ -940,9 +1010,28 @@ export async function startServer(
   // One server, one approval session for the person; the dashboard can switch between their projects.
   // Every app keeps its own project: requests already running finish in the project they started in.
   const approvalSecret = randomBytes(24).toString("hex");
-  const linkState = { secret: opts.token ? approverToken : approvalCode };
+  const linkState: { secret?: string; extra?: Map<string, number> } = { secret: opts.token ? approverToken : approvalCode, extra: new Map() };
   let current = s;
   const agentsProject = { name: s.config().projectName, root: s.root };
+  let baseUrl = "";
+  let lastOpen = 0;
+  // Fresh links live next to the start link (which stays valid until used): each single use, 60 s.
+  // A request that is not from the dashboard (an agent, a script) waits longer between openings.
+  const openApproval: AppOptions["openApproval"] = opts.token
+    ? undefined
+    : async (fromDashboard) => {
+        const wait = (fromDashboard ? 15_000 : 60_000) - (Date.now() - lastOpen);
+        if (wait > 0) return { opened: false, reason: "busy", retryIn: Math.ceil(wait / 1000) };
+        lastOpen = Date.now();
+        const code = randomBytes(18).toString("base64url");
+        const extra = linkState.extra!;
+        extra.set(code, Date.now() + 60_000);
+        while (extra.size > 3) extra.delete(extra.keys().next().value!);
+        if (await openBrowser(`${baseUrl}/?approve=${code}`)) return { opened: true };
+        extra.delete(code);
+        lastOpen = 0;
+        return { opened: false, reason: "no_browser" };
+      };
   const make = (proj: Scenaria): ReturnType<typeof createApp> =>
     createApp(proj, {
       token: opts.token,
@@ -951,6 +1040,8 @@ export async function startServer(
       approvalSecret,
       linkState,
       agentsProject,
+      openApproval,
+      viewRoot: () => current.root,
       onSwitch: opts.token
         ? undefined
         : async (root: string) => {
@@ -991,6 +1082,7 @@ export async function startServer(
     tryListen(0);
   });
   const url = `http://${host === "0.0.0.0" ? "localhost" : host}:${port}`;
+  baseUrl = url;
   const uiUrl = opts.token ? (opts.showToken ? `${url}/?token=${encodeURIComponent(opts.token)}` : `${url}/?token=<your token>`) : url;
   if (!opts.quiet) process.stdout.write(
     [
@@ -1010,7 +1102,7 @@ export async function startServer(
       "",
     ].join("\n"),
   );
-  if (opts.open) openBrowser(opts.token ? uiUrl : `${url}/?approve=${approvalCode}`);
+  if (opts.open) void openBrowser(opts.token ? uiUrl : `${url}/?approve=${approvalCode}`);
   const approvalUrl = opts.token ? (approverToken ? `${url}/?approve=<approver token>` : null) : showLink ? `${url}/?approve=${approvalCode}` : null;
   return { server, url, approvalUrl, project: () => current, close: () => { app.close(); server.close(); } };
 }

@@ -4,7 +4,7 @@ This is the working protocol for the next agent or developer who continues Scena
 
 - **Product owner:** Kev (Kevin Grundmann, AI-Gambit). He reads and writes German, so give your summaries to him in German. He is not a developer by trade, so explain results in plain words.
 - **License:** MIT. Vendor-neutral: any LLM, any agent, any framework.
-- **State at handoff:** v0.9.2 (2026-10-14, Batch A), branch `main`. 213/213 tests pass.
+- **State at handoff:** v0.9.3 (2026-10-14, Batch B), branch `main`. All tests pass (`npm test`).
 - **Current phase (since 2026-10-14): feature freeze.** Work only on the batch plan in §11, one batch at a time, and start a batch only after Kev's go.
 
 ---
@@ -33,7 +33,8 @@ Every review so far has enforced these. Treat them as hard requirements.
 4. **Never initialise a project in the home folder.**
 5. **Only a person approves.** "Der Archivar kann diese vorschlagen mit Freigabe durch User": agents may *propose* canon, rules and decisions, but only a person approves.
 6. **Person-only actions need a person.**
-   - Anything that spends the person's model quota or acts for them needs the **approval session** in the dashboard (cookie from the approval link printed by `scenaria start`), or an **interactive TTY** in the CLI. This covers check commands, approvals, the chat, the relay, the multiverse, the AI check, backtests, settings and project switching.
+   - Anything that spends the person's model quota or acts for them needs the **approval session** in the dashboard (the "approval mode": cookie from a single-use approval link that `scenaria start` opens in the browser, or that the lock 🔒 in the dashboard asks Scenaria to open), or an **interactive TTY** in the CLI.
+   - The approval link never travels in an HTTP answer. `POST /api/approval/open` only makes the Scenaria process hand a fresh link to the operating system's browser (local mode; single use, valid 60 s, used up even by an already approved browser; once per 15 s from the dashboard, once per minute otherwise; logged with who asked). This covers check commands, approvals, the chat, the relay, the multiverse, the AI check, backtests, settings and project switching.
    - In `src/server.ts` this is enforced by the `personOnly` prefix list (for example every `POST /api/forecast*`). New person actions must go under such a prefix.
    - The CLI checks `process.stdin.isTTY && process.stdout.isTTY`.
 7. **The chat model has agent rights only.** Person actions requested in the chat become a card, and they run only after the person clicks it.
@@ -61,7 +62,7 @@ node dist/cli.js start # dashboard + approval link (in a project folder)
 
 - **Node:** ≥ 20. Kev's Mac has Node 24.
 - **On Kev's Mac:** run the tests in two halves, because each tool call there is limited to 180 s.
-  - `node --test test/{canon,control,engine,expert,forecast,handoff,help,integrity}.test.mjs`
+  - `node --test test/{canon,control,engine,expert,forecast,handoff,help,integrity,office}.test.mjs`
   - `node --test test/{integration,oracle,overlay,predict,project,projects,safety,universal}.test.mjs`
 - Tests use a temporary `SCENARIA_HOME` (`test/helpers.mjs`), so they never touch the real `~/.config/scenaria`.
 - **Known flaky test:** `watch fingerprint writes no git objects while idle`. It is timing-sensitive, failed once on the Mac and passed on rerun.
@@ -79,7 +80,7 @@ node dist/cli.js start # dashboard + approval link (in a project folder)
 | `tools.ts` | **The single tool registry** for MCP, HTTP `/api/v1/tools`, the CLI `call` and function-calling exports. |
 | `chat.ts` | Built-in chat: any model operates Scenaria through the same tools. Person tools become cards; `scenaria_multiverse`, `scenaria_audit_forecast` and `scenaria_relay` are chat tools. |
 | `hooks.ts` | Claude Code hooks (never block the agent). |
-| `setup.ts` | Agent wiring: `init --for …`, `CLAUDE.md` / `AGENTS.md` rule blocks. |
+| `setup.ts` | Agent wiring: `init --for …`, `CLAUDE.md` / `AGENTS.md` rule blocks, Claude Desktop (one entry per project with `--root`), the start icon (`writeLauncher`). |
 | `proxy.ts`, `ingest.ts` | LLM proxy and conversation import (the overlay). |
 
 ### Core (`src/core/`)
@@ -107,14 +108,16 @@ node dist/cli.js start # dashboard + approval link (in a project folder)
 
 | File | Role |
 |---|---|
-| `App.tsx` | Top bar, dialogs, help actions. |
+| `App.tsx` | Top bar with the three views (Simple / Audit / Manage, remembered per browser), dialogs, help actions, the lock 🔒 for the approval mode. |
+| `SimpleView.tsx` | The Simple view for office users: history in plain words by day, "Back to this state" with Undo, "What did the AI do?", open a state as a folder. |
+| `Approval.tsx` | `requestApproval` and `LockedNote`: every locked notice carries the button that opens the approval mode. |
 | `api.ts` | Every request. The `x-scenaria-view: dashboard` header makes requests follow a project switch; downloads must use fetch with it, never plain links. |
 | `i18n.ts` | **All texts, DE and EN.** Every key must exist in both; `de` is typed as `typeof en`. |
 | `helpContent.ts` | The help topics (DE/EN). `test/help.test.mjs` checks the topics, terms and actions. |
 | `Forecasts.tsx` | The forecasts dialog (tabs Start / Entscheidungen / Prompt prüfen / Nachprüfen / Verlauf / Güte), the derivation and the AuditBox. |
 | `ForecastStart.tsx` | Ready check, three start cards, new-decision form, run progress with stop, ErrorBox, ResultCard, PastCheck. |
 | `AuditArea.tsx` | The auditor's area (top bar "Prüfung"). |
-| `Control.tsx` | Settings, chat, relay. |
+| `Control.tsx` | Settings (your AI first, one model, the rest under "Advanced"; start icon), chat, relay. |
 | `NodePanel.tsx`, `Map.tsx`, `Dialogs.tsx`, `Expert.tsx`, `Help.tsx`, `Projects.tsx` | The rest of the dashboard. |
 | `styles.css` | Design tokens on `:root`, light and dark. Reuse the existing classes (`chip`, `qnote`, `x-kpi`, `log`, `btn`). |
 
@@ -162,6 +165,8 @@ There is no committed e2e suite. The walkthroughs so far used Playwright scripts
 2. Start the dashboard on a *copy* of a real project with `createApp(s, { approvalCode, approvalSecret })`. Set the approval cookie `scenaria_approval=<secret>` in the browser, and set `localStorage "scenaria.onboarded.v1" = "1"` to skip the onboarding.
 3. Walk the flows: Start tab → ready check; write down a decision → "Speichern und vorhersagen" → progress → result card; Nachprüfen; Prompt prüfen; Güte; the "Prüfung" area with filter, details and download; a view-only browser without the cookie; EN; 390 px width.
 4. Check that there is no `pageerror`, no console error and no HTTP ≥ 400 that you did not expect.
+5. For the approval mode use `startServer(s, { port, quiet: true, showApprovalLink: false })` with `SCENARIA_NO_BROWSER=1`: the links Scenaria would open land in `browserLog` (exported by `server.js`); open them in the Playwright context. `SCENARIA_CLAUDE_DESKTOP_CONFIG` points the Claude Desktop wiring at a temporary file.
+6. Batch B walkthrough (office user): the Simple view is the default; "Back to the state at the end of yesterday" restores the files, Undo returns; Audit and Manage render; Settings (Claude Desktop row, start icon, "Advanced"); a viewer window at 390 px clicks the lock and becomes approved; the onboarding in EN.
 
 A good next task is a committed e2e suite (`test/e2e/`, opt-in) built from this.
 
@@ -206,6 +211,7 @@ Product ideas already discussed or noted (see `docs/ROADMAP.md`; the batch plan 
 | 0.8 | Forecasts and the multiverse, expert analyst, project switcher, help and onboarding |
 | 0.9.0 | Forecast core v2 (same quantity as the measurement, retraceable, backtest, quality), traceable oracle v2, Prüf-Experte |
 | 0.9.1 | Simple start (ready check, three paths), progress and stop, plain result, past-decision check, robust oracle for local models, auditor's area and report |
+| 0.9.3 | Batch B (office users, two review rounds K1–K21): three views (Simple / Audit / Manage), Simple view with history in plain words, "Back to this state" + Undo, "What did the AI do?", states as folders; plain wording DE/EN incl. help and onboarding; settings with one model and "Advanced"; forecasts, relay and Prüf-Experte under "Extensions"; Claude Desktop per project; start icon; approval mode without copying a link (lock 🔒); a second start reuses the running Scenaria |
 | 0.9.2 | Batch A (rule 11): verdict origins; only the person or a registered audit agent can verify or reseal; signed, work-bound verdicts; anchor with high-water mark outside the project; reseal records; audit-agent registry and signed requests; dashboard reseal; two independent review rounds (K1–K11, R1–R7) |
 
 ## 11. Product decisions (2026-10-14) and the batch plan
@@ -242,7 +248,7 @@ Product ideas already discussed or noted (see `docs/ROADMAP.md`; the batch plan 
   - Docs updated, independent review.
 - **Honest limit (to document):** a process running with the person's full user rights can read the person's own key. For audits, the audit agent's key must live elsewhere.
 
-### Batch B: easy to understand and use (office users)
+### Batch B: easy to understand and use (office users) — DONE in 0.9.3
 - **Goal:** someone who is new to AI understands within five minutes what Scenaria does for them, and can go back to an earlier state without help.
 - **Scope:**
   - **Three views on the same data:** *Simple* (P1), *Audit* (P2), *Manage* (P3).
@@ -258,7 +264,20 @@ Product ideas already discussed or noted (see `docs/ROADMAP.md`; the batch plan 
 - **Done:**
   - Browser walkthrough (§7) including 390 px width, no console errors.
   - Help updated.
-  - A non-technical test person completes "go back to yesterday's state" without help.
+  - A non-technical test person completes "go back to yesterday's state" without help. *(Still open: this test with a real person is Kev's; the walkthrough did it scripted.)*
+- **What was built (0.9.3):**
+  - **Views.** `Simple` is the default for a new browser; `Audit` is the map with goal bar, rules and milestones, project check, protocol; `Manage` has chat, analysis, "Extensions" (forecasts, Prüf-Experte, relay) and "More". Same data, same API.
+  - **Simple view.** Days (today, yesterday, date), newest first; one sentence per step with who did it (agent name, "you", "automatic"); "Now"; "checked by you" only from `integrity().confirmed`; "What did the AI do?" (request, results, files, changes, open as folder); "Back to this state" with an optional note for the AI, then a toast with Undo (back to the autosave, or the previous HEAD when nothing was unsaved); "Back to the state at the end of yesterday"; earlier attempts hidden by default.
+  - **Claude Desktop.** `init --for claude-desktop` / Settings → Connect writes one entry per project (`scenaria-<folder>`, `--root <folder>`, `SCENARIA_AGENT=claude-desktop`) into the app's config; other entries are kept; a config with comments is left alone with a note. Not part of `all`, not wired automatically by `start` (it is a file of the app, outside the project).
+  - **Start icon.** `scenaria launcher [--to dir]` / Settings → "Create start icon": `.command` (macOS), `.cmd` (Windows: `chcp 65001` first, `pushd … ||` stop), a `.desktop` entry in a terminal (Linux; `.sh` when a path holds characters its quoting makes risky) on the desktop (`XDG_DESKTOP_DIR`, OneDrive). It runs `scenaria start --launcher --root <folder>`; `--launcher` never sets up a project (moved folder → clear error). Another project with the same folder name gets "(2)". A second `start` for the same folder finds the running Scenaria (`/api/v1/health` → `rootKey`, a hash of the folder; `viewKey` = what the dashboard shows) and only reopens its dashboard with approval.
+  - **Approval mode without copying.** The lock 🔒 (and every locked notice) calls `POST /api/approval/open`; the running process opens a fresh single-use link (60 s) in the default browser. The code never appears in an answer; the printed start link stays valid; no browser program → a clear "cannot open" (the server never crashes on a missing helper program). Every open dialog unlocks itself once the window shares the approval.
+  - **Simple view, after review:** "checked by you" only from the engine's confirmed set (never stored fields, also not while loading); an alarm when the integrity check cannot load or a step was edited; "the state at the end of that day" is the step that was current at midnight (`GET /api/head-at`, replayed from the event log), so an evening "go back" counts — without an answer, that day's newest saved state; going back lists effects outside the files that cannot be brought back, and shows the rewind's warnings.
+  - **Reviews:** two independent rounds, K1–K17 (2 high, 6 medium, 9 low) and K18–K21 (2 medium, 2 low), all fixed with a regression test each (`test/office.test.mjs`).
+  - **Known limit:** any local client can send the dashboard mark (`x-scenaria-view`); the log records it as a claim ("a client marked as the dashboard") with the client's name.
+- **Honest limits (documented):**
+  - A program that can drive the person's browser, or read its process list at the right moment, could use an approval link that Scenaria opens. This was already true for the link `scenaria start` opens; a process with the person's full rights is outside what Scenaria can protect (§9).
+  - An agent can ask for the approval window to open (it cannot receive it). The request is logged and limited.
+  - Claude Desktop sends no hooks: it records only through the MCP tools (and auto-save), guided by the server instructions.
 
 ### Batch C: audit file (ISO/IEC 42001)
 - **Goal:** an auditor finds every Annex A control of ISO/IEC 42001 in one place. For each one they see what Scenaria evidences automatically, what is partly covered, and what the organisation must document. They can export the whole file, signed.

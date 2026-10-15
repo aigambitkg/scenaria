@@ -1,3 +1,4 @@
+import { LockedNote, useApprovalSignal } from "./Approval";
 import { HelpButton } from "./HelpButton";
 /**
  * Project switcher: the person's Scenaria projects on this computer — switch the dashboard with one
@@ -40,6 +41,7 @@ export function ProjectSwitcher(props: { t: Dict; lang: "de" | "en"; name: strin
       setErr(errText(e));
     }
   };
+  useApprovalSignal(() => void load());
   useEffect(() => {
     if (!open) return;
     setErr(null);
@@ -88,7 +90,7 @@ export function ProjectSwitcher(props: { t: Dict; lang: "de" | "en"; name: strin
             <span className="muted small">{t.pjExplain}</span>
           </div>
           {err && <p className="error small">{err}</p>}
-          {page && !page.person && <p className="qnote q-warn small">🔒 {t.pjLocked}</p>}
+          {page && !page.person && <LockedNote t={t} text={t.pjLocked} small />}
           {page && page.person && !page.canSwitch && <p className="muted small">{t.pjNoSwitch}</p>}
           {page?.agents && !page.agents.same && <p className="qnote q-info small">{t.pjAgentsStay(page.agents.name)}</p>}
           {page?.person && (

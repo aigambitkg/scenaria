@@ -119,8 +119,8 @@ export function HelpDialog(props: { t: Dict; lang: "de" | "en"; topic?: string |
   );
 }
 
-type StepId = "welcome" | "goal" | "agents" | "model" | "forecasts" | "more";
-const STEPS: StepId[] = ["welcome", "goal", "agents", "model", "forecasts", "more"];
+type StepId = "welcome" | "goal" | "agents" | "history" | "views" | "more";
+const STEPS: StepId[] = ["welcome", "goal", "agents", "history", "views", "more"];
 
 export function Onboarding(props: { t: Dict; lang: "de" | "en"; goal: string | null; onClose: () => void; onAction: (a: HelpAction) => void; onGoalSaved: () => void; toast: (m: string) => void }) {
   const { t } = props;
@@ -137,8 +137,8 @@ export function Onboarding(props: { t: Dict; lang: "de" | "en"; goal: string | n
     welcome: true,
     goal: Boolean(props.goal),
     agents: connected.length > 0,
-    model: Boolean(settings?.effective.chat),
-    forecasts: true,
+    history: true,
+    views: true,
     more: true,
   };
   const finish = () => {
@@ -154,7 +154,7 @@ export function Onboarding(props: { t: Dict; lang: "de" | "en"; goal: string | n
       <div className="modal-body onboarding">
         <ol className="ob-dots" aria-label={t.obProgress}>
           {STEPS.map((s, k) => (
-            <li key={s} className={`${k === i ? "on" : ""} ${k !== 0 && done[s] && s !== "forecasts" && s !== "more" ? "ok" : ""}`}>
+            <li key={s} className={`${k === i ? "on" : ""} ${k !== 0 && done[s] && s !== "history" && s !== "views" && s !== "more" ? "ok" : ""}`}>
               <button aria-label={`${k + 1}`} onClick={() => setI(k)} />
             </li>
           ))}
@@ -220,46 +220,24 @@ export function Onboarding(props: { t: Dict; lang: "de" | "en"; goal: string | n
           </>
         )}
 
-        {step === "model" && (
+        {step === "history" && (
           <>
-            <h3>{done.model ? "✓ " : ""}{t.obModel}</h3>
-            <p>{t.obModelText}</p>
-            {settings && (
-              <p className="muted small">
-                {settings.effective.chat ? `${t.obModelNow}: ${settings.effective.chat.provider}/${settings.effective.chat.model}` : t.obNoModel}
-                {" · "}
-                {settings.approval ? `✓ ${t.obApproved}` : `🔒 ${t.obNotApproved}`}
-              </p>
-            )}
-            <button className="btn" onClick={() => go("settings")}>
-              {t.obOpenSettings}
-            </button>
+            <h3>{t.obHistory}</h3>
+            <p>{t.obHistoryText}</p>
           </>
         )}
 
-        {step === "forecasts" && (
+        {step === "views" && (
           <>
-            <h3>{t.obForecasts}</h3>
-            <p>{t.obForecastsText}</p>
-            <div className="ob-bars" aria-hidden>
-              <div>
-                <span>a</span>
-                <div className="fbar">
-                  <div className="fbar-fill good" style={{ width: "84%" }} />
-                  <span className="fbar-num">84%</span>
-                </div>
-              </div>
-              <div>
-                <span>b</span>
-                <div className="fbar">
-                  <div className="fbar-fill low" style={{ width: "22%" }} />
-                  <span className="fbar-num">22%</span>
-                </div>
-              </div>
-            </div>
-            <p className="muted small">{t.obForecastsLegend}</p>
-            <button className="btn" onClick={() => go("forecasts")}>
-              {t.obOpenForecasts}
+            <h3>{t.obViews}</h3>
+            <p>{t.obViewsText}</p>
+            {settings && (
+              <p className="muted small">
+                {settings.effective.chat ? `${t.obModelNow}: ${settings.effective.chat.provider}/${settings.effective.chat.model}` : t.obNoModel}
+              </p>
+            )}
+            <button className="btn" onClick={() => go("settings")}>
+              {t.obChooseModel}
             </button>
           </>
         )}

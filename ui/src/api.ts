@@ -126,6 +126,7 @@ export const api = {
       `/api/diff?from=${encodeURIComponent(from)}${to ? `&to=${encodeURIComponent(to)}` : ""}`,
     ),
   log: () => req<{ events: ScenariaEvent[] }>("/api/log"),
+  headAt: (until: string) => req<{ id: string | null }>(`/api/head-at?until=${encodeURIComponent(until)}`),
   protocol: () => req<{ markdown: string }>("/api/protocol"),
   rewind: (id: string, lesson: string, restoreFiles: boolean) =>
     req<{ target: ScenariaNode; autosave: ScenariaNode | null; warnings: string[] }>("/api/rewind", { id, lesson, restoreFiles }),
@@ -201,6 +202,9 @@ export const api = {
   markUsed: (id: string, key: string) => req<Forecast>("/api/forecast/used", { id, key }),
   models: (b: { provider: string; baseUrl?: string; apiKey?: string }) => req<{ models: string[] }>("/api/settings/models", b),
   testLlm: (b: LlmCall) => req<{ ok: boolean; model: string; reply: string; ms: number }>("/api/settings/test", b),
+  /** Opens a fresh single-use approval link in the default browser (the code never comes back here). */
+  openApproval: () => req<{ ok: boolean; already?: boolean; opened?: boolean }>("/api/approval/open", {}),
+  createLauncher: () => req<{ ok: boolean; file: string }>("/api/agents/launcher", {}),
   connectAgents: (targets: string[]) => req<{ changes: string[]; notes: string[]; agents: AgentStatus[] }>("/api/agents/connect", { targets }),
   chat: (b: { sessionId: string; messages: ChatMessage[]; decisions?: Record<string, "approve" | "deny">; llm?: Partial<LlmCall>; lang: string }) => req<ChatResponse>("/api/chat", b),
   relay: (b: { question: string; options?: string[]; createDecision: boolean; lang: string; llm?: Partial<LlmCall> }) => req<RelayReport>("/api/relay", b),

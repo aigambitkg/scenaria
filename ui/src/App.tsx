@@ -1,3 +1,4 @@
+import { requestApproval, useApprovalSignal } from "./Approval";
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { api, type Fidelity, type Graph, type ScenariaEvent, type ScenariaNode } from "./api";
@@ -9,12 +10,26 @@ import type { HelpAction } from "./helpContent";
 import { layoutTree, taskOf } from "./layout";
 import { NodeId, ScenarioMap } from "./Map";
 import { NodePanel } from "./NodePanel";
-import { isConfirmedPass, isUnconfirmedPass } from "../../src/core/verdict";
+import { isUnconfirmedPass } from "../../src/core/verdict";
 import { AnalysisDialog, CanonDialog, ConversationsDialog, DiffDialog, PromptDialog, ProtocolDialog, RewindDialog } from "./Dialogs";
 import { ChatPanel, RelayDialog, SettingsDialog, type SessionKeys } from "./Control";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { ForecastsDialog } from "./Forecasts";
 import { AuditDialog } from "./AuditArea";
+import { SimpleView, type Toast } from "./SimpleView";
+
+/** The three views on the same data (Batch B): one per persona. */
+export type View = "simple" | "audit" | "manage";
+const VIEW_KEY = "scenaria.view.v1";
+function initialView(): View {
+  try {
+    const v = localStorage.getItem(VIEW_KEY);
+    if (v === "simple" || v === "audit" || v === "manage") return v;
+  } catch {
+    /* no storage (private window, preview): the simple view */
+  }
+  return "simple";
+}
 
 type Pending =
   | { mode: "rewind"; node: ScenariaNode }
@@ -39,6 +54,8 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
   const [health, setHealth] = useState<number | null>(null);
   const [headCtx, setHeadCtx] = useState<{ tokens: number; historyTokens: number } | null>(null);
   const [fidelity, setFidelity] = useState<Fidelity | null>(null);
+  // The integrity check could not be loaded: then nothing counts as checked (rule 11), and the Simple view warns.
+  const [fidelityError, setFidelityError] = useState(false);
   const [canonOpen, setCanonOpen] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
   const [canonInfo, setCanonInfo] = useState<{ active: number; proposed: number } | null>(null);
@@ -61,14 +78,25 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
   const { keys, setKeys } = props;
   const switched = useRef(props.onProjectSwitched);
   switched.current = props.onProjectSwitched;
-  const [toasts, setToasts] = useState<{ id: number; msg: string }[]>([]);
+  const [toasts, setToasts] = useState<{ id: number; msg: string; action?: { label: string; run: () => void } }[]>([]);
   const toastId = useRef(0);
   const t = dict[lang];
+  const [view, setViewState] = useState<View>(initialView);
+  const [extOpen, setExtOpen] = useState(false);
+  const setView = (v: View) => {
+    setViewState(v);
+    setMoreOpen(false);
+    setExtOpen(false);
+    try {
+      localStorage.setItem(VIEW_KEY, v);
+    } catch {}
+  };
 
-  const toast = useCallback((msg: string) => {
+  const toast: Toast = useCallback((msg: string, action?: { label: string; run: () => void }) => {
     const id = ++toastId.current;
-    setToasts((l) => [...l, { id, msg }]);
-    setTimeout(() => setToasts((l) => l.filter((x) => x.id !== id)), 4200);
+    setToasts((l) => [...l, { id, msg, action }]);
+    // A toast with an action (e.g. Undo) stays longer, so there is time to use it.
+    setTimeout(() => setToasts((l) => l.filter((x) => x.id !== id)), action ? 12000 : 4200);
   }, []);
 
   const load = useCallback(async () => {
@@ -137,7 +165,16 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
 
   useEffect(() => {
     api.analysis().then((m) => setHealth(m.health)).catch(() => setHealth(null));
-    api.fidelity().then(setFidelity).catch(() => setFidelity(null));
+    api
+      .fidelity()
+      .then((f) => {
+        setFidelity(f);
+        setFidelityError(false);
+      })
+      .catch(() => {
+        setFidelity(null);
+        setFidelityError(true);
+      });
     api
       .canon()
       .then((c) => setCanonInfo({ active: c.events.filter((e) => e.status === "active").length, proposed: c.events.filter((e) => e.status === "proposed").length }))
@@ -150,7 +187,8 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
     return layoutTree(graph.nodes, rootId, folded).placed.find((p) => p.key === selected) ?? null;
   }, [graph, rootId, selected, folded]);
 
-  const confirmedSet = useMemo(() => (fidelity?.confirmed ? new Set(fidelity.confirmed) : null), [fidelity]);
+  // Rule 11: only the engine's confirmed set — empty while loading or when the check failed.
+  const confirmedSet = useMemo(() => new Set(fidelity?.confirmed ?? []), [fidelity]);
   const stats = useMemo(() => {
     const ns = graph?.nodes ?? [];
     return {
@@ -158,7 +196,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
       tasks: ns.filter((n) => n.type === "goal").length,
       decisions: ns.filter((n) => n.type === "decision").length,
       branches: ns.filter((n) => n.type === "branch").length,
-      verified: fidelity?.confirmed ? fidelity.confirmed.length : ns.filter((n) => isConfirmedPass(n.verification)).length,
+      verified: fidelity?.confirmed?.length ?? 0,
       checked: ns.filter((n) => n.type !== "mission" && n.type !== "goal").length,
       failed: ns.filter((n) => n.verification?.status === "failed").length,
     };
@@ -180,15 +218,37 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
   };
   // Once at start: align the saved language with this browser's (if this window may change settings).
   const [approved, setApproved] = useState(false);
-  useEffect(() => {
-    api
-      .settings()
-      .then((st) => {
+  const [teamMode, setTeamMode] = useState(true); // until known: no lock button
+  const checkApproval = useCallback(
+    () =>
+      api.settings().then((st) => {
         setApproved(st.approval);
+        setTeamMode(st.teamMode);
+        return st;
+      }),
+    [],
+  );
+  useEffect(() => {
+    checkApproval()
+      .then((st) => {
         if (st.approval && st.ui.lang !== lang) api.saveSettings({ ui: { lang } }).catch(() => {});
       })
       .catch(() => {});
   }, []);
+  // The lock: Scenaria opens a fresh approval link in the default browser. This window shares the
+  // browser's cookie, so it becomes approved too once that link is redeemed.
+  const openApproval = async () => {
+    const r = await requestApproval(t);
+    if (r.kind === "error") return toast(r.text);
+    if (r.kind === "already") return toast(t.approvalAlready);
+    toast(t.approvalOpening);
+  };
+  // Any button that asked for it (top bar or a dialog): once this window shares the approval, say so.
+  useApprovalSignal(() => {
+    if (!approved) toast(t.approvalOn);
+    setApproved(true);
+    setLinkNote(false);
+  });
   const openDecisions = useMemo(() => (graph?.nodes ?? []).filter((n) => n.type === "decision" && !n.chosen && (n.options?.length ?? 0) > 1).length, [graph]);
 
   const confirmPending = async (lesson: string, restoreFiles: boolean) => {
@@ -221,6 +281,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
     setHelp(false);
     setOnboarding(false);
     setMoreOpen(false);
+    setExtOpen(false);
     switch (a) {
       case "goal":
         setEditGoal(root?.goal ?? "");
@@ -240,6 +301,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
         setCanonOpen(true);
         break;
       case "chat":
+        if (view === "simple") setView("manage");
         setSide("chat");
         break;
       case "relay":
@@ -268,6 +330,20 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
   };
   const helpCtx = useMemo(() => ({ open: (topic: string) => setHelp(topic), label: t.helpOpen }), [t]);
 
+  const linkBanner = linkNote && !approved && (
+    <div className="banner warn" role="status">
+      {t.approvalLinkUsed}{" "}
+      {!teamMode && (
+        <button className="btn" onClick={openApproval}>
+          {t.approvalOpen}
+        </button>
+      )}{" "}
+      <button className="btn link" onClick={() => setLinkNote(false)}>
+        OK
+      </button>
+    </div>
+  );
+
   return (
     <HelpContext.Provider value={helpCtx}>
     <div className="app">
@@ -282,7 +358,14 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
           <span className="brand-name">Scenaria</span>
           {graph && <ProjectSwitcher t={t} lang={lang} name={graph.config.projectName} toast={toast} onSwitched={props.onProjectSwitched} openSignal={projectsSignal} />}
         </div>
-        {graph && (
+        <div className="views" role="group" aria-label={t.viewLabel}>
+          {(["simple", "audit", "manage"] as const).map((v) => (
+            <button key={v} className={view === v ? "on" : ""} aria-pressed={view === v} title={v === "simple" ? t.viewSimpleHint : v === "audit" ? t.viewAuditHint : t.viewManageHint} onClick={() => setView(v)}>
+              {v === "simple" ? t.viewSimple : v === "audit" ? t.viewAudit : t.viewManage}
+            </button>
+          ))}
+        </div>
+        {graph && view !== "simple" && (
           <div className={`goalbar ${root?.goal ? "" : "missing"}`}>
             <span className="goalbar-label">{t.goal}</span>
             {editGoal !== null ? (
@@ -306,67 +389,103 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
           </div>
         )}
         <div className="top-actions">
-          <span className={`live ${live ? "on" : ""}`}>{live ? t.live : t.offline}</span>
-          <button
-            className="btn"
-            onClick={async () => {
-              const n = await api.checkpoint(lang === "de" ? "Manuell gesichert" : "Saved manually");
-              toast(n ? `${t.saved} ${n.id}` : t.nothingToSave);
-              load();
-            }}
-          >
-            {t.saveNow}
-          </button>
-          <button className={`btn ${side === "chat" ? "primary" : ""}`} onClick={() => setSide(side === "chat" ? "node" : "chat")} title={t.chatHint}>
-            {t.chat}
-          </button>
-          <button className="btn" onClick={() => setForecastFocus(null)} title={t.fcIntro}>
-            {t.fcButton}
-            {openDecisions > 0 && <span className="hchip mid">{openDecisions}</span>}
-          </button>
-          <button className="btn" onClick={() => setAuditOpen(true)} title={t.adButtonHint}>
-            {t.adButton}
-          </button>
-          <button className="btn" onClick={() => setCanonOpen(true)} title={t.canonHint}>
-            {t.canon}
-            {canonInfo && canonInfo.proposed > 0 ? <span className="hchip mid">{canonInfo.proposed}</span> : canonInfo ? <span className="hchip">{canonInfo.active}</span> : null}
-          </button>
-          <button
-            className="btn"
-            onClick={() => {
-              setAnalysisTab("overview");
-              setAnalysisOpen(true);
-            }}
-            title={t.xIntro}
-          >
-            {t.analysis}
-            {health !== null && <span className={`hchip ${health >= 80 ? "good" : health >= 55 ? "mid" : "low"}`}>{health}</span>}
-          </button>
-          <div className="more">
-            <button className="btn" aria-haspopup="menu" aria-expanded={moreOpen} title={t.moreHint} onClick={() => setMoreOpen(!moreOpen)}>
-              {t.more} ▾
+          {view !== "audit" && <span className={`live ${live ? "on" : ""}`}>{live ? t.live : t.offline}</span>}
+          {view !== "audit" && (
+            <button
+              className="btn"
+              onClick={async () => {
+                const n = await api.checkpoint(lang === "de" ? "Manuell gesichert" : "Saved manually");
+                toast(n ? `${t.saved} ${n.id}` : t.nothingToSave);
+                load();
+              }}
+            >
+              {t.saveNow}
             </button>
-            {moreOpen && (
-              <div className="more-menu" role="menu" onMouseLeave={() => setMoreOpen(false)}>
-                <button role="menuitem" onClick={() => act("prompt")} title={t.promptHintShort}>
-                  {t.agentPrompt}
-                </button>
-                <button role="menuitem" onClick={() => act("conversations")}>
-                  {t.conversations}
-                </button>
-                <button role="menuitem" onClick={() => act("protocol")}>
-                  {t.protocol}
-                </button>
-                <button role="menuitem" onClick={() => act("relay")}>
-                  {t.relay}
-                </button>
-                <button role="menuitem" onClick={() => act("onboarding")}>
-                  {t.obRestart}
-                </button>
-              </div>
-            )}
-          </div>
-          <button className="btn icon help-top" onClick={() => setHelp("start")} title={t.helpTitle} aria-label={t.helpTitle}>
+          )}
+          {view === "manage" && (
+            <button className={`btn ${side === "chat" ? "primary" : ""}`} onClick={() => setSide(side === "chat" ? "node" : "chat")} title={t.chatHint}>
+              {t.chat}
+            </button>
+          )}
+          {view !== "simple" && (
+            <button className="btn" onClick={() => setCanonOpen(true)} title={t.canonHint}>
+              {t.rulesButton}
+              {canonInfo && canonInfo.proposed > 0 ? <span className="hchip mid">{canonInfo.proposed}</span> : canonInfo ? <span className="hchip">{canonInfo.active}</span> : null}
+            </button>
+          )}
+          {view !== "simple" && (
+            <button
+              className="btn"
+              onClick={() => {
+                setAnalysisTab("overview");
+                setAnalysisOpen(true);
+              }}
+              title={t.xIntro}
+            >
+              {view === "audit" ? t.projectCheck : t.analysis}
+              {health !== null && <span className={`hchip ${health >= 80 ? "good" : health >= 55 ? "mid" : "low"}`}>{health}</span>}
+            </button>
+          )}
+          {view === "audit" && (
+            <>
+              <button className="btn" onClick={() => act("protocol")}>
+                {t.protocol}
+              </button>
+              <button className="btn" onClick={() => act("conversations")}>
+                {t.conversations}
+              </button>
+            </>
+          )}
+          {view === "manage" && (
+            <div className="more">
+              <button className="btn" aria-haspopup="menu" aria-expanded={extOpen} title={t.extensionsHint} onClick={() => setExtOpen(!extOpen)}>
+                {t.extensions}
+                {openDecisions > 0 && <span className="hchip mid">{openDecisions}</span>} ▾
+              </button>
+              {extOpen && (
+                <div className="more-menu" role="menu" onMouseLeave={() => setExtOpen(false)}>
+                  <button role="menuitem" onClick={() => act("forecasts")} title={t.fcIntro}>
+                    {t.fcButton}
+                  </button>
+                  <button role="menuitem" onClick={() => act("audit")} title={t.adButtonHint}>
+                    {t.adButton}
+                  </button>
+                  <button role="menuitem" onClick={() => act("relay")}>
+                    {t.relay}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+          {view === "manage" && (
+            <div className="more">
+              <button className="btn" aria-haspopup="menu" aria-expanded={moreOpen} title={t.moreHint} onClick={() => setMoreOpen(!moreOpen)}>
+                {t.more} ▾
+              </button>
+              {moreOpen && (
+                <div className="more-menu" role="menu" onMouseLeave={() => setMoreOpen(false)}>
+                  <button role="menuitem" onClick={() => act("prompt")} title={t.promptHintShort}>
+                    {t.agentPrompt}
+                  </button>
+                  <button role="menuitem" onClick={() => act("conversations")}>
+                    {t.conversations}
+                  </button>
+                  <button role="menuitem" onClick={() => act("protocol")}>
+                    {t.protocol}
+                  </button>
+                  <button role="menuitem" onClick={() => act("onboarding")}>
+                    {t.obRestart}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+          {!approved && !teamMode && (
+            <button className="btn icon lock" onClick={openApproval} title={t.approvalOpenHint} aria-label={t.approvalOpen}>
+              🔒
+            </button>
+          )}
+          <button className="btn icon help-top" onClick={() => setHelp(view === "simple" ? "simple" : "start")} title={t.helpTitle} aria-label={t.helpTitle}>
             ?
           </button>
           <button className="btn icon gear" onClick={() => setSettingsOpen(true)} title={t.settings} aria-label={t.settings}>
@@ -383,17 +502,61 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
         </div>
       </header>
 
+      {view === "simple" ? (
+        <main className="main simple-main">
+          {error && <div className="banner error">{error}</div>}
+          {linkBanner}
+          {editGoal !== null && (
+            <form
+              className="sv-goal-edit"
+              onSubmit={(e) => {
+                e.preventDefault();
+                saveGoal(editGoal);
+              }}
+            >
+              <label className="field">
+                <span>{t.goal}</span>
+                <input autoFocus value={editGoal} placeholder={t.goalPlaceholder} onChange={(e) => setEditGoal(e.target.value)} onKeyDown={(e) => e.key === "Escape" && setEditGoal(null)} />
+              </label>
+              <button className="btn primary" type="submit">
+                {t.save}
+              </button>
+              <button className="btn" type="button" onClick={() => setEditGoal(null)}>
+                {t.cancel}
+              </button>
+            </form>
+          )}
+          {graph && (
+            <ErrorBoundary scope="simple">
+              <SimpleView
+                t={t}
+                lang={lang}
+                nodes={graph.nodes}
+                headId={headId}
+                goal={root?.goal ?? null}
+                fidelity={fidelity}
+                fidelityError={fidelityError}
+                toast={toast}
+                onEditGoal={() => setEditGoal(root?.goal ?? "")}
+                onRewound={load}
+                onDiff={async (from, to) => {
+                  try {
+                    setDiff(await api.diff(from, to));
+                  } catch (e: any) {
+                    toast(e?.message ?? String(e));
+                  }
+                }}
+                onOpenAudit={() => setView("audit")}
+                onConnect={() => setSettingsOpen(true)}
+              />
+            </ErrorBoundary>
+          )}
+        </main>
+      ) : (
       <main className="main">
         <section className="canvas" aria-label="Scenario map">
           {error && <div className="banner error">{error}</div>}
-          {linkNote && (
-            <div className="banner warn" role="status">
-              {t.approvalLinkUsed}{" "}
-              <button className="btn link" onClick={() => setLinkNote(false)}>
-                OK
-              </button>
-            </div>
-          )}
+          {linkBanner}
           {graph && rootId ? (
             <ReactFlowProvider>
               <ScenarioMap nodes={graph.nodes} rootId={rootId} headId={headId} selectedKey={selected} onSelect={setSelected} folded={folded} onToggleFold={toggleFold} fidelity={fidelity?.points ?? null} confirmed={confirmedSet} t={t} />
@@ -495,7 +658,9 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
           </ErrorBoundary>
         </div>
       </main>
+      )}
 
+      {view !== "simple" && (
       <footer className="statusbar">
         {headId && (
           <span>
@@ -528,6 +693,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
           {graph?.root}
         </span>
       </footer>
+      )}
 
       <ErrorBoundary
         scope="dialogs"
@@ -684,6 +850,17 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
         {toasts.map((x) => (
           <div key={x.id} className="toast">
             {x.msg}
+            {x.action && (
+              <button
+                className="btn"
+                onClick={() => {
+                  setToasts((l) => l.filter((y) => y.id !== x.id));
+                  x.action!.run();
+                }}
+              >
+                {x.action.label}
+              </button>
+            )}
           </div>
         ))}
       </div>

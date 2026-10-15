@@ -57,6 +57,10 @@ scenaria setup --global     # user-level agent configs; projects initialize them
 
 It never initializes your home folder or folders that don't look like a project.
 
+**No terminal wanted?** Run `scenaria launcher` once (or Settings → *Create start icon*): a Scenaria icon appears on your desktop, and a double-click starts Scenaria for that project. Double-clicking again just reopens the dashboard.
+
+**Claude Desktop:** Settings → *Connect your AI* → Claude Desktop (or `scenaria init --for claude-desktop`) adds this project to the Claude app. Quit the app completely and open it again; Claude can then record steps and go back.
+
 Claude Code needs no instructions: its hooks capture prompts, questions, plans and file changes, and every prompt carries a one-line Scenaria reminder. For any other agent or chat, click **Agent prompt** in the dashboard (or run `scenaria prompt`) and paste the ready-made text. There are three versions: MCP agents, shell agents, and plain chats without tools.
 
 ## One project tree, one main goal
@@ -125,7 +129,7 @@ How canon events are enforced:
 - **Chat (right panel):** talk to your model; it operates Scenaria with the same tools as your agents — status, context, decisions, checkpoints, tasks, canon proposals, the relay. Your own actions work from the chat too — approving/rejecting canon, running checks, the gate, the model analysis, switching the model, connecting agents: the model only *asks*, Scenaria shows a card with exactly what will happen, and it runs after your click. Rewind and fork wait for your OK as well (setting). Every chat is recorded as a conversation. Ollama is called through its native API with a 16k context window (`SCENARIA_OLLAMA_CTX`), so tools and project state are never cut off; tool calls that small models write as text are understood.
 - **Your own agent:** connect it in Settings (MCP) or call the HTTP tools — it gets exactly the same capabilities and limits as the built-in chat.
 
-Settings, chat and relay act for you and use your keys, so they need the approval session (the approval link from `scenaria start`), like canon approvals.
+Settings, chat and relay act for you and use your keys, so they need the **approval mode**, like canon approvals. `scenaria start` opens it in your browser; if a window lacks it, click the lock 🔒 at the top and Scenaria opens a new window in approval mode (the link never passes through anything an agent could read).
 
 ## Forecasts, the oracle and the auditor: see before you choose (v0.9)
 
@@ -148,9 +152,16 @@ Analysis → **★ Expert analysis** reviews one line, the whole project or **al
 
 Click the project name at the top to see your Scenaria projects on this computer and switch the dashboard. Your approval and your keys (memory only) stay. Agents keep working in their own project: MCP agents run in their own folder, and the server's HTTP tools, LLM proxy and auto-save stay with the project it was started in.
 
+## Three views, plain words
+
+The dashboard has three views on the same data:
+- **Simple** (the default): your history in plain words, by day. *Back to this state* returns your files to any saved state (with *Undo*), *What did the AI do?* shows the request, the result and the changed files, and any state opens as a folder.
+- **Audit**: the scenario map with rules and milestones, the project check and the protocol.
+- **Manage**: chat, analysis and **Extensions** (forecasts, Prüf-Experte, relay).
+
 ## Help and introduction
 
-**?** (top right) explains every function in plain words, and every dialog has its own **?**. On the first visit a short introduction (goal → agent → model → forecasts → fixed points and analysis) gets you going. You can skip it, and restart it from **More → Introduction**.
+**?** (top right) explains every function in plain words, and every dialog has its own **?**. On the first visit a short introduction (goal → your AI → history → views) gets you going. You can skip it, and restart it from **More → Introduction**.
 
 ## Context fidelity: see where context broke, changed or was manipulated
 
@@ -250,6 +261,7 @@ Unchanged files are stored only once. On macOS (APFS) they are copy-on-write clo
 | You use … | Connect via | Setup |
 |---|---|---|
 | **Claude Code** | MCP + hooks (automatic capture of prompts, clarifying questions, plan approvals, risky commands) | `scenaria init --for claude` |
+| **Claude Desktop (app)** | MCP, one entry per project | `scenaria init --for claude-desktop`, then restart the app |
 | **Cursor · VS Code/Copilot · Gemini CLI · Codex** | MCP + `AGENTS.md` / `GEMINI.md` rules | `scenaria init --for cursor,vscode,gemini,codex` |
 | **Windsurf · Cline · Zed · any MCP client** | MCP | `scenaria init --for windsurf` / `--for generic` prints the config |
 | **OpenAI · Azure OpenAI · Mistral · Groq · OpenRouter · Ollama · vLLM · LM Studio** | Function calling + HTTP | `scenaria tools --format openai`, [example](examples/openai_compatible_agent.py) |
@@ -321,7 +333,7 @@ Other agents record through the tools, guided by `AGENTS.md` and the dashboard's
 ## CLI
 
 ```text
-scenaria start | setup --global | init [--for <agents>]
+scenaria start | setup --global | init [--for <agents>] | launcher [--to <folder>]
 scenaria ui | serve [--host --token] | mcp | watch
 scenaria goal ["<main goal>"]            scenaria task "<title>" --goal ..
 scenaria decide "<q>" -o A -o B --chosen A --why .. --context .. --serves .. --confidence 0.7

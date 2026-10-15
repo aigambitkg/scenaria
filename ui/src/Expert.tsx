@@ -3,6 +3,7 @@
  * person's Scenaria projects — findings through four expert lenses and prioritised recommendations
  * that can be adopted as project rules with one click.
  */
+import { LockedNote, useApprovalSignal } from "./Approval";
 import { useEffect, useState } from "react";
 import { api, type ExpertPage, type ExpertReport, type Finding } from "./api";
 import { NodeId } from "./Map";
@@ -232,6 +233,7 @@ export function ExpertPanel(props: { t: Dict; lang: "de" | "en"; keys: SessionKe
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [approval, setApproval] = useState(false);
+  useApprovalSignal(() => setApproval(true));
   const [model, setModel] = useState<{ provider: string; model: string } | null>(null);
 
   const load = async (show?: string) => {
@@ -271,7 +273,7 @@ export function ExpertPanel(props: { t: Dict; lang: "de" | "en"; keys: SessionKe
   return (
     <div className="x-panel">
       <p className="hint">{t.xIntro}</p>
-      {!approval && <p className="qnote q-warn">🔒 {t.settingsLocked}</p>}
+      {!approval && <LockedNote t={t} text={t.settingsLocked} />}
       {err && <p className="error">{err}</p>}
 
       {k && (

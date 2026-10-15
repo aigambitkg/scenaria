@@ -379,12 +379,26 @@ export class Scenaria {
     throw new Error('The signed request must be a "verdict" or a "reseal" (scenaria auditor request …).');
   }
 
+  /** Which step was HEAD at a moment in time (replayed from the event log); null before the first step. */
+  headAt(until: string): string | null {
+    const known = new Set(this.store.listNodes().map((n) => n.id));
+    let head: string | null = null;
+    for (const e of this.store.readEvents()) {
+      if (e.ts > until) continue;
+      if (["mission", "goal", "decision", "checkpoint", "branch", "autosave"].includes(e.type) && e.nodeId && known.has(e.nodeId)) head = e.nodeId;
+      else if (e.type === "rewind" && typeof e.data?.to === "string" && known.has(e.data.to)) head = e.data.to;
+    }
+    return head;
+  }
+
   /** Context fidelity of every node (0–100) plus ledger state — see core/fidelity.ts. */
   fidelity() {
     const nodes = this.store.listNodes();
     const integ = this.integrity();
     const root = nodes.find((n) => n.id === (this.store.readState().projectRoot ?? ROOT_ID));
-    const goalChanges = ((root?.meta?.goalHistory as { until?: string }[] | undefined) ?? []).map((g) => g.until).filter((x): x is string => typeof x === "string");
+    // Robust against a hand-edited root (goalHistory not a list): fidelity must never fail on it.
+    const hist: unknown = root?.meta?.goalHistory;
+    const goalChanges = (Array.isArray(hist) ? hist : []).map((g: any) => g?.until).filter((x): x is string => typeof x === "string");
     const points = fidelityAll(nodes, { integrity: integ.state, goalChanges, confirmed: integ.confirmed });
     return {
       points: Object.fromEntries(points),
@@ -989,7 +1003,7 @@ export class Scenaria {
     if (!g || g === root.goal) return root;
     const prev = root.goal;
     root.goal = g;
-    if (prev) root.meta = { ...(root.meta ?? {}), goalHistory: [...((root.meta?.goalHistory as any[]) ?? []), { goal: prev, until: new Date().toISOString() }].slice(-100) };
+    if (prev) root.meta = { ...(root.meta ?? {}), goalHistory: [...(Array.isArray(root.meta?.goalHistory) ? (root.meta!.goalHistory as any[]) : []), { goal: prev, until: new Date().toISOString() }].slice(-100) };
     this.save(root);
     this.store.appendEvent({ type: "update", nodeId: root.id, data: { fields: ["goal"], message: prev ? "main goal changed" : "main goal set" } });
     return root;

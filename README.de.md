@@ -36,6 +36,10 @@ scenaria setup --global     # Agenten-Konfiguration auf Nutzerebene; Projekte ri
 
 Scenaria richtet sich nie im Home-Ordner oder in Ordnern ein, die nicht nach Projekt aussehen.
 
+**Ohne Terminal:** Einmal `scenaria launcher` (oder Einstellungen → *Start-Symbol anlegen*) legt ein Scenaria-Symbol auf deinen Schreibtisch. Ein Doppelklick startet Scenaria für dieses Projekt; ein zweiter Doppelklick öffnet nur das Dashboard wieder.
+
+**Claude Desktop:** Einstellungen → *Deine KI verbinden* → Claude Desktop (oder `scenaria init --for claude-desktop`) trägt dieses Projekt in die Claude-App ein. Die App ganz beenden und neu öffnen; danach kann Claude Schritte festhalten und zurückspringen.
+
 **Muss ich dem Agenten sagen, dass er Scenaria nutzen soll?** Bei Claude Code nicht: Die Hooks erfassen Prompts, Rückfragen, Pläne und Dateiänderungen, und jeder Prompt bekommt automatisch eine einzeilige Scenaria-Erinnerung. Für alle anderen Agenten und Chats gibt es im Dashboard den Knopf **Agent-Prompt** (oder `scenaria prompt`) mit einem fertigen Text zum Kopieren, in drei Varianten: MCP-Agenten, Shell-Agenten und normale Chats ohne Tools.
 
 ## Ein Projektbaum, ein Hauptziel
@@ -104,7 +108,7 @@ So werden Fixpunkte durchgesetzt:
 - **Chat (rechtes Panel):** Sprich mit deinem Modell – es bedient Scenaria mit denselben Werkzeugen wie deine Agenten: Status, Kontext, Entscheidungen, Checkpoints, Aufgaben, Kanon-Vorschläge, Relay. Auch deine eigenen Aktionen gehen per Chat – Kanon freigeben/ablehnen/ausmustern, Prüfungen, Gate, Modell-Analyse, Modell wechseln, Agenten verbinden: Das Modell *fragt* nur, Scenaria zeigt eine Karte mit genau dem, was passiert, und es läuft nach deinem Klick. Zurückspulen und Verzweigen warten ebenfalls auf dein OK (einstellbar). Jeder Chat wird als Unterhaltung aufgezeichnet. Ollama wird über seine eigene Schnittstelle mit 16k Kontextfenster angesprochen (`SCENARIA_OLLAMA_CTX`), damit Werkzeuge und Projektstand nie abgeschnitten werden; Tool-Aufrufe, die kleine Modelle als Text schreiben, werden erkannt.
 - **Dein eigener Agent:** in den Einstellungen verbinden (MCP) oder die HTTP-Tools aufrufen – er bekommt genau dieselben Möglichkeiten und Grenzen wie der eingebaute Chat.
 
-Einstellungen, Chat und Relay handeln für dich und nutzen deine Schlüssel – sie brauchen deshalb wie Kanon-Freigaben die Freigabe-Sitzung (den Freigabe-Link aus `scenaria start`).
+Einstellungen, Chat und Relay handeln für dich und nutzen deine Schlüssel – sie brauchen deshalb wie Kanon-Freigaben den **Freigabe-Modus**. `scenaria start` öffnet ihn in deinem Browser; fehlt er in einem Fenster, klick oben auf das Schloss 🔒, und Scenaria öffnet ein neues Fenster im Freigabe-Modus (der Link läuft nie über etwas, das ein Agent lesen könnte).
 
 ## Prognosen, Orakel und Prüf-Experte: sehen, bevor man wählt (v0.9)
 
@@ -127,9 +131,16 @@ Unter Analyse → **★ Experten-Analyse** wird eine Linie, das ganze Projekt od
 
 Ein Klick auf den Projektnamen oben zeigt deine Scenaria-Projekte auf diesem Rechner, und du kannst das Dashboard umschalten. Freigabe und Schlüssel (nur im Speicher) bleiben erhalten. Agenten arbeiten weiter in ihrem eigenen Projekt: MCP-Agenten in ihrem Ordner, und HTTP-Tools, LLM-Proxy und das automatische Sichern des Servers bleiben beim Startprojekt.
 
+## Drei Ansichten, einfache Worte
+
+Das Dashboard hat drei Ansichten auf dieselben Daten:
+- **Einfach** (Standard): dein Verlauf in Klartext, nach Tagen. *Zurück zu diesem Stand* setzt deine Dateien auf jeden gesicherten Stand (mit *Rückgängig*), *Was hat die KI gemacht?* zeigt Auftrag, Ergebnis und geänderte Dateien, und jeder Stand lässt sich als Ordner öffnen.
+- **Prüfung**: die Szenario-Karte mit Regeln und Meilensteinen, Projekt-Check und Protokoll.
+- **Steuerung**: Chat, Analyse und **Erweiterungen** (Prognosen, Prüf-Experte, Relay).
+
 ## Hilfe und Einführung
 
-**?** oben rechts erklärt jede Funktion in einfachen Worten, und jeder Dialog hat sein eigenes **?**. Beim ersten Besuch führt eine kurze Einführung durch die ersten Schritte: Ziel, Agent, Modell, Prognosen, Fixpunkte und Analyse. Du kannst sie überspringen und über **Mehr → Einführung** jederzeit neu starten.
+**?** oben rechts erklärt jede Funktion in einfachen Worten, und jeder Dialog hat sein eigenes **?**. Beim ersten Besuch führt eine kurze Einführung durch die ersten Schritte: Ziel, deine KI, Verlauf, Ansichten. Du kannst sie überspringen und über **Mehr → Einführung** jederzeit neu starten.
 
 ## Kontext-Treue: sehen, wo Kontext abbrach, sich änderte oder manipuliert wurde
 
@@ -221,7 +232,7 @@ Unveränderte Dateien werden nur einmal gespeichert – auf macOS (APFS) als Cop
 
 ## Funktioniert mit jedem LLM und Agenten-Stack
 
-Claude Code (MCP + Hooks), Cursor, VS Code/Copilot, Gemini CLI, Codex, Windsurf (MCP + `AGENTS.md`), jede API mit Function Calling (`scenaria tools --format openai|anthropic|gemini`), LangChain/CrewAI/AutoGen über den Python-Client, n8n/Make über HTTP, Shell-Agenten über `scenaria call`. Alle Wege nutzen dieselben 18 Werkzeuge.
+Claude Code (MCP + Hooks), Claude Desktop (MCP, je Projekt ein Eintrag), Cursor, VS Code/Copilot, Gemini CLI, Codex, Windsurf (MCP + `AGENTS.md`), jede API mit Function Calling (`scenaria tools --format openai|anthropic|gemini`), LangChain/CrewAI/AutoGen über den Python-Client, n8n/Make über HTTP, Shell-Agenten über `scenaria call`. Alle Wege nutzen dieselben 18 Werkzeuge.
 
 ## Für Organisationen
 

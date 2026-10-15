@@ -5,6 +5,7 @@
  *   progress         which role is working right now, how long it takes,
  *   result card      the answer in plain words, errors with what to do about them.
  */
+import { LockedNote, useApprovalSignal } from "./Approval";
 import { useEffect, useRef, useState } from "react";
 import { api, type Audit, type Forecast, type OracleBacktestRun, type SettingsPage } from "./api";
 import { NodeId } from "./Map";
@@ -19,12 +20,15 @@ export type Readiness = { settings: SettingsPage | null; approval: boolean; mode
 
 export function useReadiness(keys: SessionKeys, hasGoal: boolean): Readiness {
   const [settings, setSettings] = useState<SettingsPage | null>(null);
-  useEffect(() => {
+  const loadSettings = () =>
     api
       .settings()
       .then(setSettings)
       .catch(() => {});
+  useEffect(() => {
+    void loadSettings();
   }, []);
+  useApprovalSignal(() => void loadSettings());
   const eff = settings?.effective.oracle ?? null;
   const provider = eff?.provider ?? null;
   const keyMissing = Boolean(provider && !LOCAL.has(provider) && !eff?.baseUrl && !keys[provider] && !(settings?.envKeys[provider]?.length ?? 0));
@@ -146,7 +150,7 @@ export function NewDecisionForm({ t, approval, ready, onCreated, onCancel }: { t
           </button>
         )}
       </div>
-      {!approval && <p className="qnote q-warn">🔒 {t.rdNoApproval}</p>}
+      {!approval && <LockedNote t={t} text={t.rdNoApproval} />}
       {err && <ErrorBox t={t} message={err} />}
     </div>
   );

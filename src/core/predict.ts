@@ -119,7 +119,7 @@ export function readHistory(s: Scenaria): History {
     canon: canonState(s.store).events,
     rootId: root?.id ?? null,
     rootGoal: root?.goal ?? "",
-    goalHistory: (root?.meta?.goalHistory as { goal?: string; until?: string }[] | undefined) ?? [],
+    goalHistory: Array.isArray(root?.meta?.goalHistory) ? (root!.meta!.goalHistory as { goal?: string; until?: string }[]).filter((g) => g && typeof g === "object") : [],
   };
 }
 

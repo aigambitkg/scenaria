@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { Scenaria } from "./core/engine.js";
 import { Store, resolveRoot } from "./core/store.js";
 import { optionLabel } from "./core/context.js";
@@ -23,10 +23,13 @@ Quick start
   start [--for <targets>] [--no-open] [--no-watch] [--port 4477]
                                         One command: init, auto-detect & wire your agents, dashboard + proxy + auto-save
   setup --global [--for <targets>]      Register Scenaria once for ALL projects (user-level agent configs)
+  launcher [--to <folder>]              A start icon to double-click (desktop by default): starts Scenaria
+                                        for this project without typing a command; a second click reuses it
 
 Setup
   init [--for <targets>] [--no-rules]   Initialize .scenaria/ and wire agents:
-                                        claude, cursor, vscode, gemini, codex, windsurf, generic, all
+                                        claude, claude-desktop, cursor, vscode, gemini, codex, windsurf,
+                                        generic, all (all = every agent except the Claude Desktop app)
   ui [--port 4477] [--no-open]          Dashboard / scenario map (local only)
   serve [--host 0.0.0.0] [--port 4477] [--token ..]
                                         Dashboard + HTTP API for teams (token required off-localhost)
@@ -125,6 +128,20 @@ Universal tool layer (same tools as MCP)
 Global: --root <dir>  --json  --agent <name>  --model <model>  --user <name>
 `;
 
+/** A Scenaria dashboard on this machine already serving the project with this key, if any. */
+async function findRunning(key: string): Promise<{ url: string; otherView: boolean } | null> {
+  for (let port = 4477; port < 4487; port++) {
+    const url = `http://127.0.0.1:${port}`;
+    try {
+      const r = await fetch(`${url}/api/v1/health`, { signal: AbortSignal.timeout(400) });
+      const h: any = await r.json();
+      // Only the server that records THIS project (auto-save, agents) counts; its dashboard may show another one.
+      if (h?.name === "scenaria" && h.rootKey === key) return { url, otherView: Boolean(h.viewKey && h.viewKey !== key) };
+    } catch {}
+  }
+  return null;
+}
+
 const opts = {
   root: { type: "string" },
   json: { type: "boolean" },
@@ -133,6 +150,8 @@ const opts = {
   "no-claude-md": { type: "boolean" },
   "no-rules": { type: "boolean" },
   for: { type: "string" },
+  to: { type: "string" },
+  launcher: { type: "boolean" },
   model: { type: "string" },
   user: { type: "string" },
   host: { type: "string" },
@@ -387,10 +406,43 @@ async function main() {
       startWatch(s, { interval: Math.max(1, Number(v.interval ?? 3)) * 1000, quiet, agent: v.agent ?? process.env.SCENARIA_AGENT ?? "watch", model: v.model, user: v.user, log: true });
       return;
     }
+    case "launcher": {
+      const { writeLauncher } = await import("./setup.js");
+      const s = Scenaria.open(v.root);
+      const file = writeLauncher(s.root, v.to);
+      out(`${C.green}✔${C.reset} Start icon: ${file}\n  Double-click it to start Scenaria for ${s.root}. The dashboard opens in your browser, ready for your approvals.`, { file });
+      return;
+    }
     case "start": {
       const { setupAgents, parseTargets, detectAgents } = await import("./setup.js");
-      const { startServer } = await import("./server.js");
+      const { startServer, rootKey } = await import("./server.js");
       const startRoot = v.root ?? process.cwd();
+      // From the start icon: never set up a new project (the folder may have moved, or the icon runs elsewhere).
+      if (v.launcher && !new Store(resolveRoot(startRoot)).exists) {
+        throw new Error(`No Scenaria project in ${resolve(startRoot)} — was the folder moved or renamed? Start Scenaria there once with "scenaria start", then create a new start icon.`);
+      }
+      // Already running for this project (second double-click)? Open its dashboard instead of a second server.
+      if (!v.port) {
+        const running = await findRunning(rootKey(resolveRoot(startRoot)));
+        if (running) {
+          let opened = false;
+          let why = "";
+          if (!v["no-open"]) {
+            try {
+              // Logged as asked by "scenaria start" (not the dashboard), with the longer wait between openings.
+              const r = await fetch(`${running.url}/api/approval/open`, { method: "POST", headers: { "x-scenaria": "1", "x-scenaria-agent": "scenaria start", "content-type": "application/json" }, body: "{}", signal: AbortSignal.timeout(4000) });
+              opened = r.ok;
+              if (!r.ok) why = String(((await r.json().catch(() => ({}))) as any)?.error ?? `HTTP ${r.status}`);
+            } catch {}
+          }
+          process.stdout.write(
+            `${C.bold}Scenaria is already running${C.reset} for this project: ${C.cyan}${running.url}${C.reset}\n` +
+              (opened ? "  Opened the dashboard in your browser (with approval).\n" : why ? `  Did not open a new window: ${why} Open ${running.url} in your browser.\n` : "") +
+              (running.otherView ? "  Its dashboard currently shows another project — click the project name at the top to switch back.\n" : ""),
+          );
+          return;
+        }
+      }
       const s = new Store(resolveRoot(startRoot)).exists ? Scenaria.open(startRoot) : Scenaria.init(startRoot, { force: v.force, newProjectInFolder: await confirmNewProject(startRoot) });
       const targets = v.for ? parseTargets(v.for) : detectAgents();
       const r = setupAgents(s.root, [...targets, "generic"].filter((t, i, a) => a.indexOf(t) === i) as any, { rulesFiles: !v["no-rules"] });
@@ -1130,7 +1182,12 @@ async function main() {
   }
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   process.stderr.write(`${C.red}✘ ${err?.message ?? err}${C.reset}\n`);
   process.exitCode = 1;
+  // Started from the start icon: the terminal window would close before anyone could read this.
+  if (process.argv.includes("--launcher") && process.stdin.isTTY) {
+    process.stderr.write("Press Enter to close this window.\n");
+    await new Promise((r) => process.stdin.once("data", r));
+  }
 });

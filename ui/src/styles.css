@@ -816,3 +816,84 @@ table.gate tr.current td:first-child { box-shadow: inset 4px 0 0 var(--marker-so
 .err-box.soft > strong { color: var(--ink-2); }
 .err-box details { margin-top: 6px; }
 .err-box code { font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; }
+
+/* ---------- three views (Batch B) ---------- */
+.views { display: inline-flex; border: 1px solid var(--rule); border-radius: 3px; overflow: hidden; flex: none; }
+.views button { border: 0; background: transparent; padding: 5px 12px; font-size: 13px; cursor: pointer; color: var(--ink-2); }
+.views button + button { border-left: 1px solid var(--rule); }
+.views button.on { background: var(--ink); color: var(--surface); font-weight: 600; }
+.toast { display: flex; align-items: center; gap: 12px; }
+.toast .btn { background: transparent; color: var(--surface); border-color: color-mix(in srgb, var(--surface) 45%, transparent); padding: 3px 10px; }
+
+/* ---------- the Simple view: the scenario map's time axis, turned on its side ---------- */
+.main.simple-main {
+  display: block; overflow: auto;
+  background-color: var(--paper);
+  background-image: linear-gradient(var(--grid-minor) 1px, transparent 1px), linear-gradient(90deg, var(--grid-minor) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+.app:has(.simple-main) { grid-template-rows: auto 1fr; }
+.simple { max-width: 760px; margin: 0 auto; padding: 32px 16px 96px; }
+.sv-goal-edit { max-width: 760px; margin: 16px auto 0; padding: 12px 16px; display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--rule); }
+.sv-goal-edit .field { flex: 1 1 320px; margin: 0; }
+.sv-head { margin-bottom: 28px; }
+.sv-goal { margin: 0 0 6px; font-size: 26px; line-height: 1.25; font-weight: 600; letter-spacing: -0.015em; }
+.sv-goal-text { all: unset; cursor: text; border-bottom: 1px dashed transparent; }
+.sv-goal-text:hover, .sv-goal-text:focus-visible { border-bottom-color: var(--ink-3); }
+.sv-status { margin: 0; color: var(--ink-2); font-size: 15px; }
+.sv-alarm { margin: 14px 0 0; padding: 10px 12px; border-left: 3px solid var(--fail); background: var(--surface); color: var(--ink); display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.sv-empty { background: var(--surface); border: 1px solid var(--rule); padding: 20px; font-size: 15px; }
+.sv-empty p { margin: 0 0 14px; max-width: 60ch; }
+
+.sv-days, .sv-steps { list-style: none; margin: 0; padding: 0; }
+.sv-day + .sv-day { margin-top: 26px; }
+.sv-day-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 0 0 6px 72px; }
+.sv-day-head h2 { margin: 0; font-size: 15px; font-weight: 600; color: var(--ink-2); }
+
+/* each step: time on the left, the axis, then the sentence */
+.sv-step { position: relative; display: grid; grid-template-columns: 56px 1fr; column-gap: 32px; padding: 10px 0 12px; }
+.sv-step::before { /* the axis */
+  content: ""; position: absolute; left: 72px; top: 0; bottom: 0; width: 2px; background: var(--ink);
+}
+.sv-step::after { /* the tick */
+  content: ""; position: absolute; left: 66px; top: 19px; width: 14px; height: 2px; background: var(--ink);
+}
+.sv-step.abandoned::before { background: repeating-linear-gradient(var(--ink-3) 0 4px, transparent 4px 8px); }
+.sv-step.abandoned .sv-text { color: var(--ink-2); }
+.sv-time { font-family: var(--math); font-style: italic; font-size: 17px; text-align: right; padding-top: 6px; color: var(--ink); }
+.sv-body { min-width: 0; }
+.sv-line { margin: 0; font-size: 16px; line-height: 1.4; max-width: 64ch; }
+.sv-step.now .sv-text { background: linear-gradient(transparent 12%, var(--marker) 12%, var(--marker) 88%, transparent 88%); box-decoration-break: clone; -webkit-box-decoration-break: clone; padding: 0 2px; }
+.sv-now { font-weight: 650; margin-right: 8px; }
+.sv-meta { margin: 3px 0 0; color: var(--ink-2); font-size: 13.5px; max-width: 70ch; }
+.sv-verdict { margin-left: 10px; font-size: 12px; padding: 1px 7px; border: 1px solid var(--rule); border-radius: 3px; white-space: nowrap; }
+.sv-verdict.v-passed { border-color: var(--pass); color: var(--pass); }
+.sv-verdict.v-failed { border-color: var(--fail); color: var(--fail); }
+.sv-verdict.v-warning { border-color: var(--warn); color: var(--warn); }
+.sv-verdict.v-self { border-style: dashed; }
+.sv-actions { display: flex; gap: 10px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+.sv-actions .btn.link { padding-left: 0; }
+.sv-detail { margin-top: 8px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--rule); font-size: 13.5px; max-width: 64ch; }
+.sv-detail p, .sv-detail ul { margin: 0 0 8px; }
+.sv-detail ul { padding-left: 18px; }
+.sv-detail .row { margin: 4px 0 0; display: flex; gap: 8px; flex-wrap: wrap; }
+.sv-foot { margin: 24px 0 0 72px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+
+@media (max-width: 560px) {
+  .views button { padding: 5px 8px; }
+  .simple { padding-top: 20px; }
+  .sv-goal { font-size: 21px; }
+  .sv-step { grid-template-columns: 44px 1fr; column-gap: 20px; }
+  .sv-step::before { left: 54px; }
+  .sv-step::after { left: 49px; width: 12px; }
+  .sv-time { font-size: 15px; }
+  .sv-day-head, .sv-foot { margin-left: 0; }
+}
+.settings details.advanced > summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
+.settings details.advanced[open] > summary { margin-bottom: 8px; }
+.settings details.advanced > .a-sec { margin-left: 0; }
+.qnote.locked { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.qnote.locked > p { flex-basis: 100%; margin: 0; }
+.settings .launcher { margin-top: 10px; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* Agents write long paths and URLs: never let them push the Simple view sideways. */
+.sv-text, .sv-meta, .sv-goal-text, .sv-detail, .sv-detail li, .modal-body li { overflow-wrap: anywhere; }

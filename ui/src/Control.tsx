@@ -1,3 +1,4 @@
+import { LockedNote, useApprovalSignal } from "./Approval";
 import { HelpButton } from "./HelpButton";
 /**
  * v0.7 — control surfaces: Settings (models, keys, agents), the built-in chat, the relay dialog
@@ -317,6 +318,7 @@ export function SettingsDialog(props: { t: Dict; keys: SessionKeys; onKey: (prov
   useEffect(() => {
     load().catch((e) => setErr(errText(e)));
   }, []);
+  useApprovalSignal(() => setPage((p) => (p ? { ...p, approval: true } : p)));
   const locked = !page?.approval || Boolean(busy);
 
   const save = async () => {
@@ -351,7 +353,8 @@ export function SettingsDialog(props: { t: Dict; keys: SessionKeys; onKey: (prov
     try {
       const r = await api.connectAgents([a.target]);
       setPage((p) => (p ? { ...p, agents: r.agents } : p));
-      [...r.changes, ...r.notes].slice(0, 3).forEach((m) => props.toast(m));
+      if (a.target === "claude-desktop" && r.changes.length) props.toast(t.desktopConnected);
+      else [...r.changes, ...r.notes].slice(0, 3).forEach((m) => props.toast(m));
     } catch (e) {
       setErr(errText(e));
     } finally {
@@ -362,10 +365,59 @@ export function SettingsDialog(props: { t: Dict; keys: SessionKeys; onKey: (prov
   return (
     <Modal wide title={<>{t.settingsTitle} <HelpButton topic="settings" /></>} onClose={props.onClose}>
       <div className="modal-body analysis settings">
-        {page && !page.approval && <p className="qnote q-warn">🔒 {t.settingsLocked}</p>}
+        {page && !page.approval && <LockedNote t={t} text={t.settingsLocked} />}
         {err && <p className="error">{err}</p>}
         {page && (
           <>
+            <section className="a-sec">
+              <h3>{t.agentsSection}</h3>
+              <p className="hint">{t.agentsHint}</p>
+              <table className="agents">
+                <tbody>
+                  {page.agents.map((a) => (
+                    <tr key={a.target}>
+                      <td>
+                        <strong>{a.target === "generic" ? t.agentGeneric : a.label}</strong>
+                        <div className="muted small">{a.target === "claude-desktop" ? t.desktopWhere : a.where}</div>
+                      </td>
+                      <td>{a.detected && a.target !== "generic" ? <span className="chip">{t.agentInstalled}</span> : null}</td>
+                      <td>{a.connected ? <span className="chip v-passed">✓ {t.agentConnected}</span> : <span className="muted small">{t.agentNotConnected}</span>}</td>
+                      <td className="right">
+                        {a.target !== "windsurf" && (
+                          <button className="btn" disabled={locked} onClick={() => connect(a)}>
+                            {busy === a.target ? t.running : t.connect}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {!page.teamMode && (
+                <div className="launcher row">
+                  <button
+                    className="btn"
+                    disabled={locked || busy === "launcher"}
+                    onClick={async () => {
+                      setBusy("launcher");
+                      setErr(null);
+                      try {
+                        const r = await api.createLauncher();
+                        props.toast(t.launcherDone(r.file));
+                      } catch (e) {
+                        setErr(errText(e));
+                      } finally {
+                        setBusy(null);
+                      }
+                    }}
+                  >
+                    {t.launcherCreate}
+                  </button>
+                  <span className="hint">{t.launcherHint}</span>
+                </div>
+              )}
+            </section>
+
             <section className="a-sec">
               <h3>{t.modelSection}</h3>
               <p className="hint">{t.modelSectionHint}</p>
@@ -381,6 +433,8 @@ export function SettingsDialog(props: { t: Dict; keys: SessionKeys; onKey: (prov
               </details>
             </section>
 
+            <details className="a-sec advanced">
+              <summary>{t.advancedSettings}</summary>
             <section className="a-sec">
               <h3>{t.chatBehaviour}</h3>
               <label className="check">
@@ -407,36 +461,12 @@ export function SettingsDialog(props: { t: Dict; keys: SessionKeys; onKey: (prov
             </section>
 
             <section className="a-sec">
-              <h3>{t.agentsSection}</h3>
-              <p className="hint">{t.agentsHint}</p>
-              <table className="agents">
-                <tbody>
-                  {page.agents.map((a) => (
-                    <tr key={a.target}>
-                      <td>
-                        <strong>{a.target === "generic" ? t.agentGeneric : a.label}</strong>
-                        <div className="muted small">{a.where}</div>
-                      </td>
-                      <td>{a.detected && a.target !== "generic" ? <span className="chip">{t.agentInstalled}</span> : null}</td>
-                      <td>{a.connected ? <span className="chip v-passed">✓ {t.agentConnected}</span> : <span className="muted small">{t.agentNotConnected}</span>}</td>
-                      <td className="right">
-                        {a.target !== "windsurf" && (
-                          <button className="btn" disabled={locked} onClick={() => connect(a)}>
-                            {busy === a.target ? t.running : t.connect}
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <h4>{t.ownAgent}</h4>
+              <h3>{t.ownAgent}</h3>
               <p className="hint">{t.ownAgentHint}</p>
               <Copyable t={t} text={page.snippets.mcpJson} toast={props.toast} block />
               {page.snippets.http && <Copyable t={t} text={page.snippets.http.tools} toast={props.toast} />}
               {page.snippets.proxy && Object.values(page.snippets.proxy).map((u) => <Copyable key={u} t={t} text={u} toast={props.toast} />)}
             </section>
-
             {!page.teamMode && (
               <section className="a-sec">
                 <h3>{t.trustedSection}</h3>
@@ -444,6 +474,8 @@ export function SettingsDialog(props: { t: Dict; keys: SessionKeys; onKey: (prov
                 <textarea className="trusted" rows={3} value={trusted} placeholder="https://llm-proxy.example.com/v1" onChange={(e) => setTrusted(e.target.value)} />
               </section>
             )}
+
+            </details>
 
             <div className="row sticky-save">
               <button className="btn primary" disabled={locked} onClick={save}>
@@ -510,6 +542,7 @@ export function ChatPanel(props: { t: Dict; lang: "de" | "en"; keys: SessionKeys
   const [notice, setNotice] = useState<string | null>(null);
   const [model, setModel] = useState<{ provider: string; model: string } | null | undefined>(undefined);
   const [approval, setApproval] = useState(false);
+  useApprovalSignal(() => setApproval(true));
   const end = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -637,7 +670,7 @@ export function ChatPanel(props: { t: Dict; lang: "de" | "en"; keys: SessionKeys
         </div>
       </div>
       <div className="chat-log">
-        {!approval && <p className="qnote q-warn">🔒 {t.settingsLocked}</p>}
+        {!approval && <LockedNote t={t} text={t.settingsLocked} />}
         {approval && model === null && (
           <p className="qnote q-warn">
             {t.chatNoModel}{" "}
@@ -791,6 +824,7 @@ export function RelayDialog(props: { t: Dict; lang: "de" | "en"; keys: SessionKe
   const [report, setReport] = useState<RelayReport | null>(null);
   const [history, setHistory] = useState<RelayReport[]>([]);
   const [approval, setApproval] = useState(false);
+  useApprovalSignal(() => setApproval(true));
   const [provider, setProvider] = useState<string | null>(null);
   useEffect(() => {
     api.relays().then(setHistory).catch(() => {});
@@ -806,7 +840,7 @@ export function RelayDialog(props: { t: Dict; lang: "de" | "en"; keys: SessionKe
     <Modal wide title={<>{t.relayTitle} <HelpButton topic="relay" /></>} onClose={props.onClose}>
       <div className="modal-body analysis">
         <p className="hint">{t.relayHint}</p>
-        {!approval && <p className="qnote q-warn">🔒 {t.settingsLocked}</p>}
+        {!approval && <LockedNote t={t} text={t.settingsLocked} />}
         <form
           className="relay-form"
           onSubmit={async (e) => {

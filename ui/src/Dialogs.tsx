@@ -1,3 +1,4 @@
+import { LockedNote, useApprovalSignal } from "./Approval";
 import { HelpButton } from "./HelpButton";
 import { ExpertPanel } from "./Expert";
 import type { SessionKeys } from "./Control";
@@ -756,6 +757,7 @@ export function CanonDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: stri
   const [fileError, setFileError] = useState<string | null>(null);
   const [missing, setMissing] = useState<string[]>([]);
   const [approval, setApproval] = useState(false);
+  useApprovalSignal(() => setApproval(true));
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [adopt, setAdopt] = useState<Record<string, string | undefined>>({});
@@ -878,7 +880,7 @@ export function CanonDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: stri
     <Modal wide title={<>{t.canonTitle} <HelpButton topic="canon" /></>} onClose={props.onClose}>
       <div className="modal-body analysis canon">
         <p className="hint">{t.canonIntro}</p>
-        {!approval && <p className="qnote q-warn">🔒 {t.canonLocked}</p>}
+        {!approval && <LockedNote t={t} text={t.canonLocked} />}
         {fileError && <p className="error">{fileError}</p>}
         {missing.length > 0 && (
           <p className="error">

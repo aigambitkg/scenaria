@@ -47,7 +47,7 @@ Every decision point of an agent run leaves a **restorable, verifiable state**. 
 | **Tools** | `src/tools.ts` | Vendor-neutral tool registry + schema export (OpenAI, Anthropic, Gemini, JSON, MCP) |
 | MCP | `src/mcp.ts` | Registers the registry over stdio |
 | Hooks | `src/hooks.ts` | Claude Code automatic capture, never blocking |
-| Setup | `src/setup.ts` | Idempotent wiring for Claude, Cursor, VS Code, Gemini CLI, Codex, Windsurf, AGENTS.md |
+| Setup | `src/setup.ts` | Idempotent wiring for Claude Code, Claude Desktop, Cursor, VS Code, Gemini CLI, Codex, Windsurf, AGENTS.md; start icon |
 | Server | `src/server.ts` | Dashboard API, `/api/v1` tool API, local or token-protected team mode |
 | Python client | `clients/python/scenaria_client.py` | stdlib-only client for any Python agent stack |
 | UI | `ui/` | Vite + React + React Flow, prebuilt into `dist/ui` |
@@ -374,6 +374,16 @@ The visual language comes from the scenario-tree diagrams of operations research
 
 Typefaces: Instrument Sans for the UI and STIX Two Text italic for ids and the axis. Both are bundled, so the dashboard works offline.
 
+### Three views on the same data (0.9.3)
+
+- **Simple** (default for a new browser, `localStorage "scenaria.view.v1"`): the history as a time axis by day, newest first, one plain sentence per step (`SimpleView.tsx`). The highlighter marks "Now". "Back to this state" calls the same `rewind` (files restored, autosave first) and offers Undo; "What did the AI do?" shows the leading user request (`/api/node/:id/messages`), outputs, files and the diff; "open as folder" materialises the snapshot folder. "Checked by you" uses `integrity().confirmed` only (also the node panel and the map: nothing counts while the check loads or fails, and the Simple view then warns). "Back to the state at the end of yesterday" asks `GET /api/head-at?until=<local midnight>`, which replays the event log, so an evening "go back" is respected.
+- **Audit**: the scenario map with goal bar, rules and milestones, project check, protocol and conversations.
+- **Manage**: the map with chat, analysis, "Extensions" (forecasts, Prüf-Experte, relay; code unchanged) and "More".
+
+### The approval mode without copying a link (0.9.3)
+
+`scenaria start` opens the first single-use link itself. Later, the lock 🔒 in the top bar (and the button in every locked notice) sends `POST /api/approval/open` (needs `X-Scenaria: 1`, local mode only). The server process creates a fresh single-use code (valid 60 s, at most three outstanding; the start link stays valid) and hands `/?approve=<code>` to the operating system's browser (`open` / `xdg-open` / `start`). A code is used up before anything else is checked, also when the browser is already approved, so it never stays valid in a browser history. The answer only says "opened", "already", "busy" (15 s between openings from the dashboard, 60 s for anything else) or "no browser", and the request is logged with who asked. Every window of that browser shares the cookie, so the window that asked becomes approved too. Team mode keeps the approver token.
+
 ## Identity and versions (v0.3)
 
 Every node carries:
@@ -441,6 +451,10 @@ The folders must live inside `.scenaria/`, so they are never snapshotted themsel
   4. baseline mission, taken after wiring, so agent configs belong to the baseline;
   5. dashboard, API and proxy in one process;
   6. auto-save loop (stat fingerprint per tick, a version after 10 s of quiet).
+
+  If a Scenaria already serves the same folder on ports 4477–4486 (`/api/v1/health` → `rootKey`, a hash of the real path), `start` does not start a second server: it asks the running one to open its dashboard with approval and exits.
+- **Start icon** (`scenaria launcher`, Settings → "Create start icon"): a `.command` (macOS), `.cmd` (Windows, UTF-8 code page first) or `.desktop` (Linux) file on the desktop (or in the project) that runs `scenaria start --launcher --root <folder>`. With `--launcher`, `start` refuses to set up a project, so a moved folder or an icon run elsewhere never turns the desktop into a project.
+- **Claude Desktop** has no project folder, so `--for claude-desktop` writes one entry per project into the app's `claude_desktop_config.json` (`scenaria-<folder>`, args `… mcp --root <real path>`, `SCENARIA_AGENT=claude-desktop`). An existing entry for the same folder is updated, other entries and settings are kept; a file with comments is left alone. It is never part of `all` or of the automatic wiring in `start`.
 - `scenaria setup --global` writes user-level configs and sets `~/.config/scenaria/config.json` → `autoInit: true` (deliberately not `~/.scenaria/`, which would mark the home folder as a project):
   - Claude Code: `claude mcp add --scope user`, plus hooks and rules in `~/.claude`;
   - Cursor and VS Code: user `mcp.json` with `--root ${workspaceFolder}`;

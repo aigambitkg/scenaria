@@ -41,6 +41,25 @@ const de: HelpTopic[] = [
     open: { action: "onboarding", label: "Einführung starten" },
   },
   {
+    id: "simple",
+    title: "Einfach: zurück zu jedem Stand",
+    what: "Die Einfach-Ansicht zeigt deinen Verlauf in Klartext, das Neueste oben. Jeder Eintrag ist ein gesicherter Stand deiner Dateien – du kannst zu jedem zurück, und der Stand davor bleibt gesichert.",
+    when: "Wenn die KI etwas kaputt gemacht hat, wenn dir eine frühere Fassung besser gefiel, oder wenn du einfach sehen willst, was die KI heute gemacht hat.",
+    how: [
+      "Oben steht, worum es in diesem Projekt geht. Ein Klick darauf ändert es.",
+      "„Was hat die KI gemacht?“ zeigt den Auftrag, das Ergebnis und die geänderten Dateien.",
+      "„Zurück zu diesem Stand“ setzt deine Dateien genau auf diesen Stand. Danach erscheint „Rückgängig“, falls du es dir anders überlegst.",
+      "Bei einem früheren Tag bringt dich „Zurück zum Stand von gestern Abend“ mit einem Klick dorthin.",
+      "„Diesen Stand als Ordner öffnen“ zeigt die Dateien von damals im Finder, ohne etwas zu verändern.",
+    ],
+    terms: [
+      ["Jetzt", "Der Stand, auf dem deine Dateien gerade sind (gelb markiert)."],
+      ["Von dir geprüft", "Du hast bestätigt, dass dieser Stand stimmt. Nur dein Urteil (oder das eines registrierten Prüfagenten) zählt."],
+      ["Frühere Versuche", "Wege, die nach einem Zurückspringen nicht weiterverfolgt wurden. Sie bleiben erhalten und lassen sich einblenden."],
+    ],
+    notes: ["Die Ansichten „Prüfung“ und „Steuerung“ zeigen dieselben Daten ausführlicher – für Prüfer und für die Steuerung vieler Agenten."],
+  },
+  {
     id: "goal",
     title: "Hauptziel und Teilziele",
     what: "Das Hauptziel ist der Nordstern des Projekts. Teilziele gliedern die Arbeit. Kontext-Treue, Prognosen und Analysen messen, wie nah jeder Schritt daran bleibt.",
@@ -81,14 +100,14 @@ const de: HelpTopic[] = [
     what: "Ein Schritt gilt nur dann als „geprüft“, wenn du selbst oder ein von dir registrierter, unabhängiger Prüfagent ihn bestätigt. Ein Agent kann seine eigene Arbeit melden, aber nie selbst als geprüft markieren.",
     when: "Wenn du sicher wissen willst, zu welchem Stand du gefahrlos zurückspringen kannst – und wenn ein Audit belegen soll, dass ein Mensch oder eine unabhängige Stelle kontrolliert hat.",
     how: [
-      "Knoten anklicken → „Stimmt so“ oder „Problem gefunden“. Das geht nur mit dem Freigabe-Link aus dem Terminal, damit kein Programm in deinem Namen urteilt.",
+      "Knoten anklicken → „Stimmt so“ oder „Problem gefunden“. Das geht nur im Freigabe-Modus (Schloss 🔒 oben), damit kein Programm in deinem Namen urteilt.",
       "Im Terminal: scenaria verify <id> --status passed (zählt nur in einem echten Terminal, nicht in der Shell eines Agenten).",
       "Unabhängiger Prüfagent: einmalig scenaria auditor keygen --dir <Ordner außerhalb jedes Projekts>, dann scenaria auditor add <öffentlicher Schlüssel>. Seine signierten Urteile zählen wie deine.",
     ],
     terms: [
       ["Vom Agenten gemeldet", "Der Agent hat „passt“ gesagt. Wird angezeigt, zählt aber nicht als geprüft und ist nie das Ziel für „sicher zurückspringen“."],
       ["Fälschungsschutz", "Jede Änderung wird in einer Kette festgehalten, und dieser Rechner merkt sich außerhalb des Projekts, wie weit sie reicht. Wird etwas außerhalb von Scenaria geändert, gelöscht, ersetzt oder zurückgesetzt, zeigt Scenaria es an – auch dein eigenes Urteil ist signiert."],
-      ["Neu versiegeln", "Den aktuellen Stand als neue Grundlage annehmen – nur du (mit Freigabe-Link im Knoten-Panel oder im Terminal: scenaria integrity --reseal) oder ein registrierter Prüfagent. Das alte Protokoll bleibt als Beweis erhalten."],
+      ["Neu versiegeln", "Den aktuellen Stand als neue Grundlage annehmen – nur du (im Freigabe-Modus im Knoten-Panel oder im Terminal: scenaria integrity --reseal) oder ein registrierter Prüfagent. Das alte Protokoll bleibt als Beweis erhalten."],
     ],
     notes: [
       "Ein „Problem gefunden“ zählt immer, auch vom Agenten: Eine Selbstauskunft darf das Vertrauen senken, nie heben. Und ein Agent kann dein Urteil nie ersetzen – seine spätere Meldung steht daneben.",
@@ -123,7 +142,7 @@ const de: HelpTopic[] = [
       ["Trefferquote", "Später misst Scenaria, wie treu die Linie wirklich blieb; die Abweichung (±) zeigt, wie gut die Prognosen sind (Tab „Güte“)."],
     ],
     notes: [
-      "Das Multiversum nutzt dein Modell (3 Aufrufe je Prognose) und braucht den Freigabe-Link.",
+      "Das Multiversum nutzt dein Modell (3 Aufrufe je Prognose) und braucht den Freigabe-Modus.",
       "Automatisch: In den Einstellungen einschaltbar, mit Tageslimit für alle Projekte zusammen.",
       "Der Kern ist wortbasiert: Synonyme oder eine andere Sprache erkennt er nicht – dafür ist das Orakel da, und dafür prüft der Prüf-Experte das Orakel.",
     ],
@@ -152,7 +171,7 @@ const de: HelpTopic[] = [
     notes: [
       "Aussagekräftig ab 10 Entscheidungen; davor zeigt Scenaria die Zahlen als Tendenz.",
       "Prüfungen und Backtests werden signiert gespeichert; außerhalb geänderte Dateien werden erkannt und ignoriert.",
-      "KI-Prüfung und Orakel-Backtest nutzen dein Modell und brauchen den Freigabe-Link (im Terminal: scenaria forecast --audit f3 --deep).",
+      "KI-Prüfung und Orakel-Backtest nutzen dein Modell und brauchen den Freigabe-Modus (im Terminal: scenaria forecast --audit f3 --deep).",
     ],
     open: { action: "audit", label: "Prüf-Bereich öffnen" },
   },
@@ -163,7 +182,7 @@ const de: HelpTopic[] = [
     what: "Fixpunkte sind Dinge, die feststehen: Vorgaben, Entscheidungen, Zusagen. Agenten bekommen sie in ihren Kontext; Linien, die einen harten Fixpunkt brechen, sind ungültig.",
     how: [
       "Kanon öffnen → „Archivar fragen“: er schlägt Fixpunkte aus der Historie vor.",
-      "Vorschläge prüfen und freigeben – nur du kannst freigeben (Freigabe-Link).",
+      "Vorschläge prüfen und freigeben – nur du kannst freigeben (Freigabe-Modus).",
       "Optional einen Prüfbefehl hinterlegen (z. B. npm test) und das Gate laufen lassen: zeigt, welche Linien die Fixpunkte überstehen.",
     ],
     terms: [
@@ -209,7 +228,7 @@ const de: HelpTopic[] = [
     notes: [
       "Grenzen: Ein richtiger Wert mit falscher Aussage wird nur bei klaren Fällen erkannt. Deshalb stehen die Fakten immer oben.",
       "Berichte sind signiert; ein von außen geschriebener Bericht wird als unbestätigt gezeigt.",
-      "Analysen über alle Projekte liegen nur bei dir (nicht im Projekt) und brauchen den Freigabe-Link.",
+      "Analysen über alle Projekte liegen nur bei dir (nicht im Projekt) und brauchen den Freigabe-Modus.",
     ],
     open: { action: "expert", label: "Experten-Analyse öffnen" },
   },
@@ -245,9 +264,11 @@ const de: HelpTopic[] = [
     what: "Hier wählst du Modelle (lokal z. B. Ollama, oder OpenAI, Anthropic, Gemini …) – ein Standardmodell und optional pro Rolle (Chat, Analyse, Experten-Analyst, Archivar, Handwerker, Orakel).",
     terms: [
       ["API-Schlüssel", "Werden nie gespeichert: entweder als Umgebungsvariable (z. B. OPENAI_API_KEY) oder nur für diese Browser-Sitzung."],
-      ["Freigabe-Link", "Erscheint im Terminal von scenaria start. Er gibt diesem Browser das Recht, für dich zu handeln (Freigaben, Einstellungen, Chat, Modelle). Agenten können nur vorschlagen."],
+      ["Freigabe-Modus", "Gibt diesem Browser das Recht, für dich zu handeln (Freigaben, Einstellungen, Chat, Modelle). Beim Start öffnet Scenaria ihn von selbst. Fehlt er, klick oben auf das Schloss 🔒: Scenaria öffnet ein neues Fenster im Freigabe-Modus. Agenten können nur vorschlagen."],
+      ["Claude Desktop", "„Verbinden“ trägt dieses Projekt in die Claude-App ein. Danach die App ganz beenden und neu öffnen; Claude kann dann Schritte festhalten und zurückspringen."],
+      ["Start-Symbol", "Ein Symbol auf dem Schreibtisch. Doppelklick startet Scenaria für dieses Projekt, ganz ohne Befehle. Ein zweiter Doppelklick öffnet nur das Dashboard wieder."],
     ],
-    notes: ["Ist der Link verbraucht: Scenaria neu starten, um einen neuen zu bekommen."],
+    notes: ["Die Modelle je Funktion, Chat, Prognosen und eigene Agenten stehen unter „Erweitert“."],
     open: { action: "settings", label: "Einstellungen öffnen" },
   },
   {
@@ -301,6 +322,25 @@ const en: HelpTopic[] = [
     open: { action: "onboarding", label: "Start the introduction" },
   },
   {
+    id: "simple",
+    title: "Simple: back to any state",
+    what: "The Simple view shows your history in plain words, newest first. Every entry is a saved state of your files — you can go back to any of them, and the state before stays saved.",
+    when: "When the AI broke something, when you liked an earlier version better, or when you just want to see what the AI did today.",
+    how: [
+      "At the top: what this project is about. Click it to change it.",
+      "“What did the AI do?” shows the request, the result and the files it changed.",
+      "“Go back to this state” returns your files to exactly this state. Afterwards “Undo” appears, in case you change your mind.",
+      "On an earlier day, “Back to the state at the end of yesterday” takes you there in one click.",
+      "“Open this state as a folder” shows the files from back then in your file browser, without changing anything.",
+    ],
+    terms: [
+      ["Now", "The state your files are in right now (highlighted)."],
+      ["Checked by you", "You confirmed this state is right. Only your verdict (or a registered audit agent's) counts."],
+      ["Earlier attempts", "Ways that were not continued after going back. They are kept and can be shown."],
+    ],
+    notes: ["The Audit and Manage views show the same data in more detail — for auditors and for steering many agents."],
+  },
+  {
     id: "goal",
     title: "Main goal and tasks",
     what: "The main goal is the project's north star. Tasks structure the work. Context fidelity, forecasts and analyses measure how close every step stays to it.",
@@ -341,14 +381,14 @@ const en: HelpTopic[] = [
     what: "A step counts as verified only when you, or an independent audit agent you registered, confirm it. An agent can report on its own work, but never mark it as verified itself.",
     when: "When you want to know for sure which state you can safely go back to — and when an audit must show that a person or an independent party checked the work.",
     how: [
-      "Click a node → “Looks right” or “Found a problem”. This needs the approval link from the terminal, so no program can judge in your name.",
+      "Click a node → “Looks right” or “Found a problem”. This needs the approval mode (lock 🔒 at the top), so no program can judge in your name.",
       "In a terminal: scenaria verify <id> --status passed (counts only in a real terminal, not in an agent's shell).",
       "Independent audit agent: once scenaria auditor keygen --dir <folder outside every project>, then scenaria auditor add <public key>. Its signed verdicts count like yours.",
     ],
     terms: [
       ["Reported by the agent", "The agent said “fine”. Shown, but it does not count as verified and is never the target for “go back safely”."],
       ["Tamper protection", "Every change is recorded in a chain, and this machine remembers outside the project how far it reaches. If something is changed, deleted, replaced or rolled back outside Scenaria, Scenaria shows it — your own verdicts are signed too."],
-      ["Reseal", "Accept the current state as the new baseline — only you (with the approval link in the node panel, or in a terminal: scenaria integrity --reseal) or a registered audit agent. The old ledger is kept as evidence."],
+      ["Reseal", "Accept the current state as the new baseline — only you (in approval mode in the node panel, or in a terminal: scenaria integrity --reseal) or a registered audit agent. The old ledger is kept as evidence."],
     ],
     notes: [
       "A “Found a problem” always counts, also from an agent: a self-report may lower trust, never raise it. And an agent can never replace your verdict — its later report is shown next to it.",
@@ -383,7 +423,7 @@ const en: HelpTopic[] = [
       ["Hit rate", "Later Scenaria measures how faithful the line really stayed; the deviation (±) shows how good the forecasts are (\"Quality\" tab)."],
     ],
     notes: [
-      "The multiverse uses your model (3 calls per forecast) and needs the approval link.",
+      "The multiverse uses your model (3 calls per forecast) and needs the approval mode.",
       "Automatic: can be switched on in Settings, with a daily limit for all projects together.",
       "The core is word-based: it does not see synonyms or another language — that is what the oracle is for, and why the auditor checks the oracle.",
     ],
@@ -412,7 +452,7 @@ const en: HelpTopic[] = [
     notes: [
       "Meaningful from 10 decisions; before that Scenaria shows the numbers as a tendency.",
       "Audits and backtests are stored signed; files changed outside are detected and ignored.",
-      "The AI check and the oracle backtest use your model and need the approval link (terminal: scenaria forecast --audit f3 --deep).",
+      "The AI check and the oracle backtest use your model and need the approval mode (terminal: scenaria forecast --audit f3 --deep).",
     ],
     open: { action: "audit", label: "Open the audit area" },
   },
@@ -423,7 +463,7 @@ const en: HelpTopic[] = [
     what: "Fixed points are things that are settled: constraints, decisions, commitments. Agents get them in their context; lines that break a hard fixed point are invalid.",
     how: [
       "Open Canon → \"Ask the archivist\": it proposes fixed points from the history.",
-      "Review and approve proposals — only you can approve (approval link).",
+      "Review and approve proposals — only you can approve (approval mode).",
       "Optionally add a check command (e.g. npm test) and run the gate: it shows which lines survive the fixed points.",
     ],
     terms: [
@@ -469,7 +509,7 @@ const en: HelpTopic[] = [
     notes: [
       "Limits: a right value with a wrong statement is only caught in clear cases. That is why the facts always come first.",
       "Reports are signed; a report written from outside is shown as unconfirmed.",
-      "Analyses across all projects are kept with you (not in a project) and need the approval link.",
+      "Analyses across all projects are kept with you (not in a project) and need the approval mode.",
     ],
     open: { action: "expert", label: "Open expert analysis" },
   },
@@ -505,9 +545,11 @@ const en: HelpTopic[] = [
     what: "Choose models here (local e.g. Ollama, or OpenAI, Anthropic, Gemini …) — a default model and optionally one per role (chat, analysis, expert analyst, archivist, craftsman, oracle).",
     terms: [
       ["API keys", "Never stored: either as an environment variable (e.g. OPENAI_API_KEY) or only for this browser session."],
-      ["Approval link", "Shown in the terminal of scenaria start. It gives this browser the right to act for you (approvals, settings, chat, models). Agents can only propose."],
+      ["Approval mode", "Gives this browser the right to act for you (approvals, settings, chat, models). Scenaria opens it by itself at start. If it is missing, click the lock 🔒 at the top: Scenaria opens a new window in approval mode. Agents can only propose."],
+      ["Claude Desktop", "“Connect” adds this project to the Claude app. Then quit the app completely and open it again; Claude can then record steps and go back."],
+      ["Start icon", "An icon on your desktop. Double-clicking it starts Scenaria for this project, no commands needed. A second double-click just reopens the dashboard."],
     ],
-    notes: ["If the link was used up: restart Scenaria to get a new one."],
+    notes: ["Models per function, chat, forecasts and own agents are under “Advanced”."],
     open: { action: "settings", label: "Open settings" },
   },
   {

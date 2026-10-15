@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { readTemplate, selfInvocation } from "./assets.js";
 
@@ -10,7 +10,7 @@ const SELF = selfInvocation();
 const CLI_DISPLAY = SELF.join(" ");
 
 /** Supported setup targets. Everything else can use MCP manually, HTTP or the CLI. */
-export const TARGETS = ["claude", "cursor", "vscode", "gemini", "codex", "windsurf", "generic"] as const;
+export const TARGETS = ["claude", "claude-desktop", "cursor", "vscode", "gemini", "codex", "windsurf", "generic"] as const;
 export type Target = (typeof TARGETS)[number];
 
 export interface SetupResult {
@@ -57,7 +57,7 @@ interface JsonFile {
 
 function readJsonFile(file: string): JsonFile {
   if (!existsSync(file)) return { data: {}, commented: false };
-  const raw = readFileSync(file, "utf8");
+  const raw = readFileSync(file, "utf8").replace(/^\uFEFF/, ""); // Windows editors may add a byte-order mark
   try {
     return { data: JSON.parse(raw), commented: false };
   } catch {
@@ -254,14 +254,93 @@ function setupGeneric(root: string, r: SetupResult) {
   r.changes.push("AGENTS.md → Scenaria working rules (read by Codex, Cursor, Copilot, Windsurf and other AGENTS.md-aware agents)");
 }
 
+// ------------------------------------------------------------------ Claude Desktop (the app)
+
+/** Where the Claude Desktop app keeps its MCP servers (one file for all projects). */
+export function claudeDesktopConfig(home = homedir()): string {
+  if (process.env.SCENARIA_CLAUDE_DESKTOP_CONFIG) return process.env.SCENARIA_CLAUDE_DESKTOP_CONFIG; // tests, unusual installs
+  if (process.platform === "darwin") return join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json");
+  if (process.platform === "win32") return join(process.env.APPDATA ?? join(home, "AppData", "Roaming"), "Claude", "claude_desktop_config.json");
+  return join(home, ".config", "Claude", "claude_desktop_config.json");
+}
+
+function realOrResolved(p: string) {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
+/** Claude Desktop's file must be an object with an object "mcpServers" — otherwise stop before writing. */
+function checkDesktopShape(file: string) {
+  const { data } = readJsonFile(file);
+  const isObj = (x: unknown) => typeof x === "object" && x !== null && !Array.isArray(x);
+  if (!isObj(data) || (data.mcpServers !== undefined && !isObj(data.mcpServers))) {
+    throw new Error(`${file} does not look like a Claude Desktop config ("mcpServers" must be an object) — fix it first, nothing was changed.`);
+  }
+}
+
+/** The Desktop entry that already serves this project (its `--root` is this folder), if any. */
+function desktopEntryFor(servers: Record<string, any> | undefined, root: string): string | undefined {
+  if (!servers || typeof servers !== "object") return undefined;
+  const want = realOrResolved(root);
+  for (const [name, e] of Object.entries(servers)) {
+    const args: unknown = e?.args;
+    if (!Array.isArray(args)) continue;
+    const i = args.indexOf("--root");
+    if (i >= 0 && typeof args[i + 1] === "string" && realOrResolved(args[i + 1]) === want && args.includes("mcp")) return name;
+  }
+  return undefined;
+}
+
+/**
+ * Claude Desktop has no project folder of its own, so every project gets its own entry with a fixed
+ * `--root` ("scenaria-<folder>"). Other servers in the file are kept as they are.
+ */
+function setupClaudeDesktop(root: string, home: string, r: SetupResult) {
+  const file = claudeDesktopConfig(home);
+  const shown = file.replace(home, "~");
+  const { data, commented } = readJsonFile(file);
+  const entry = { command: SELF[0], args: [...SELF.slice(1), "mcp", "--root", realOrResolved(root)], env: { SCENARIA_AGENT: "claude-desktop" } };
+  let name = desktopEntryFor(data.mcpServers, root);
+  if (!name) {
+    const slug = basename(realOrResolved(root)).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "project";
+    name = `scenaria-${slug}`;
+    for (let n = 2; data.mcpServers?.[name]; n++) name = `scenaria-${slug}-${n}`;
+  }
+  if (commented) {
+    r.notes.push(`${shown} contains comments, so it was left untouched. Add this under "mcpServers":\n${JSON.stringify({ [name]: entry }, null, 2)}`);
+    return;
+  }
+  data.mcpServers ??= {};
+  data.mcpServers[name] = entry;
+  writeJson(file, data);
+  r.changes.push(`${shown} → MCP server "${name}" (Claude Desktop, this project)`);
+  r.notes.push("Restart the Claude Desktop app (quit it completely, then open it again) so it loads Scenaria.");
+}
+
+/** Is this project connected in Claude Desktop? */
+export function claudeDesktopStatus(root: string, home = homedir()) {
+  const file = claudeDesktopConfig(home);
+  let connected = false;
+  try {
+    connected = Boolean(desktopEntryFor(JSON.parse(readFileSync(file, "utf8"))?.mcpServers, root));
+  } catch {}
+  return { installed: existsSync(dirname(file)), connected, file };
+}
+
 /** Idempotently wire Scenaria into a project for the given agents. */
-export function setupAgents(root: string, targets: Target[], opts: { rulesFiles?: boolean } = {}): SetupResult {
+export function setupAgents(root: string, targets: Target[], opts: { rulesFiles?: boolean; home?: string } = {}): SetupResult {
   const r: SetupResult = { changes: [], notes: [] };
   const set = new Set(targets);
+  const home = opts.home ?? homedir();
   // Preflight: parse every config we are going to touch before writing anything.
   for (const t of set) for (const rel of JSON_FILES[t] ?? []) readJsonFile(join(root, rel));
+  if (set.has("claude-desktop")) checkDesktopShape(claudeDesktopConfig(home));
   const rulesOn = opts.rulesFiles !== false;
   if (set.has("claude")) setupClaudeTarget(root, r, rulesOn);
+  if (set.has("claude-desktop")) setupClaudeDesktop(root, home, r);
   if (set.has("cursor")) setupCursor(root, r);
   if (set.has("vscode")) setupVscode(root, r);
   if (set.has("gemini")) {
@@ -270,7 +349,8 @@ export function setupAgents(root: string, targets: Target[], opts: { rulesFiles?
   if (set.has("codex")) setupCodex(root, r);
   if (set.has("windsurf")) setupWindsurf(r);
   // AGENTS.md is the cross-vendor rules file — written for every non-Claude target.
-  if (rulesOn && [...set].some((t) => t !== "claude" && t !== "gemini")) setupGeneric(root, r);
+  // Claude Desktop reads no rules file: it gets the working rules from the MCP server's instructions.
+  if (rulesOn && [...set].some((t) => t !== "claude" && t !== "gemini" && t !== "claude-desktop")) setupGeneric(root, r);
   if (set.has("generic")) {
     r.notes.push(
       [
@@ -416,6 +496,9 @@ export function setupGlobal(targets: Target[], home = homedir()): SetupResult {
   if (set.has("windsurf")) {
     writeServer(root(".codeium/windsurf/mcp_config.json"), "mcpServers", mcpEntry("windsurf", false), "Windsurf");
   }
+  if (set.has("claude-desktop")) {
+    r.notes.push("Claude Desktop has no project folder, so it is connected per project: scenaria init --for claude-desktop (in the project), or Settings → Connect in the dashboard.");
+  }
   return r;
 }
 
@@ -424,7 +507,7 @@ export function parseTargets(spec: string): Target[] {
     .split(",")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean)
-    .flatMap((s) => (s === "all" ? ["claude", "cursor", "vscode", "gemini", "codex", "generic"] : [s === "copilot" ? "vscode" : s]));
+    .flatMap((s) => (s === "all" ? ["claude", "cursor", "vscode", "gemini", "codex", "generic"] : [s === "copilot" ? "vscode" : s === "desktop" || s === "claude-app" ? "claude-desktop" : s]));
   for (const i of items) {
     if (!(TARGETS as readonly string[]).includes(i)) throw new Error(`Unknown target "${i}". Use: ${TARGETS.join(", ")}, all`);
   }
@@ -446,6 +529,7 @@ export interface AgentStatus {
 
 const LABELS: Record<Target, string> = {
   claude: "Claude Code",
+  "claude-desktop": "Claude Desktop (app)",
   cursor: "Cursor",
   vscode: "VS Code / GitHub Copilot",
   gemini: "Gemini CLI",
@@ -473,8 +557,11 @@ export function agentStatus(root: string, home = homedir()): AgentStatus[] {
     }
   };
   const windsurfGlobal = join(home, ".codeium", "windsurf", "mcp_config.json");
+  const desktop = claudeDesktopStatus(root, home);
+  if (desktop.installed) detected.add("claude-desktop");
   const rows: [Target, boolean, string][] = [
     ["claude", jsonHas(".mcp.json", "mcpServers"), ".mcp.json + .claude/settings.json"],
+    ["claude-desktop", desktop.connected, `${desktop.file.replace(home, "~")} (restart the app afterwards)`],
     ["cursor", jsonHas(".cursor/mcp.json", "mcpServers"), ".cursor/mcp.json"],
     ["vscode", jsonHas(".vscode/mcp.json", "servers"), ".vscode/mcp.json"],
     ["gemini", jsonHas(".gemini/settings.json", "mcpServers"), ".gemini/settings.json"],
@@ -494,4 +581,91 @@ export function connectionSnippets(root: string, baseUrl?: string) {
     http: baseUrl ? { tools: `${baseUrl}/api/v1/tools?format=openai`, call: `${baseUrl}/api/v1/tools/<tool>` } : null,
     proxy: baseUrl ? { openai: `${baseUrl}/proxy/openai`, anthropic: `${baseUrl}/proxy/anthropic`, ollama: `${baseUrl}/proxy/ollama` } : null,
   };
+}
+
+// ------------------------------------------------------------------ start without a terminal
+
+/** The folder the person sees as their desktop (localized on Linux, OneDrive-redirected on Windows). */
+export function desktopDir(home = homedir()): string | null {
+  const candidates: string[] = [];
+  if (process.platform === "linux") {
+    let x = process.env.XDG_DESKTOP_DIR;
+    if (!x) {
+      try {
+        x = /^XDG_DESKTOP_DIR="?([^"\n]+)"?/m.exec(readFileSync(join(home, ".config", "user-dirs.dirs"), "utf8"))?.[1];
+      } catch {}
+    }
+    if (x) candidates.push(x.replace(/^\$HOME/, home));
+  }
+  if (process.platform === "win32" && process.env.OneDrive) candidates.push(join(process.env.OneDrive, "Desktop"));
+  candidates.push(join(home, "Desktop"));
+  return candidates.find((d) => existsSync(d) && resolve(d) !== resolve(home)) ?? null;
+}
+
+/**
+ * A file the person double-clicks to start Scenaria for one project: `.command` on macOS (opens
+ * Terminal), `.cmd` on Windows, a `.desktop` entry (in a terminal) on Linux. It runs
+ * `scenaria start --launcher --root <project>`: never sets up a project anywhere else (moved folder),
+ * and a second double-click reuses the running Scenaria. Another project's icon is never overwritten.
+ */
+export function writeLauncher(root: string, dir?: string, home = homedir()): string {
+  const project = realOrResolved(root);
+  const target = dir ? resolve(dir) : desktopDir(home) ?? project;
+  const name = basename(project).replace(/[\\/:*?"<>|\n\r]/g, "-") || "project";
+  // Linux: a desktop entry (runs in a terminal) unless a path holds characters its Exec quoting makes risky.
+  const plainPaths = [project, ...SELF].every((x) => !/["`$\\%\r\n]/.test(x));
+  const kind = process.platform === "win32" ? "cmd" : process.platform === "darwin" ? "command" : plainPaths ? "desktop" : "sh";
+  const ext = kind;
+  let content: string;
+  let marker: string;
+  if (process.platform === "win32") {
+    // cmd.exe reads batch files in the OEM code page: switch to UTF-8 first, so "Müller" stays "Müller".
+    const w = (x: string) => `"${x.replace(/%/g, "%%").replace(/"/g, "")}"`;
+    marker = `rem scenaria-launcher: ${w(project)}`;
+    content = [
+      "@echo off",
+      "chcp 65001 >nul",
+      marker,
+      `pushd ${w(project)} || (echo Project folder not found: ${w(project)} & pause & exit /b 1)`,
+      `${SELF.map(w).join(" ")} start --launcher --root ${w(project)}`,
+      "pause",
+      "",
+    ].join("\r\n");
+  } else if (kind !== "desktop") {
+    const sq = (x: string) => `'${x.replace(/'/g, "'\\''")}'`;
+    marker = `# scenaria-launcher: ${project.replace(/[\r\n]/g, " ")}`;
+    content = [
+      "#!/bin/sh",
+      marker,
+      `cd ${sq(project)} || { echo "Project folder not found: ${project.replace(/["$`\\\n]/g, "")}"; read -r _; exit 1; }`,
+      `exec ${SELF.map(sq).join(" ")} start --launcher --root ${sq(project)}`,
+      "",
+    ].join("\n");
+  } else {
+    // Desktop entry: plain paths only (checked above), so double quotes are enough.
+    const dq = (x: string) => `"${x}"`;
+    marker = `X-Scenaria-Root=${project}`;
+    content = [
+      "[Desktop Entry]",
+      "Type=Application",
+      `Name=Scenaria – ${name}`,
+      "Terminal=true",
+      `Exec=${SELF.map(dq).join(" ")} start --launcher --root ${dq(project)}`,
+      marker,
+      "",
+    ].join("\n");
+  }
+  // Same project → update its icon; another project with the same folder name → "(2)", "(3)" …
+  let file = join(target, `Scenaria - ${name}.${ext}`);
+  for (let n = 2; existsSync(file); n++) {
+    let same = false;
+    try {
+      same = readFileSync(file, "utf8").split(/\r?\n/).includes(marker);
+    } catch {}
+    if (same) break;
+    file = join(target, `Scenaria - ${name} (${n}).${ext}`);
+  }
+  writeFileSync(file, content);
+  chmodSync(file, 0o755);
+  return file;
 }

@@ -1,15 +1,17 @@
 <!-- scenaria:start -->
 ## Scenaria (decision checkpoints)
 
-This project records its decision tree with Scenaria, so every decision point can be restored (files + context).
+This project keeps ONE decision tree for the whole project with Scenaria (root `n0` = project + main goal), so every decision point can be restored (files + context) and any LLM can analyse the decisions later.
 
-- Complex task without a mission yet → `scenaria_start_mission` (main goal + brief).
-- Before acting on a choice between approaches → `scenaria_decide` with all options considered, the chosen one, rationale, assumptions and confidence (0–1).
-- After each meaningful step → `scenaria_checkpoint` with 2–6 short, factual output bullets; name files in backticks. List external side effects (sent mails, pushes, API writes) under `irreversible`.
+- Start of a session → `scenaria_status` (and `scenaria_context` when resuming). If the main goal is missing, ask the user and store it with `scenaria_start_mission` `{projectGoal}`.
+- New piece of work → `scenaria_start_mission` `{title, goal}`: adds a task to the existing tree. Never start a second tree.
+- Before acting on a real choice → `scenaria_decide` with all options considered, the chosen one, `rationale` (why), `context` (the situation), `servesGoal` (how it serves the main goal), `expectedOutcome` and `confidence` (0–1).
+- After each meaningful step → `scenaria_checkpoint` with 2–6 short, factual output bullets; name files in backticks. List external side effects (sent mails, pushes, API writes) under `irreversible`. Task finished → add `taskDone: true` and a 1–2 sentence `summary`.
 - Mistake, hallucination or dead end → `scenaria_last_good` or `scenaria_tree`, then `scenaria_rewind` with a one-line lesson. Continue only from the returned resume context, not from the abandoned attempt.
 - Another option of an earlier decision → `scenaria_fork`.
+- Older details → `scenaria_recall` instead of re-reading long histories. Follow the project rules shown in the capsule.
 - Never record facts you have not verified.
-- No MCP support? The same tools are available as `scenaria call <tool> '<json>'` (shell) or `POST /api/v1/tools/<tool>` (HTTP).
+- No MCP support? The same tools are available as `scenaria call <tool> '<json>'` (shell) or `POST /api/v1/tools/<tool>` (HTTP). Plain chats: append ```scenaria blocks (see `scenaria prompt --kind chat`).
 <!-- scenaria:end -->
 
 ## Developing Scenaria (this repository)
@@ -26,4 +28,4 @@ Talk to Kev in German and in plain words.
 - Every decision is checked against three personas: an office user new to AI, an ISO/IEC 42001 auditor, and a company's AI manager.
 - **Never commit anything confidential:** no keys or `.env` files, no absolute paths of a machine, no private project names, no `.scenaria/` data. Machine notes live in `CLAUDE.local.md`, internal analyses in `docs/intern/`; both are ignored by git. Run `git status` before every commit.
 - Security rules 11 and 12 in `docs/HANDOFF.md` §2: only the person or a registered independent audit agent may reseal the ledger or give a verdict that counts as verified (enforced since 0.9.2, Batch A). Anything that counts "verified" uses `integrity().confirmed`.
-- Batch 0 and A are done; Batch B (office users) starts only after Kev's go.
+- Batch 0, A and B are done; Batch C (ISO/IEC 42001 audit file) starts only after Kev's go.

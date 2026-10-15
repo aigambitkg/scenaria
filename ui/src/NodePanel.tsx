@@ -1,3 +1,4 @@
+import { LockedNote } from "./Approval";
 import { DecisionForecast } from "./Forecasts";
 import { useEffect, useState } from "react";
 import { api, type ConversationMessage, type Fidelity, type ScenariaNode } from "./api";
@@ -196,8 +197,9 @@ export function NodePanel(props: {
   }
 
   const n = node!;
-  const confirmedSet = props.fidelity?.confirmed ? new Set(props.fidelity.confirmed) : null;
-  const view = verdictView(n.verification, confirmedSet ? confirmedSet.has(n.id) : undefined);
+  // Only the engine's confirmed set counts (rule 11): never the stored fields, also not while it loads or failed.
+  const confirmedSet = new Set(props.fidelity?.confirmed ?? []);
+  const view = verdictView(n.verification, confirmedSet.has(n.id));
   const origin = verdictOrigin(n.verification);
   const report = n.verification?.report;
   const superseded = Boolean(props.fidelity?.verdictsSuperseded?.includes(n.id));
@@ -561,7 +563,7 @@ export function NodePanel(props: {
               {t.laterReport}: {t.verification[report.status]} ({t.verdictOrigin[report.origin]}){report.notes ? ` — ${report.notes}` : ""}
             </p>
           )}
-          {!props.approved && <p className="qnote">{t.verdictNeedsApproval}</p>}
+          {!props.approved && <LockedNote t={t} text={t.verdictNeedsApproval} small />}
           <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={t.notesPlaceholder} rows={2} disabled={!props.approved} />
           <div className="row">
             <button className="btn" disabled={busy} onClick={() => verify({ auto: true })}>
