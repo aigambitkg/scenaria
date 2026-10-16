@@ -129,6 +129,13 @@ Independent audit agents (own key outside Scenaria; only they and you can verify
                                         --out-file <f> saves it as JSON. The setting protects the audit file, not
                                         the raw records (steps, export), which stay readable as before
   audit-file access [person|open]       Who may read the audit file (setting it: the person, interactive only)
+  audit-file export [--from ..] [--to ..] [--roles-only] [--lang de|en] [--out-dir <dir>] [--no-open]
+                                        Sign the audit file with your approver key (the person, interactive) and
+                                        write the audit package: JSON (the evidence), a print-ready page (PDF via
+                                        the browser, opened for you), Markdown and a note on how to check it
+  audit-file verify [<file.json> | <package folder>]
+                                        Check a signed audit file (no project needed); without a name: the newest
+                                        one in this folder. For a package also the reading copies' fingerprint
   audit-file evidence [--json]          The organisation's documents per control (read like the audit file)
   audit-file evidence add --control A.2.2 --url https://… (--hash sha256:… | --doc-file <file>)
                       --role "AI officer" --name "…" --date YYYY-MM-DD [--title ..] [--notes ..]
@@ -188,6 +195,8 @@ const opts = {
   date: { type: "string" },
   "doc-file": { type: "string" },
   discard: { type: "boolean" },
+  "roles-only": { type: "boolean" },
+  "out-dir": { type: "string" },
   "args-file": { type: "string" },
   interval: { type: "string" },
   quiet: { type: "string" },
@@ -1348,6 +1357,55 @@ async function main() {
       return out(n ? describe(n) : "No step on this path was verified by the person or a registered audit agent yet.", n);
     }
     case "audit-file": {
+      // Checking a signed export needs no project and no Scenaria data: only the file (an auditor's machine).
+      if (p[0] === "verify") {
+        const { checkExportPath, findNewestExport } = await import("./core/auditpackage.js");
+        // Without a name: the newest export in this folder (a package or a single file), named before it is checked.
+        let target = p[1];
+        let found = "";
+        if (!target) {
+          const newest = findNewestExport(process.cwd());
+          if (!newest) throw new Error("No audit file in this folder. Usage: scenaria audit-file verify [<file.json> | <package folder>]");
+          target = newest.path;
+          found = newest.others ? ` (${newest.others} other audit file(s) here — name one to check it)` : "";
+          found = `Checking the newest audit file here: ${newest.path}${found}\n`;
+        }
+        const { VERSION } = await import("./server.js");
+        const r = checkExportPath(target, VERSION);
+        // Nothing read from the file reaches the terminal unchecked (review C4a-2): values shown are computed here
+        // or checked against fixed patterns by the verifier; control characters are stripped anyway.
+        const safe = (x: unknown) => String(x ?? "").replace(/[\u0000-\u001f\u007f-\u009f؜​-‏‪-‮⁦-⁩﻿]/g, "?").slice(0, 300);
+        const head = safe(found.replace(/\n$/, "")) + (found ? "\n" : "");
+        if (!r.valid) {
+          process.exitCode = 1;
+          return out(`${head}${C.red}NOT VALID: ${safe(r.problem)}${C.reset}`, r);
+        }
+        if (r.copies.some((c) => c.state === "different") || (r as { copiesSignature?: string }).copiesSignature) process.exitCode = 1;
+        const copyLine = (c: { name: string; state: string }) =>
+          c.state === "same"
+            ? `  reading copy ${c.name}: same content as the evidence (checked)`
+            : c.state === "missing"
+              ? `${C.yellow}  reading copy ${c.name}: missing — not checked${C.reset}`
+              : c.state === "not_comparable"
+                ? `${C.yellow}  reading copy ${c.name}: made by another Scenaria version — cannot be compared; rely on the evidence${C.reset}`
+                : `${C.red}  reading copy ${c.name}: DOES NOT SHOW what the evidence holds — do not rely on it${C.reset}`;
+        return out(
+          [
+            `${head}${C.green}Valid:${C.reset} content and signature match.`,
+            `  fingerprint sha256:${safe(r.digest)}`,
+            `  key ${safe(r.keyId)}${r.keyTrustedHere ? " (trusted on this machine)" : " — confirm this key id with the person over a second channel"}`,
+            `  project ${safe(r.projectId)} · generated ${safe(r.generatedAt).replace("T", " ").slice(0, 16)} UTC · ${r.names === "roles-only" ? "roles only" : "with names"}`,
+            r.integrity === "ok"
+              ? "  tamper evidence: intact"
+              : `${r.integrity === "alarm" ? C.red : C.yellow}  Note: the signed file itself reports ${r.integrity === "alarm" ? "a DAMAGED tamper evidence (alarm)" : "notes on the tamper evidence"} — read its integrity section.${C.reset}`,
+            ...((r as { copiesSignature?: string }).copiesSignature === "invalid" ? [`${C.red}  the signature over the reading copies (audit-file.copies.json) does NOT verify${C.reset}`] : []),
+            ...((r as { copiesSignature?: string }).copiesSignature === "missing" ? [`${C.red}  the signature over the reading copies (audit-file.copies.json) is MISSING — every package of this version has it; do not rely on the copies${C.reset}`] : []),
+            ...(r.package ? r.copies.map(copyLine) : ["  reading copies: not checked (a single file, not a package folder)"]),
+            "The signature means: computed by Scenaria at that time from these records and released by the key's holder — not that every fact is proven.",
+          ].join("\n"),
+          r,
+        );
+      }
       const s = Scenaria.open(v.root);
       if (p[0] === "access") {
         const cur = readAuditAccess(s.store);
@@ -1369,6 +1427,64 @@ async function main() {
         return out(show(a), a);
       }
       if (p[0] === "evidence") return await evidenceCommand(s, p.slice(1), v, out);
+      if (p[0] === "export") {
+        // Signing with the person's approver key is the person's action (rule 6): interactive terminal and typed confirmation.
+        const { exportAuditFile } = await import("./core/auditexport.js");
+        const period = parsePeriod(v.from, v.to);
+        const names = v["roles-only"] ? "roles-only" : "with-names";
+        const lang = v.lang === "en" ? "en" : "de";
+        // The folder is checked before anything is signed (review C4a-5).
+        const dir = v["out-dir"] ? String(v["out-dir"]) : process.cwd();
+        const { statSync } = await import("node:fs");
+        let isDir = false;
+        try {
+          isDir = statSync(dir).isDirectory();
+        } catch {}
+        if (!isDir) throw new Error(`--out-dir: "${dir}" is not a folder.`);
+        await personConfirm(
+          "sign",
+          `Export the audit file (${period.from || period.to ? `${period.from ?? "…"} – ${period.to ?? "…"} UTC` : "whole project"}, ${names === "roles-only" ? "roles only" : "with names"}) and sign it with your approver key?`,
+          "Signing the audit file is the person's: run this in an interactive terminal, or use the dashboard (lock → approval mode).",
+        );
+        const { VERSION } = await import("./server.js");
+        const x = exportAuditFile(s, period, { names, version: VERSION, by: process.env.SCENARIA_USER || userInfo().username || "person", via: "terminal" });
+        const { writeAuditPackage } = await import("./core/auditpackage.js");
+        const { signRecord } = await import("./core/canon.js");
+        const folder = writeAuditPackage(dir, x, lang, (parts) => signRecord(s.store, parts));
+        // Open the print-ready page, so the person can save it as PDF right away (unless --no-open).
+        if (!v["no-open"] && isPersonTerminal()) {
+          // An absolute path; on Windows not through explorer (it splits at commas; review C4b-7).
+          const page = resolve(folder, "audit-file.html");
+          // Programs by their absolute system path: never one planted in the project folder (Windows looks there first).
+          const { existsSync } = await import("node:fs");
+          const opener =
+            process.platform === "darwin"
+              ? "/usr/bin/open"
+              : process.platform === "win32"
+                ? join(process.env.SystemRoot || "C:\\Windows", "System32", "rundll32.exe")
+                : ["/usr/bin/xdg-open", "/usr/local/bin/xdg-open", "/bin/xdg-open"].find((x) => existsSync(x)) ?? "";
+          const args = process.platform === "win32" ? ["url.dll,FileProtocolHandler", page] : [page];
+          if (opener) try {
+            const { spawn } = await import("node:child_process");
+            const c = spawn(opener, args, { stdio: "ignore", detached: true });
+            c.on("error", () => {});
+            c.unref();
+          } catch {}
+        }
+        return out(
+          [
+            `Audit package written: ${folder}`,
+            `  audit-file.json   the evidence (signed)`,
+            `  audit-file.html   reading copy to print — PDF: in the browser "Print → Save as PDF"`,
+            `  audit-file.md     reading copy as text`,
+            `  audit-file.copies.json  your signature over both reading copies`,
+            `  ${lang === "de" ? "PRUEFEN.txt" : "CHECK.txt"}       what is in it and how to check it`,
+            `fingerprint sha256:${x.signature.digest} · key ${x.signature.keyId}`,
+            `Check: scenaria audit-file verify "${folder}"`,
+          ].join("\n"),
+          { folder, digest: x.signature.digest, keyId: x.signature.keyId },
+        );
+      }
       // The person reads it at an interactive terminal (like every person-only command, rule 6); --out-file
       // writes it to a file after that check. An agent's shell reads it only when the person opened it.
       if (readAuditAccess(s.store).mode !== "open" && !isPersonTerminal()) {

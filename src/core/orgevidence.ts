@@ -133,7 +133,7 @@ export function catalogueFingerprint(): { standard: string; controls: number; ha
 // ------------------------------------------------------------------ text and validation
 
 /** Control and bidirectional characters could make a terminal or page show something else than is signed. */
-const UNSAFE = /[\u0000-\u001f\u007f-\u009f؜​-‏‪-‮⁦-⁩﻿]/g;
+const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
 const UNSAFE_ONE = new RegExp(UNSAFE.source);
 const clean = (x: unknown, max: number): string => (typeof x === "string" ? x.replace(UNSAFE, " ").replace(/\s+/g, " ").trim().slice(0, max) : "");
 const isDay = (d: string) => {

@@ -100,7 +100,9 @@ The core stays as it is. New features come only through these batches, in this o
   - [x] C2 evaluation from the project's records (0.9.6): status per control, period, integrity warnings, approvals and reseals, read setting only by the person
   - [x] C2.1 corrections (0.9.7): no crash on damaged verdicts, a verdict counts once, verdict history per step, file states checked on every audit file
   - [x] C3 organisational evidence per control (0.9.8): link + hash, owner role + name, date; signed by the person; never raises a status; take over from another project
-  - [ ] C4 signed export and auditor view
+  - [x] C4a signed audit file (0.9.9): canonical JSON signed by the person, `verify` without a project, Markdown reading copy, names or roles only
+  - [x] C4b audit package (0.9.10): evidence, print-ready page (PDF via the browser), Markdown, note; `verify` finds the newest export
+  - [ ] C4c dashboard view, form for the organisation's evidence, auditor mode on site
 - [ ] **D, the AI manager's view:** cross-project overview, agents and models over time, token use, rules and policies for all projects
 - [ ] **E, course corridor and drift guard** (parked until A–D are done)
 - [ ] **F, agent modules** (later, optional): forecasts and other model-based helpers as ready-made agents that only need a model

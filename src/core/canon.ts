@@ -480,7 +480,7 @@ export function validateCheck(cmd: string | undefined): string | undefined {
   if (cmd === undefined || cmd === null || !String(cmd).trim()) return undefined;
   const c = String(cmd).trim();
   if (c.length > 500) throw new Error("check command is longer than 500 characters — put it in a script and call that");
-  if (/[\u0000-\u001f\u007f‪-‮⁦-⁩​-‏]/.test(c)) throw new Error("check command must be a single line without control or bidirectional characters");
+  if (/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069\u200b-\u200f]/.test(c)) throw new Error("check command must be a single line without control or bidirectional characters");
   return c;
 }
 

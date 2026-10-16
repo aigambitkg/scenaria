@@ -24,6 +24,8 @@ import { SECTIONS, checkExpectations, resolveRefs, stringPayload, workspace, typ
 import { archivistProposals } from "./core/canon-llm.js";
 import { addAuditor, listAuditors, removeAuditor } from "./core/auditors.js";
 import { buildAuditFile, parsePeriod } from "./core/auditfile.js";
+import { exportAuditFile, renderAuditMarkdown } from "./core/auditexport.js";
+import { renderAuditHtml } from "./core/audithtml.js";
 import { addOrgEvidence, catalogueFingerprint, confirmOrgEvidence, copyOrgEvidence, OrgEvidenceError, orgEvidenceStates, planCopy, removeOrgEvidence } from "./core/orgevidence.js";
 import { AUDIT_ACCESS_MODES, readAuditAccess, setAuditAccess, type AuditAccessMode } from "./core/auditaccess.js";
 import { gateMatrix, runGate } from "./core/gate.js";
@@ -39,7 +41,7 @@ import { adoptRecommendation, expertAnalysis, factSheet, getReport, listPersonal
 import { forgetProject, listProjects, registerProject } from "./core/projects.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
-export const VERSION = "0.9.8";
+export const VERSION = "0.9.10";
 
 const KEY_ENVS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "AZURE_OPENAI_API_KEY"];
 
@@ -554,6 +556,19 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
             return send(res, 400, { error: err?.message ?? String(err) });
           }
           return send(res, 200, buildAuditFile(s, period));
+        }
+        // Signed export (C4a): signing with the approver key is the person's (POST under the personOnly prefix).
+        if (req.method === "POST" && p === "/api/audit-file/export") {
+          const b = await readBody(req);
+          let period;
+          try {
+            period = parsePeriod(typeof b?.from === "string" ? b.from : null, typeof b?.to === "string" ? b.to : null);
+          } catch (err: any) {
+            return send(res, 400, { error: err?.message ?? String(err) });
+          }
+          const x = exportAuditFile(s, period, { names: b?.names === "roles-only" ? "roles-only" : "with-names", version: VERSION, by: approver, via: "dashboard" });
+          const lang = b?.lang === "en" ? "en" : "de";
+          return send(res, 200, { export: x, markdown: renderAuditMarkdown(x, lang), html: renderAuditHtml(x, lang) });
         }
         // The organisation's evidence per control (C3): read like the audit file; every change is the person's
         // (all POST /api/audit-file* are under the personOnly prefix above).
