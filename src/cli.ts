@@ -2,6 +2,7 @@
 import { parseArgs } from "node:util";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { userInfo } from "node:os";
 import { Scenaria } from "./core/engine.js";
 import { Store, resolveRoot } from "./core/store.js";
 import { optionLabel } from "./core/context.js";
@@ -457,7 +458,7 @@ async function main() {
         "",
         `  Dashboard      ${C.cyan}${base}${C.reset}`,
         srv.approvalUrl
-          ? `  Approval link  ${C.cyan}${srv.approvalUrl}${C.reset}  ${C.dim}(canon approvals — works once${v["no-open"] ? "" : "; already opened in your browser"})${C.reset}`
+          ? `  Approval link  ${C.cyan}${srv.approvalUrl}${C.reset}  ${C.dim}(approvals: canon and project rules — works once${v["no-open"] ? "" : "; already opened in your browser"})${C.reset}`
           : `  Approval link  ${C.dim}${v["no-open"] ? "only shown in an interactive terminal" : "opened in your browser"}${C.reset}`,
         `  Agents wired   ${targets.length ? targets.join(", ") : "none detected (MCP/HTTP/CLI still available)"}`,
         `  Auto-save      ${v["no-watch"] ? "off" : "on — every file change becomes a version"}`,
@@ -771,7 +772,7 @@ async function main() {
         const r = getReport(s, p[0]);
         if (v.adopt !== undefined) {
           if (!personTerminal) throw new Error("Adopting a recommendation as a rule is the person's decision: run it in an interactive terminal or in the dashboard.");
-          const rule = adoptRecommendation(s, r.id, Number(v.adopt));
+          const rule = adoptRecommendation(s, r.id, Number(v.adopt), { by: process.env.SCENARIA_USER || userInfo().username || "person", via: "terminal" });
           return out(`${C.green}✔${C.reset} rule ${rule.id}: ${rule.text}`, rule);
         }
         if (v["out-file"]) {
@@ -815,7 +816,7 @@ async function main() {
         ...(ins.patterns ?? []).map((x) => `${x.kind === "good" ? C.green + "+" : C.yellow + "−"}${C.reset} ${x.title}${x.evidence?.length ? C.dim + ` (${x.evidence.join(", ")})` + C.reset : ""}`),
         ...(ins.issues ?? []).map((x) => `${C.red}!${C.reset} [${x.severity ?? "?"}] ${x.title}${x.fix ? ` → ${x.fix}` : ""}`),
         ...(ins.rules ?? []).map((r, i) => `rule #${i}: ${r.text}`),
-        ins.rules?.length ? `${C.dim}Accept a rule: scenaria rules add "<text>"  (or in the dashboard → Analyse)${C.reset}` : "",
+        ins.rules?.length ? `${C.dim}Accept a rule: dashboard → Analyse (approval mode), or scenaria rules add "<text>" in your own terminal${C.reset}` : "",
       ].filter(Boolean);
       return out(human.join("\n"), rec);
     }
@@ -993,16 +994,43 @@ async function main() {
     }
     case "rules": {
       const s = Scenaria.open(v.root);
-      if (p[0] === "add") {
-        const r = s.addRule(p.slice(1).join(" "), "manual");
-        return out(`${r.id}: ${r.text}`, r);
-      }
-      if (p[0] === "rm" || p[0] === "remove") {
-        const ok = s.removeRule(p[1] ?? "");
-        return out(ok ? `Removed ${p[1]}` : `No rule ${p[1]}`, { ok });
+      const sub = p[0];
+      if (sub === "add" || sub === "rm" || sub === "remove" || sub === "approve" || sub === "reject") {
+        // Project rules reach every agent: adding, accepting, rejecting and removing are the person's (rule 5):
+        // an interactive terminal AND typing the confirmation (a speed bump against agents, like canon).
+        const notPerson = 'Project rules are the person\'s decision: run this in an interactive terminal, or use the dashboard (lock → approval mode). Agents can only propose a rule, e.g. with a ```scenaria {"rule": "…"}``` block.';
+        if (!isPersonTerminal()) throw new Error(notPerson);
+        const decision = { by: process.env.SCENARIA_USER || userInfo().username || "person", via: "terminal" as const };
+        if (sub === "add") {
+          const text = p.slice(1).join(" ");
+          if (!text.trim()) throw new Error('Usage: scenaria rules add "<rule>"');
+          await personConfirm("add", `Add this project rule? Every agent receives it from now on:\n  ${text.replace(/\s+/g, " ").trim()}`, notPerson);
+          const r = s.addRule(text, "manual", undefined, decision);
+          return out(`${r.id}: ${r.text}`, r);
+        }
+        const target = s.ruleProposals().find((r) => r.id === p[1]) ?? s.rules().find((r) => r.id === p[1]);
+        if (!target) throw new Error(`No rule ${p[1] ?? ""}`);
+        if (sub === "approve") {
+          await personConfirm("approve", `Accept ${target.id}? Every agent receives it from now on:\n  ${target.text}`, notPerson);
+          const r = s.approveRule(target.id, decision, target.text);
+          return out(`${C.green}✔${C.reset} ${r.id} is active: ${r.text}`, r);
+        }
+        if (sub === "reject") {
+          await personConfirm("reject", `Reject ${target.id}?\n  ${target.text}`, notPerson);
+          const ok = s.rejectRule(target.id, decision);
+          return out(ok ? `Rejected ${target.id}` : `${target.id} is not an open proposal`, { ok });
+        }
+        await personConfirm("remove", `Remove ${target.id}? Agents no longer receive it:\n  ${target.text}`, notPerson);
+        const ok = s.removeRule(target.id, decision);
+        return out(ok ? `Removed ${target.id}` : `No rule ${target.id}`, { ok });
       }
       const rules = s.rules();
-      return out(rules.length ? rules.map((r) => `${r.id}  ${r.text}  ${C.dim}(${r.source})${C.reset}`).join("\n") : 'No project rules yet. Add one: scenaria rules add "<rule>"', rules);
+      const proposals = s.ruleProposals();
+      const lines = [
+        ...(rules.length ? rules.map((r) => `${r.id}  ${r.text}  ${C.dim}(${r.source})${C.reset}`) : ['No project rules yet. Add one: scenaria rules add "<rule>"']),
+        ...(proposals.length ? ["", "Proposals (accept: scenaria rules approve <id> · reject: scenaria rules reject <id>):", ...proposals.map((r) => `${r.id}  ${r.text}  ${C.dim}(proposed by ${r.proposedBy ? `"${r.proposedBy}" (stated)` : "an agent"})${C.reset}`)] : []),
+      ];
+      return out(lines.join("\n"), { rules, proposals });
     }
     case "decide": {
       const s = Scenaria.openOrInit(v.root);

@@ -215,9 +215,11 @@ const de: HelpTopic[] = [
       "Analyse → „★ Experten-Analyse“ → Umfang wählen: ganzes Projekt, eine Arbeitslinie oder alle deine Projekte.",
       "„Experten-Analyse starten“ (mit Modell) oder „Ohne Modell (regelbasiert)“.",
       "Empfehlungen vom Typ „Regel“ mit einem Klick übernehmen – jeder Agent bekommt sie ab dann in seinen Kontext. „Aufgaben“ haben einen direkten Knopf.",
+      "Vorschläge von Agenten für Projektregeln stehen unter „Projektregeln“: annehmen oder ablehnen (Freigabe-Modus).",
       "Bericht als Markdown kopieren oder herunterladen.",
     ],
     terms: [
+      ["Projektregeln", "Gehen an jeden Agenten. Anlegen, Annehmen und Entfernen nur durch dich im Freigabe-Modus; Agenten können Regeln nur vorschlagen."],
       ["Vier Blickwinkel", "Architektur & technische Entscheidungen · Ziel- & Produktausrichtung · Agenten-Workflow & Kontext · Governance & Risiko (im Sinne von ISO/IEC 42001)."],
       ["Fakten", "Immer oben, berechnet – nie vom Modell formuliert."],
       ["Einschätzung des Modells", "Separat und beschriftet. Zahlen, die nicht in den Fakten stehen, werden markiert."],
@@ -496,9 +498,11 @@ const en: HelpTopic[] = [
       "Analysis → \"★ Expert analysis\" → choose the scope: whole project, one line of work or all your projects.",
       "\"Start expert analysis\" (with a model) or \"Without model (rule-based)\".",
       "Adopt recommendations of type \"rule\" with one click — every agent gets them in its context from then on. \"Tasks\" have a direct button.",
+      "Agents' proposals for project rules are under “Project rules”: accept or reject them (approval mode).",
       "Copy or download the report as Markdown.",
     ],
     terms: [
+      ["Project rules", "Reach every agent. Only you add, accept and remove them, in the approval mode; agents can only propose rules."],
       ["Four lenses", "Architecture & technical decisions · goal & product alignment · agent workflow & context · governance & risk (in the spirit of ISO/IEC 42001)."],
       ["Facts", "Always on top, computed — never written by the model."],
       ["The model's assessment", "Separate and labelled. Numbers that are not in the facts are flagged."],

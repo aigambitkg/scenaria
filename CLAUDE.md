@@ -29,4 +29,4 @@ Talk to Kev in German and in plain words.
 - Every decision is checked against three personas: an office user new to AI, an ISO/IEC 42001 auditor, and a company's AI manager.
 - **Never commit anything confidential:** no keys or `.env` files, no absolute paths of a machine, no private project names, no `.scenaria/` data. Machine notes live in `CLAUDE.local.md`, internal analyses in `docs/intern/`; both are ignored by git. Run `git status` before every commit.
 - Security rules 11 and 12 in `docs/HANDOFF.md` §2: only the person or a registered independent audit agent may reseal the ledger or give a verdict that counts as verified (enforced since 0.9.2, Batch A). Anything that counts "verified" uses `integrity().confirmed`.
-- Batch 0, A and B are done; Batch C (ISO/IEC 42001 audit file) starts only after Kev's go.
+- Batch 0, A and B are done (B accepted by Kev on 2026-10-15). Batch C (ISO/IEC 42001 audit file) is in progress since Kev's go on 2026-10-15; work through it in small steps C1–C4 (`docs/HANDOFF.md` §11).

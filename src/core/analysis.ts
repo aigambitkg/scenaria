@@ -18,7 +18,7 @@ import { readGlobalConfig } from "./global.js";
 import { effectiveLlm, upstreams as upstreamsOf } from "./settings.js";
 import { estimateTokens, optionLabel, taskNodes, taskRollup } from "./context.js";
 import { writeJsonAtomic } from "./store.js";
-import type { AnalysisConfig, ProjectRule, ScenariaNode } from "./types.js";
+import type { AnalysisConfig, ProjectRule, RuleDecision, ScenariaNode } from "./types.js";
 import type { CanonEvent } from "./canon.js";
 import { gateResults } from "./gate.js";
 import { effectiveStatus, isConfirmedPass, isUnconfirmedPass } from "./verdict.js";
@@ -631,11 +631,11 @@ export function getAnalysis(s: Scenaria, id: string): AnalysisRecord {
 }
 
 /** Turn a recommended rule of an analysis into a project rule (and remember that it was accepted). */
-export function acceptRule(s: Scenaria, analysisId: string, index: number): ProjectRule {
+export function acceptRule(s: Scenaria, analysisId: string, index: number, decision: RuleDecision): ProjectRule {
   const rec = getAnalysis(s, analysisId);
   const r = rec.insights.rules?.[index];
   if (!r) throw new Error(`Analysis ${analysisId} has no rule #${index}`);
-  const rule = s.addRule(r.text, "analysis", r.evidence);
+  const rule = s.addRule(r.text, "analysis", r.evidence, decision);
   rec.acceptedRules = Array.from(new Set([...(rec.acceptedRules ?? []), rule.id]));
   writeJsonAtomic(join(analysesDir(s), `${rec.id}.json`), rec);
   return rule;

@@ -70,7 +70,7 @@ Fehlende Angaben werden auf der Karte und im Tool-Ergebnis markiert.
   - Gesendet wird nur ein kompaktes Dossier mit Token-Budget.
   - API-Schlüssel kommen aus Umgebungsvariablen oder werden im Dashboard nur für einen Lauf eingegeben, nie gespeichert.
   - Ganz ohne API: `scenaria analyze --dossier` kopiert das Dossier für jeden Chat, das Ergebnis fügst du wieder ein.
-- **Der Kreis schließt sich:** Übernommene Empfehlungen werden **Projektregeln**, die ab dann jede Kontext-Kapsel und jeder Agent-Prompt enthält.
+- **Der Kreis schließt sich:** Übernommene Empfehlungen werden **Projektregeln**, die ab dann jede Kontext-Kapsel und jeder Agent-Prompt enthält. Projektregeln legst nur du fest; Agenten können sie nur vorschlagen.
 
 ## Kanon-Events: die Fixpunkte des Projekts
 

@@ -363,6 +363,9 @@ export function AnalysisDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessio
   const [tab, setTab] = useState<"overview" | "expert">(props.initialTab ?? "overview");
   const [m, setM] = useState<Metrics | null>(null);
   const [rules, setRules] = useState<ProjectRule[]>([]);
+  const [proposals, setProposals] = useState<ProjectRule[]>([]);
+  const [ruleApproval, setRuleApproval] = useState(false);
+  const [proposalCount, setProposalCount] = useState(0);
   const [newRule, setNewRule] = useState("");
   const [records, setRecords] = useState<AnalysisRecord[]>([]);
   const [current, setCurrent] = useState<AnalysisRecord | null>(null);
@@ -378,12 +381,20 @@ export function AnalysisDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessio
   const [showAllIssues, setShowAllIssues] = useState(false);
 
   const reload = async () => {
-    const [mm, rr, recs] = await Promise.all([api.analysis(), api.rules(), api.analyses()]);
+    // The proposals must never keep the rest of the dialog from loading.
+    const [mm, rr, recs, pp] = await Promise.all([api.analysis(), api.rules(), api.analyses(), api.ruleProposals().catch(() => ({ proposals: [] as ProjectRule[], count: 0, approval: false }))]);
     setM(mm);
     setRules(rr);
+    setProposals(pp.proposals);
+    setProposalCount(pp.count);
+    setRuleApproval(pp.approval);
     setRecords(recs);
     setCurrent((c) => recs.find((r) => r.id === c?.id) ?? recs[0] ?? null);
   };
+  // Approval mode arrived (lock clicked, link opened): unlock the rule buttons.
+  useApprovalSignal(() => {
+    reload().catch(() => {});
+  });
   useEffect(() => {
     reload().catch((e) => setErr(String(e?.message ?? e)));
     api
@@ -508,6 +519,7 @@ export function AnalysisDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessio
         <section className="a-sec">
           <h3>{t.rulesTitle}</h3>
           <p className="hint">{t.rulesHint}</p>
+          {!ruleApproval && <LockedNote t={t} text={proposalCount > 0 ? `${t.ruleProposalsWaiting(proposalCount)} ${t.rulesLocked}` : t.rulesLocked} small />}
           {rules.length > 0 && (
             <ul className="rules">
               {rules.map((r) => (
@@ -517,8 +529,13 @@ export function AnalysisDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessio
                     className="btn icon"
                     aria-label={t.remove}
                     title={t.remove}
+                    disabled={!ruleApproval}
                     onClick={async () => {
-                      await api.deleteRule(r.id);
+                      try {
+                        await api.deleteRule(r.id);
+                      } catch (e: any) {
+                        setErr(String(e?.message ?? e));
+                      }
                       reload();
                     }}
                   >
@@ -528,18 +545,65 @@ export function AnalysisDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessio
               ))}
             </ul>
           )}
+          {proposals.length > 0 && (
+            <div className="rule-proposals">
+              <h4>{t.ruleProposalsTitle}</h4>
+              <p className="hint">{t.ruleProposalsHint}</p>
+              <ul className="rules">
+                {proposals.map((r) => (
+                  <li key={r.id}>
+                    <span className="muted">{r.id}</span> {r.text} <span className="muted">· {r.proposedBy ? t.ruleFrom(r.proposedBy) : t.ruleFromAgent}</span>{" "}
+                    <button
+                      className="btn"
+                      disabled={!ruleApproval}
+                      onClick={async () => {
+                        try {
+                          await api.approveRule(r.id, r.text);
+                          props.toast(t.ruleAccepted);
+                        } catch (e: any) {
+                          setErr(String(e?.message ?? e));
+                        }
+                        reload();
+                      }}
+                    >
+                      {t.ruleApprove}
+                    </button>{" "}
+                    <button
+                      className="btn"
+                      disabled={!ruleApproval}
+                      onClick={async () => {
+                        try {
+                          await api.rejectRule(r.id);
+                          props.toast(t.ruleRejected);
+                        } catch (e: any) {
+                          setErr(String(e?.message ?? e));
+                        }
+                        reload();
+                      }}
+                    >
+                      {t.ruleReject}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           <form
             className="row"
             onSubmit={async (e) => {
               e.preventDefault();
-              if (!newRule.trim()) return;
-              await api.addRule(newRule);
-              setNewRule("");
+              if (!newRule.trim() || !ruleApproval) return;
+              try {
+                await api.addRule(newRule);
+                setNewRule("");
+              } catch (e: any) {
+                setErr(String(e?.message ?? e));
+              }
               reload();
             }}
           >
-            <input className="grow" value={newRule} placeholder={t.rulePlaceholder} onChange={(e) => setNewRule(e.target.value)} />
-            <button className="btn" type="submit" disabled={!newRule.trim()}>
+            <input className="grow" value={newRule} placeholder={t.rulePlaceholder} disabled={!ruleApproval} onChange={(e) => setNewRule(e.target.value)} />
+            <button className="btn" type="submit" disabled={!newRule.trim() || !ruleApproval}>
               {t.addRule}
             </button>
           </form>
@@ -700,10 +764,15 @@ export function AnalysisDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessio
                         {r.text} {r.why ? <span className="muted">— {r.why}</span> : null} <Evidence ids={r.evidence} onSelect={props.onSelectNode} />{" "}
                         <button
                           className="btn"
-                          disabled={taken}
+                          disabled={taken || !ruleApproval}
+                          title={!ruleApproval && !taken ? t.rulesLocked : undefined}
                           onClick={async () => {
-                            await api.acceptRule(current.id, i);
-                            props.toast(t.ruleAccepted);
+                            try {
+                              await api.acceptRule(current.id, i);
+                              props.toast(t.ruleAccepted);
+                            } catch (e: any) {
+                              setErr(String(e?.message ?? e));
+                            }
                             reload();
                           }}
                         >

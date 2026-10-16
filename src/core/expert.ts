@@ -15,7 +15,7 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { Scenaria } from "./engine.js";
-import type { ScenariaNode } from "./types.js";
+import type { RuleDecision, ScenariaNode } from "./types.js";
 import { callLlm, dossier, projectMetrics, type LlmRequest } from "./analysis.js";
 import { canonState, signPersonal, signRecord, verifyPersonal, verifyRecord } from "./canon.js";
 import { overlap, stems } from "./fidelity.js";
@@ -380,14 +380,14 @@ export function getReport(s: Scenaria, id: string): ExpertReport {
 }
 
 /** The person adopts a recommendation as a project rule (agents get it in their context from then on). */
-export function adoptRecommendation(s: Scenaria, id: string, index: number) {
+export function adoptRecommendation(s: Scenaria, id: string, index: number, decision: RuleDecision) {
   const r = getReport(s, id);
   const rec = r.recommendations[index];
   if (!rec) throw new Error(`Report ${id} has no recommendation #${index}`);
   if (!r.verified) throw new Error("This report is not confirmed (not created by Scenaria on your request) — it cannot become a rule.");
   if (rec.kind === "task") throw new Error("This is a one-off task, not a standing rule.");
   if (rec.contradicted) throw new Error("This recommendation rests on a figure the facts contradict.");
-  return s.addRule(ruleText(rec), "analysis", rec.evidence);
+  return s.addRule(ruleText(rec), "analysis", rec.evidence, decision);
 }
 
 // ------------------------------------------------------------------ the analysis

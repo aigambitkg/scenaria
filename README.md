@@ -91,7 +91,7 @@ Missing fields are flagged on the map and in the agent's tool result.
   - Only a compact, token-budgeted dossier is sent.
   - API keys come from environment variables, or from a key entered for a single run in the dashboard. They are never stored.
   - Without any API: `scenaria analyze --dossier` copies the dossier into any chat, and you paste the result back.
-- **The loop closes:** accepted recommendations become **project rules**. Every capsule and every agent prompt carries them from then on.
+- **The loop closes:** accepted recommendations become **project rules**. Every capsule and every agent prompt carries them from then on. Only you set project rules; agents can only propose them.
 
 ## Canon events: the project's fixed points
 
@@ -359,7 +359,7 @@ Global flags: `--root`, `--json`, `--agent`, `--model`, `--user`.
 .scenaria/
   config.json        settings (snapshot folders, proxy upstreams, mirror, verifyCommand, …)
   state.json         HEAD, project root, current task, counters
-  memory.json        project rules (carried by every capsule and prompt)
+  memory.json        project rules (active ones go to every capsule and prompt; agents' proposals wait for you)
   canon.json         canon events: fixed points, proposals, approvals, last checks (commit it)
   ledger.jsonl       integrity ledger (content hash per write, hash-chained)
   readers.json       what each reader already knows (workspace deltas)

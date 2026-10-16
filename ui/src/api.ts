@@ -166,6 +166,9 @@ export const api = {
   rules: () => req<ProjectRule[]>("/api/rules"),
   addRule: (text: string) => req<ProjectRule>("/api/rules", { text }),
   deleteRule: (id: string) => req<{ ok: boolean }>("/api/rules/delete", { id }),
+  ruleProposals: () => req<{ proposals: ProjectRule[]; count: number; approval: boolean }>("/api/rules/proposals"),
+  approveRule: (id: string, text: string) => req<ProjectRule>("/api/rules/approve", { id, text }),
+  rejectRule: (id: string) => req<{ ok: boolean }>("/api/rules/reject", { id }),
   // v0.7
   settings: () => req<SettingsPage>("/api/settings"),
   saveSettings: (patch: { llm?: { default?: LlmChoice; roles?: Partial<Record<LlmRole, LlmChoice>> }; trustedEndpoints?: string[]; chat?: { confirmDestructive: boolean; maxSteps: number }; forecast?: { auto: boolean; dailyLimit: number }; ui?: { lang: string } }) => req<SettingsView>("/api/settings", patch),

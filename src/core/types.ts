@@ -200,13 +200,33 @@ export interface AnalysisConfig {
   apiKeyEnv?: string;
 }
 
-/** A durable project rule (learned lesson / accepted recommendation) that every capsule carries. */
+/**
+ * A durable project rule (learned lesson / accepted recommendation) that every capsule carries.
+ * Only ACTIVE rules reach agents. Agents can only propose a rule; the person activates it (security rule 5).
+ */
 export interface ProjectRule {
   id: string; // r1, r2, …
   text: string;
   source: "manual" | "analysis" | "lesson" | "agent";
   evidence?: string[];
   createdAt: string;
+  /**
+   * "proposed": waiting for the person; "rejected": the person said no (kept, so the id is never reused and
+   * the same text cannot be proposed again). Missing (older projects): active, except rules from agents.
+   */
+  status?: "active" | "proposed" | "rejected";
+  /** Who proposed it: the name the agent STATED (not verified), for proposals. */
+  proposedBy?: string;
+  /** The person's decision: by whom and through which channel (dashboard approval mode or terminal). */
+  decidedBy?: string;
+  decidedVia?: "dashboard" | "terminal";
+  decidedAt?: string;
+}
+
+/** The person's decision on a rule, recorded with it. */
+export interface RuleDecision {
+  by: string;
+  via: "dashboard" | "terminal";
 }
 
 export interface ScenariaState {

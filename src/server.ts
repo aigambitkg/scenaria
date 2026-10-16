@@ -36,7 +36,7 @@ import { adoptRecommendation, expertAnalysis, factSheet, getReport, listPersonal
 import { forgetProject, listProjects, registerProject } from "./core/projects.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
-export const VERSION = "0.9.3";
+export const VERSION = "0.9.4";
 
 const KEY_ENVS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "AZURE_OPENAI_API_KEY"];
 
@@ -485,7 +485,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         // Binding canon actions, the person's settings, the built-in chat and the relay: only with the
         // approval session (not with the API/agent token) — they act for the person or use the person's keys.
         // (The archivist and the analysis also spend the person's quota with the person's keys.)
-        const personOnly = p.startsWith("/api/auditors") || p.startsWith("/api/integrity") || p.startsWith("/api/canon") || p.startsWith("/api/settings") || p.startsWith("/api/agents") || p === "/api/chat" || p === "/api/relay" || p.startsWith("/api/forecast") || p === "/api/analysis/run" || p === "/api/analysis/config" || p.startsWith("/api/expert") || p.startsWith("/api/projects");
+        const personOnly = p.startsWith("/api/auditors") || p.startsWith("/api/integrity") || p.startsWith("/api/canon") || p.startsWith("/api/settings") || p.startsWith("/api/agents") || p === "/api/chat" || p === "/api/relay" || p.startsWith("/api/forecast") || p === "/api/analysis/run" || p === "/api/analysis/config" || p.startsWith("/api/expert") || p.startsWith("/api/projects") || p.startsWith("/api/rules") || p === "/api/analysis/accept";
         // The person gets the approval mode without copying a link: Scenaria opens a fresh single-use link
         // in the default browser itself. Nothing secret is returned; at most once per 15 s; logged.
         if (req.method === "POST" && p === "/api/approval/open") {
@@ -769,7 +769,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         }
         if (req.method === "POST" && p === "/api/analysis/accept") {
           const b = await readBody(req);
-          return send(res, 200, acceptRule(s, String(b?.id ?? ""), Number(b?.index)));
+          return send(res, 200, acceptRule(s, String(b?.id ?? ""), Number(b?.index), { by: approver, via: "dashboard" }));
         }
         // ---------- the person's projects (switch the dashboard) ----------
         if (req.method === "GET" && p === "/api/projects") {
@@ -839,19 +839,44 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         if (req.method === "POST" && p === "/api/expert/adopt") {
           const b = await readBody(req);
           try {
-            return send(res, 200, adoptRecommendation(s, String(b?.id ?? ""), Number(b?.index)));
+            return send(res, 200, adoptRecommendation(s, String(b?.id ?? ""), Number(b?.index), { by: approver, via: "dashboard" }));
           } catch (err: any) {
             return send(res, 400, { error: err?.message ?? String(err) });
           }
         }
+        // ---------- project rules: agents read the active ones; adding, accepting, rejecting and removing are the person's ----------
         if (req.method === "GET" && p === "/api/rules") return send(res, 200, s.rules());
+        // The proposals' texts are for the person; agents only learn how many are waiting.
+        if (req.method === "GET" && p === "/api/rules/proposals") {
+          const proposals = s.ruleProposals();
+          const approval = isApprover(req);
+          return send(res, 200, { proposals: approval ? proposals : [], count: proposals.length, approval });
+        }
         if (req.method === "POST" && p === "/api/rules") {
           const b = await readBody(req);
-          return send(res, 200, s.addRule(String(b?.text ?? ""), "manual"));
+          if (!String(b?.text ?? "").trim()) return send(res, 400, { error: "rule text is empty" });
+          return send(res, 200, s.addRule(String(b.text), "manual", undefined, { by: approver, via: "dashboard" }));
         }
         if (req.method === "POST" && p === "/api/rules/delete") {
           const b = await readBody(req);
-          return send(res, 200, { ok: s.removeRule(String(b?.id ?? "")) });
+          const ok = s.removeRule(String(b?.id ?? ""), { by: approver, via: "dashboard" });
+          return send(res, ok ? 200 : 404, ok ? { ok } : { ok, error: `No rule ${String(b?.id ?? "")}` });
+        }
+        if (req.method === "POST" && p === "/api/rules/approve") {
+          const b = await readBody(req);
+          // The person accepts the text they saw: without it (or if it changed) nothing is accepted.
+          if (typeof b?.text !== "string" || !b.text.trim()) return send(res, 400, { error: "text required: the proposal's text as shown to you" });
+          try {
+            return send(res, 200, s.approveRule(String(b?.id ?? ""), { by: approver, via: "dashboard" }, b.text));
+          } catch (err: any) {
+            const msg = String(err?.message ?? err);
+            return send(res, /^No rule/.test(msg) ? 404 : /busy/.test(msg) ? 503 : 409, { error: msg });
+          }
+        }
+        if (req.method === "POST" && p === "/api/rules/reject") {
+          const b = await readBody(req);
+          const ok = s.rejectRule(String(b?.id ?? ""), { by: approver, via: "dashboard" });
+          return send(res, ok ? 200 : 404, ok ? { ok } : { ok, error: `No open proposal ${String(b?.id ?? "")}` });
         }
         if (req.method === "POST" && p === "/api/goal") {
           const b = await readBody(req);
@@ -1093,10 +1118,10 @@ export async function startServer(
       opts.token ? `  auth:    Authorization: Bearer <token>` : `  mode:    local only (127.0.0.1)`,
       opts.token
         ? approverToken
-          ? `  approve: ${url}/?approve=<approver token>  (canon approvals; keep this token away from agents)`
-          : `  approve: off over HTTP (set SCENARIA_APPROVER_TOKEN to allow canon approvals in team mode)`
+          ? `  approve: ${url}/?approve=<approver token>  (approvals: canon and project rules; keep this token away from agents)`
+          : `  approve: off over HTTP (set SCENARIA_APPROVER_TOKEN to allow approvals of canon and project rules in team mode)`
         : showLink
-          ? `  approve: ${url}/?approve=${approvalCode}  (approval link for canon decisions — works once, only for you)`
+          ? `  approve: ${url}/?approve=${approvalCode}  (approval link for canon and project rules — works once, only for you)`
           : `  approve: ${opts.open ? "opened in your browser" : "start Scenaria from your own terminal to get the approval link"}`,
       "Ctrl+C to stop.",
       "",

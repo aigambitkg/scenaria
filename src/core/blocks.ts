@@ -9,7 +9,8 @@
  *   ```
  *
  * Also accepted: {"task": {title, goal}}, {"checkpoint": {title, outputs, taskDone, summary}},
- * {"lesson": "…"}, {"projectGoal": "…"}, or a JSON list of such items. Blocks are read from
+ * {"lesson": "…"}, {"projectGoal": "…"}, {"rule": "…"} and {"canon": {…}} (both only proposals: the
+ * person approves them), or a JSON list of such items. Blocks are read from
  * proxy traffic, Claude Code transcripts and text pasted into the dashboard; each block is
  * applied once (content hash), so resent histories never duplicate decisions.
  */
@@ -141,8 +142,9 @@ export function applyBlocks(s: Scenaria, text: string, actor: Actor = {}, task?:
           break;
         }
         case "rule": {
+          // From a chat: always a proposal; the person accepts it in the dashboard (security rule 5).
           const r = typeof it.rule === "string" ? it.rule : String(body.text ?? "");
-          if (r.trim()) s.addRule(r, "agent");
+          if (r.trim()) s.proposeRule(r, { by: actor.agent });
           break;
         }
         default:

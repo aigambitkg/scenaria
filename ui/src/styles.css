@@ -401,6 +401,9 @@ code { font-family: var(--mono); font-size: 0.88em; }
 .rules { list-style: none; padding: 0 !important; }
 .rules li { padding: 4px 0; border-bottom: 1px dashed var(--rule); }
 .rules .btn { margin-left: 6px; font-size: 12px; padding: 2px 8px; }
+.rule-proposals { margin: 10px 0; padding: 6px 10px; border-left: 3px solid var(--warn); }
+.rule-proposals h4 { margin: 2px 0; }
+.rule-proposals .hint { margin: 2px 0 4px; }
 .evidence .btn.link { margin-left: 4px; }
 .evidence .nid { font-size: 12.5px; }
 .grow { flex: 1; min-width: 200px; }

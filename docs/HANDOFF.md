@@ -4,8 +4,9 @@ This is the working protocol for the next agent or developer who continues Scena
 
 - **Product owner:** Kev (Kevin Grundmann, AI-Gambit). He reads and writes German, so give your summaries to him in German. He is not a developer by trade, so explain results in plain words.
 - **License:** MIT. Vendor-neutral: any LLM, any agent, any framework.
-- **State at handoff:** v0.9.3 (2026-10-14, Batch B), branch `main`. All tests pass (`npm test`).
+- **State at handoff:** v0.9.4 (2026-10-16, S1: project rules only by the person), branch `main`. All tests pass (`npm test`). GitHub CI was green on Linux and macOS (Node 20 and 22) for 0.9.3.
 - **Current phase (since 2026-10-14): feature freeze.** Work only on the batch plan in §11, one batch at a time, and start a batch only after Kev's go.
+- **Now (since 2026-10-15): Batch C** (ISO/IEC 42001 audit file), started with Kev's go. Batch B is accepted.
 
 ---
 
@@ -31,7 +32,7 @@ Every review so far has enforced these. Treat them as hard requirements.
 2. **Session keys go only to the same provider.** Use `keyFor`; an OpenAI key never goes to Anthropic. Environment keys go only to official or trusted endpoints.
 3. **Never touch the user's own `.git`.** File snapshots live in a private shadow repository, `.scenaria/shadow.git`. The only exception is opt-in mirror refs.
 4. **Never initialise a project in the home folder.**
-5. **Only a person approves.** "Der Archivar kann diese vorschlagen mit Freigabe durch User": agents may *propose* canon, rules and decisions, but only a person approves.
+5. **Only a person approves.** "Der Archivar kann diese vorschlagen mit Freigabe durch User": agents may *propose* canon, rules and decisions, but only a person approves. Project rules follow this since 0.9.4 (S1): agents' rules are proposals; `/api/rules*` and `/api/analysis/accept` are person-only; the CLI needs a terminal and a typed confirmation.
 6. **Person-only actions need a person.**
    - Anything that spends the person's model quota or acts for them needs the **approval session** in the dashboard (the "approval mode": cookie from a single-use approval link that `scenaria start` opens in the browser, or that the lock 🔒 in the dashboard asks Scenaria to open), or an **interactive TTY** in the CLI.
    - The approval link never travels in an HTTP answer. `POST /api/approval/open` only makes the Scenaria process hand a fresh link to the operating system's browser (local mode; single use, valid 60 s, used up even by an already approved browser; once per 15 s from the dashboard, once per minute otherwise; logged with who asked). This covers check commands, approvals, the chat, the relay, the multiverse, the AI check, backtests, settings and project switching.
@@ -62,10 +63,14 @@ node dist/cli.js start # dashboard + approval link (in a project folder)
 
 - **Node:** ≥ 20. Kev's Mac has Node 24.
 - **On Kev's Mac:** run the tests in two halves, because each tool call there is limited to 180 s.
-  - `node --test test/{canon,control,engine,expert,forecast,handoff,help,integrity,office}.test.mjs`
-  - `node --test test/{integration,oracle,overlay,predict,project,projects,safety,universal}.test.mjs`
+  - `node --test test/{canon,control,engine,expert,forecast,handoff,help,integrity,iso42001,office}.test.mjs`
+  - `node --test test/{integration,oracle,overlay,predict,project,projects,rules,safety,universal}.test.mjs`
 - Tests use a temporary `SCENARIA_HOME` (`test/helpers.mjs`), so they never touch the real `~/.config/scenaria`.
 - **Known flaky test:** `watch fingerprint writes no git objects while idle`. It is timing-sensitive, failed once on the Mac and passed on rerun.
+- **macOS specifics** (CI runs on macOS too; two failures there were fixed on 2026-10-15):
+  - The temp folder `/var/…` is really `/private/var/…`, and a project can be opened through a symlink. Compare project folders with `realRoot()` from `src/core/projects.ts`, never as plain strings.
+  - Snapshot folders use APFS clones on macOS (own inode, no extra space) and hardlinks elsewhere. Tests must not expect a shared inode on macOS.
+  - To mimic macOS on Linux, run the tests with `TMPDIR` pointing to a symlinked folder.
 - **Done means:** build green, `npm test` green, `typecheck:ui` clean, and the relevant browser walkthrough (§7) without console or HTTP errors.
 
 ## 4. Where things are (module map)
@@ -101,6 +106,7 @@ node dist/cli.js start # dashboard + approval link (in a project folder)
 | **`oracle.ts`** | **Oracle v2** (multiverse): three roles that may only *correct* the core, with bounded and evidence-backed corrections; γ fit; `assignEntries` (safe answer-to-option matching). |
 | **`forecast.ts`** | Saved forecasts (quick and multiverse), evaluation against reality, the automatic budget. |
 | **`auditor.ts`** | **Prüf-Experte:** checklist and verdict, the skeptic `deepAudit`, `oracleBacktest` (also for single past decisions), `oracleQuality`/`oracleTrust`, `auditOverview` and `auditReportMarkdown`. |
+| **`iso42001.ts`** | **Batch C:** the ISO/IEC 42001 Annex A catalogue (38 controls, own short titles DE/EN, required and supporting evidence sources, coverage, the organisation's part) and the evidence sources with their assurance, hash-chain coverage, scope and limits. No imports: shared with the UI. `test/iso42001.test.mjs` pins the reviewed mapping and checks the source facts against the engine. |
 | `llm-errors.ts` | Error codes for model calls. Shared with the UI, so it must have **no imports**. |
 | `settings.ts`, `global.ts`, `projects.ts` | The person's settings (roles: chat, analysis, analyst, archivist, craftsman, oracle, auditor) and the project registry. |
 
@@ -176,6 +182,7 @@ A good next task is a committed e2e suite (`test/e2e/`, opt-in) built from this.
 - **Git in a sandboxed folder:** if deleting files is not allowed there, git leaves `*.lock` and `tmp_obj_*` files behind.
   - Move stale locks aside, e.g. `mv .git/index.lock .git/stale-index-lock-<time>`; never under `.git/refs`.
   - Kev can delete the `stale-*` files himself. Prefer giving Kev the git commands to run in his own terminal.
+  - Scenaria commands (even `status`) run from such a shell leave `.scenaria/lock` and `.scenaria/shadow.index.lock` behind, which can block Kev's running Scenaria. Move them aside the same way, or avoid running Scenaria there.
 - **After an update:**
   1. `npm run build`, if `dist/` was not shipped.
   2. Restart `scenaria start`.
@@ -186,7 +193,14 @@ A good next task is a committed e2e suite (`test/e2e/`, opt-in) built from this.
 
 From the latest reviews (all optional and low):
 - `e2e`: a chat-regression step clicks the last map node, which can be outside the viewport. Use `scrollIntoViewIfNeeded` or click HEAD.
-- This repository's own Scenaria tree is empty (old schema 2). If Kev wants the development itself recorded, start a mission there (`scenaria_start_mission`), with Kev's approval.
+- This repository's own Scenaria tree is in use (schema 3, since 2026-10-12): main goal set, task "Test-Projekt für alle Funktionen aufsetzen" (a separate test project outside the repository, see `CLAUDE.local.md`). Record new work there as a new task.
+
+Resolved in S1 (0.9.4, 2026-10-16, Kev's decision): agents' project rules are only proposals (K5), and adding, accepting, rejecting and removing rules is the person's (K4). Review S1-1…S1-11: S1-3 to S1-11 fixed with tests (`test/rules.test.mjs`).
+
+Open from the S1 review (Kev decides):
+- **S1-1 (HIGH, older than S1, affects all of rule 6):** an agent with a shell under the person's account can fake a terminal (`script`). With it, it passes the CLI's terminal check and typed confirmation, and `scenaria serve`/`start` print the approval link to that "terminal". Options: never print the approval link to stdout (only hand it to the browser), and document that real separation needs the agent under its own OS account or in a sandbox.
+- **S1-2 (MEDIUM):** `memory.json` is not signed. An edit made directly to the file (or a commit by someone else) activates a rule. Option: sign rule decisions with the person's approver key like canon, show only verified rules to agents, and add a one-time "confirm older rules" step in the dashboard.
+- Release notes for 0.9.4: in team mode without `SCENARIA_APPROVER_TOKEN`, token holders can no longer manage rules over HTTP; rules that agents added before 0.9.4 stop reaching agents until the person accepts them.
 
 Open after Batch A (from the reviews, documented limits):
 - The anchor is per machine. A project used from two computers, or from a devcontainer with another home, reports "extended" writes (medium, with the steps named). External anchoring (git remote / signed export) is on the roadmap.
@@ -211,8 +225,9 @@ Product ideas already discussed or noted (see `docs/ROADMAP.md`; the batch plan 
 | 0.8 | Forecasts and the multiverse, expert analyst, project switcher, help and onboarding |
 | 0.9.0 | Forecast core v2 (same quantity as the measurement, retraceable, backtest, quality), traceable oracle v2, Prüf-Experte |
 | 0.9.1 | Simple start (ready check, three paths), progress and stop, plain result, past-decision check, robust oracle for local models, auditor's area and report |
-| 0.9.3 | Batch B (office users, two review rounds K1–K21): three views (Simple / Audit / Manage), Simple view with history in plain words, "Back to this state" + Undo, "What did the AI do?", states as folders; plain wording DE/EN incl. help and onboarding; settings with one model and "Advanced"; forecasts, relay and Prüf-Experte under "Extensions"; Claude Desktop per project; start icon; approval mode without copying a link (lock 🔒); a second start reuses the running Scenaria |
 | 0.9.2 | Batch A (rule 11): verdict origins; only the person or a registered audit agent can verify or reseal; signed, work-bound verdicts; anchor with high-water mark outside the project; reseal records; audit-agent registry and signed requests; dashboard reseal; two independent review rounds (K1–K11, R1–R7) |
+| 0.9.3 | Batch B (office users, two review rounds K1–K21): three views (Simple / Audit / Manage), Simple view with history in plain words, "Back to this state" + Undo, "What did the AI do?", states as folders; plain wording DE/EN incl. help and onboarding; settings with one model and "Advanced"; forecasts, relay and Prüf-Experte under "Extensions"; Claude Desktop per project; start icon; approval mode without copying a link (lock 🔒); a second start reuses the running Scenaria; macOS CI fix (real folder paths in the cross-project report, APFS clones in snapshot folders) |
+| 0.9.4 | S1 (security rule 5 for project rules): agents only propose rules; adding, accepting, rejecting and removing are the person's (approval session, or terminal with typed confirmation); decisions recorded; proposals hidden from agents; ids never reused; accepting needs the text the person saw; two review rounds (K4/K5, S1-1…S1-11) |
 
 ## 11. Product decisions (2026-10-14) and the batch plan
 
@@ -248,7 +263,7 @@ Product ideas already discussed or noted (see `docs/ROADMAP.md`; the batch plan 
   - Docs updated, independent review.
 - **Honest limit (to document):** a process running with the person's full user rights can read the person's own key. For audits, the audit agent's key must live elsewhere.
 
-### Batch B: easy to understand and use (office users) — DONE in 0.9.3
+### Batch B: easy to understand and use (office users) — DONE in 0.9.3, accepted by Kev 2026-10-15
 - **Goal:** someone who is new to AI understands within five minutes what Scenaria does for them, and can go back to an earlier state without help.
 - **Scope:**
   - **Three views on the same data:** *Simple* (P1), *Audit* (P2), *Manage* (P3).
@@ -264,7 +279,7 @@ Product ideas already discussed or noted (see `docs/ROADMAP.md`; the batch plan 
 - **Done:**
   - Browser walkthrough (§7) including 390 px width, no console errors.
   - Help updated.
-  - A non-technical test person completes "go back to yesterday's state" without help. *(Still open: this test with a real person is Kev's; the walkthrough did it scripted.)*
+  - A non-technical test person completes "go back to yesterday's state" without help. *(Kev accepted Batch B on 2026-10-15; the walkthrough did this scripted. The test with a real person stays optional: a ready kit with a moderator guide is in `docs/intern/praxistest/` (local only).)*
 - **What was built (0.9.3):**
   - **Views.** `Simple` is the default for a new browser; `Audit` is the map with goal bar, rules and milestones, project check, protocol; `Manage` has chat, analysis, "Extensions" (forecasts, Prüf-Experte, relay) and "More". Same data, same API.
   - **Simple view.** Days (today, yesterday, date), newest first; one sentence per step with who did it (agent name, "you", "automatic"); "Now"; "checked by you" only from `integrity().confirmed`; "What did the AI do?" (request, results, files, changes, open as folder); "Back to this state" with an optional note for the AI, then a toast with Undo (back to the autosave, or the previous HEAD when nothing was unsaved); "Back to the state at the end of yesterday"; earlier attempts hidden by default.
@@ -279,7 +294,13 @@ Product ideas already discussed or noted (see `docs/ROADMAP.md`; the batch plan 
   - An agent can ask for the approval window to open (it cannot receive it). The request is logged and limited.
   - Claude Desktop sends no hooks: it records only through the MCP tools (and auto-save), guided by the server instructions.
 
-### Batch C: audit file (ISO/IEC 42001)
+### Batch C: audit file (ISO/IEC 42001) — IN PROGRESS (Kev's go 2026-10-15)
+- **Steps (one commit each, an independent review each):**
+  - **C1, catalogue (built 2026-10-15, three review rounds K1–K17, R1–R10; waiting for Kev's mapping check in `docs/intern/batch-c/zuordnung-pruefen.md`):** the 38 Annex A controls as a data module (`src/core/iso42001.ts`, no imports, shared with the UI): own short titles in DE/EN, the area, the evidence sources in Scenaria, the best coverage Scenaria can reach (evidenced / partly / organisational) and what the organisation must document. Kev checks the mapping (`docs/intern/batch-c/`) before C2.
+  - **C2, evaluation:** compute each control's status from the project's real data, with a period filter, the integrity status and the list of approvals and reseals.
+  - **C3, organisational evidence:** document reference, owner and date per control; person-only and signed; an edited file shows as unverified.
+  - **C4, export and view:** signed export (PDF, Markdown, JSON) and a read-only view for auditors; the current "Prüfung" area (forecast audits) moves to the extensions. Kev decides beforehand how the PDF is made and how an auditor gets access.
+- **Scope, stated honestly in the product:** Scenaria evidences how AI agents worked in projects (decisions, changes, checks, approvals, attribution). It does not evidence how AI models are developed or trained, nor the organisation's policies and impact assessments.
 - **Goal:** an auditor finds every Annex A control of ISO/IEC 42001 in one place. For each one they see what Scenaria evidences automatically, what is partly covered, and what the organisation must document. They can export the whole file, signed.
 - **Scope:**
   - **Control catalogue** as a data file: control IDs with short titles in our own words. The standard's text is copyrighted and is not copied. Kev checks the mapping.

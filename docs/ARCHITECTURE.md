@@ -144,7 +144,12 @@ On a 30-task project a 600-token capsule still holds the goal, the rules, the cu
   - Keys come from the provider's env var (`OPENAI_API_KEY`, …) or from a per-request key. They are never written to disk.
   - Team mode forbids custom base URLs, against request forgery.
   - The answer is parsed tolerantly as JSON (summary, goal alignment, patterns, issues, rules, token tips) and stored in `.scenaria/analyses/`.
-- **Rules.** Accepted rules go to `memory.json` and are carried by every capsule, every agent prompt and the per-prompt reminder.
+- **Rules** (`memory.json`, since 0.9.4 with a status). Only **active** rules are carried by every capsule, every agent prompt, the per-prompt reminder, the board, the dossier and the relay.
+  - **Only the person makes a rule active** (security rule 5): `POST /api/rules*` and `/api/analysis/accept` are person-only (approval session); the CLI `scenaria rules add|approve|reject|rm` needs an interactive terminal and a typed confirmation. Each decision is stored with the rule (`decidedBy`, `decidedVia`, `decidedAt`) and in the event log.
+  - **Agents only propose:** a ```scenaria {"rule": …}``` block becomes a proposal (`status: "proposed"`, `proposedBy` = the name the agent stated). Proposals never reach agents; agents only see how many are waiting. At most 50 open proposals.
+  - **Accepting needs the text the person saw** (`/api/rules/approve {id, text}`), so a changed proposal is never accepted unseen. Ids only go up (`nextId`); a rejected proposal stays on file as `rejected`, so its text is not proposed again.
+  - **Older projects:** rules without a status count as active, except those agents added (`source: "agent"`): they become proposals.
+  - **Limits:** rules are not signed and not in the hash chain. An edit made directly to `memory.json`, or an agent that fakes a terminal under the person's account, is not detected.
 
 ## Context fidelity and integrity
 

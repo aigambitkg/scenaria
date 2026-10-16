@@ -283,7 +283,9 @@ test("ready-made prompts for MCP agents, shell agents and plain chats (DE/EN)", 
     assert.equal((await fetch(`${base}/api/goal`, { method: "POST", body: JSON.stringify({ goal: "x" }) })).status, 403);
     const post = (path, body) => fetch(base + path, { method: "POST", headers: { "content-type": "application/json", "x-scenaria": "1" }, body: JSON.stringify(body) }).then((x) => x.json());
     assert.equal((await post("/api/goal", { goal: "Onboarding in 2 minutes" })).goal, "Onboarding in 2 minutes");
-    const rule = await post("/api/rules", { text: "Measure before optimising" });
+    // Project rules are the person's (S1): without the approval mode the API refuses; the person's rule shows up.
+    assert.equal((await post("/api/rules", { text: "Measure before optimising" })).code, "approval_required");
+    const rule = s.addRule("Measure before optimising", "manual", undefined, { by: "kev", via: "terminal" });
     assert.equal((await (await fetch(`${base}/api/rules`)).json())[0].id, rule.id);
     const task = s.store.listNodes().find((n) => n.type === "goal");
     assert.equal((await post("/api/node/update", { id: task.id, status: "done", summary: "signup works", agent: "x" })).status, "done");
@@ -302,8 +304,10 @@ test("ready-made prompts for MCP agents, shell agents and plain chats (DE/EN)", 
   assert.match(cli(p.dir, ["goal"]).stdout, /Onboarding in 2 minutes/);
   assert.match(cli(p.dir, ["analyze"]).stdout, /Health \d+\/100/);
   assert.match(cli(p.dir, ["recall", "signup"]).stdout, /signup/i);
-  assert.equal(cli(p.dir, ["rules", "add", "Keep PRs small"]).status, 0);
-  assert.match(cli(p.dir, ["rules"]).stdout, /Keep PRs small/);
+  // Without a person's terminal (like here, or an agent's shell) adding a rule is refused (S1).
+  assert.notEqual(cli(p.dir, ["rules", "add", "Keep PRs small"]).status, 0);
+  assert.doesNotMatch(cli(p.dir, ["rules"]).stdout, /Keep PRs small/);
+  assert.match(cli(p.dir, ["rules"]).stdout, /Measure before optimising/);
   const ingest = cli(p.dir, ["ingest-text"], '```scenaria\n{"checkpoint": {"title": "via stdin"}}\n```');
   assert.match(ingest.stdout, /1 node\(s\) recorded/);
 });

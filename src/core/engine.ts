@@ -11,6 +11,7 @@ import type {
   GraphSnapshot,
   NodeType,
   ProjectRule,
+  RuleDecision,
   ScenariaConfig,
   ScenariaNode,
   SnapshotFolderConfig,
@@ -212,6 +213,23 @@ function splitFacts(list?: FactInput[]): { facts?: string[]; factInfo?: ({ confi
   }
   return { facts: facts.length ? facts : undefined, factInfo: info.some(Boolean) ? info : undefined };
 }
+
+
+/** Active = binding for agents. Older projects stored no status: those rules count as active, except the
+ * ones agents added (they become proposals: only the person makes a rule binding). */
+export function isActiveRule(r: ProjectRule): boolean {
+  if (r.status) return r.status === "active";
+  return r.source !== "agent";
+}
+
+/** Waiting for the person's decision (including older agent rules without a status). */
+export function isProposedRule(r: ProjectRule): boolean {
+  if (r.status) return r.status === "proposed";
+  return r.source === "agent";
+}
+
+/** Open rule proposals are capped, so agents cannot flood the person. */
+export const MAX_RULE_PROPOSALS = 50;
 
 function clean(list?: string[]): string[] | undefined {
   const l = (list ?? []).map((s) => String(s).trim()).filter(Boolean);
@@ -1780,40 +1798,128 @@ export class Scenaria {
     return this.store.path("memory.json");
   }
 
-  /** Durable project rules: accepted lessons/recommendations every capsule and prompt carries. */
-  rules(): ProjectRule[] {
+  /** The rules file: every stored rule (active, proposed, rejected) and the next free id. */
+  private readMemory(): { rules: ProjectRule[]; nextId: number } {
     const f = this.memoryFile();
-    if (!existsSync(f)) return [];
-    try {
-      const m = JSON.parse(readFileSync(f, "utf8"));
-      return Array.isArray(m?.rules) ? m.rules : [];
-    } catch {
-      return [];
+    let rules: ProjectRule[] = [];
+    let nextId = 1;
+    if (existsSync(f)) {
+      try {
+        const m = JSON.parse(readFileSync(f, "utf8"));
+        rules = Array.isArray(m?.rules) ? m.rules.filter((r: any) => r && typeof r.id === "string" && typeof r.text === "string") : [];
+        if (Number.isInteger(m?.nextId) && m.nextId > 0) nextId = m.nextId;
+      } catch {
+        rules = [];
+      }
     }
+    // Ids only go up: a rejected or removed id is never handed out again (a stale approval can't hit new text).
+    nextId = Math.max(nextId, rules.reduce((m, r) => Math.max(m, numIdOf(r.id)), 0) + 1);
+    return { rules, nextId };
   }
 
-  addRule(text: string, source: ProjectRule["source"] = "manual", evidence?: string[]): ProjectRule {
+  private writeMemory(rules: ProjectRule[], nextId: number) {
+    writeJsonAtomic(this.memoryFile(), { rules, nextId });
+  }
+
+  /**
+   * Durable project rules: accepted lessons/recommendations every capsule and prompt carries.
+   * Only ACTIVE rules: proposals never reach agents (security rule 5).
+   */
+  rules(): ProjectRule[] {
+    return this.readMemory().rules.filter(isActiveRule);
+  }
+
+  /** Rules agents proposed, waiting for the person's decision. */
+  ruleProposals(): ProjectRule[] {
+    return this.readMemory().rules.filter(isProposedRule);
+  }
+
+  /**
+   * The PERSON's rule: active at once. Callers must make sure a person acts (dashboard approval mode,
+   * interactive terminal, or the person's adoption of an analysis); agents use `proposeRule`.
+   * The same text proposed (or rejected) earlier becomes active instead of being stored twice.
+   */
+  addRule(text: string, source: ProjectRule["source"], evidence: string[] | undefined, decision: RuleDecision): ProjectRule {
     const t = text.replace(/\s+/g, " ").trim().slice(0, 400);
     if (!t) throw new Error("rule text is empty");
     return this.store.withLock(() => {
-      const rules = this.rules();
-      const dup = rules.find((r) => r.text.toLowerCase() === t.toLowerCase());
-      if (dup) return dup;
-      const next = rules.reduce((m, r) => Math.max(m, numIdOf(r.id)), 0) + 1;
-      const rule: ProjectRule = { id: `r${next}`, text: t, source, evidence: clean(evidence), createdAt: new Date().toISOString() };
-      writeJsonAtomic(this.memoryFile(), { rules: [...rules, rule] });
-      this.store.appendEvent({ type: "rule", data: { message: `rule ${rule.id} added: ${t}`, id: rule.id } });
+      const { rules: all, nextId } = this.readMemory();
+      const dup = all.find((r) => r.text.toLowerCase() === t.toLowerCase());
+      if (dup && isActiveRule(dup)) return dup;
+      const decided = decision ? { decidedBy: decision.by, decidedVia: decision.via, decidedAt: new Date().toISOString() } : {};
+      if (dup) {
+        const rule: ProjectRule = { ...dup, status: "active", ...decided };
+        this.writeMemory(all.map((r) => (r.id === dup.id ? rule : r)), nextId);
+        this.store.appendEvent({ type: "rule", data: { message: `rule ${rule.id} accepted: ${t}`, id: rule.id, by: decision?.by, via: decision?.via } });
+        return rule;
+      }
+      const rule: ProjectRule = { id: `r${nextId}`, text: t, source, evidence: clean(evidence), createdAt: new Date().toISOString(), status: "active", ...decided };
+      this.writeMemory([...all, rule], nextId + 1);
+      this.store.appendEvent({ type: "rule", data: { message: `rule ${rule.id} added: ${t}`, id: rule.id, by: decision?.by, via: decision?.via } });
       return rule;
     });
   }
 
-  removeRule(id: string): boolean {
+  /**
+   * An agent's suggestion: stored as a proposal, never given to agents until the person accepts it.
+   * A text that already exists (active, open or rejected) is not proposed again. At most 50 open proposals.
+   */
+  proposeRule(text: string, opts: { by?: string; evidence?: string[] } = {}): ProjectRule {
+    const t = text.replace(/\s+/g, " ").trim().slice(0, 400);
+    if (!t) throw new Error("rule text is empty");
+    // The proposer's name is only what the agent stated: keep it short and printable.
+    const by = opts.by ? opts.by.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 60) || undefined : undefined;
     return this.store.withLock(() => {
-      const rules = this.rules();
-      const keep = rules.filter((r) => r.id !== id);
-      if (keep.length === rules.length) return false;
-      writeJsonAtomic(this.memoryFile(), { rules: keep });
-      this.store.appendEvent({ type: "rule", data: { message: `rule ${id} removed`, id } });
+      const { rules: all, nextId } = this.readMemory();
+      const dup = all.find((r) => r.text.toLowerCase() === t.toLowerCase());
+      if (dup) return dup;
+      if (all.filter(isProposedRule).length >= MAX_RULE_PROPOSALS) throw new Error(`Too many open rule proposals (${MAX_RULE_PROPOSALS}): the person decides on the open ones first.`);
+      const rule: ProjectRule = { id: `r${nextId}`, text: t, source: "agent", evidence: clean(opts.evidence), createdAt: new Date().toISOString(), status: "proposed", proposedBy: by };
+      this.writeMemory([...all, rule], nextId + 1);
+      this.store.appendEvent({ type: "rule", data: { message: `rule ${rule.id} proposed${by ? ` by ${by} (stated)` : ""}: ${t}`, id: rule.id, proposedBy: by } });
+      return rule;
+    });
+  }
+
+  /**
+   * The person accepts a proposal: from now on every agent receives it. `text` is the text the person saw;
+   * if the proposal is not exactly that any more, nothing is accepted.
+   */
+  approveRule(id: string, decision: RuleDecision, text?: string): ProjectRule {
+    return this.store.withLock(() => {
+      const { rules: all, nextId } = this.readMemory();
+      const r = all.find((x) => x.id === id);
+      if (!r) throw new Error(`No rule ${id}`);
+      if (!isProposedRule(r)) throw new Error(`Rule ${id} is not an open proposal (${isActiveRule(r) ? "already active" : "rejected"}).`);
+      if (text !== undefined && text.replace(/\s+/g, " ").trim() !== r.text) throw new Error(`Rule ${id} is not the text you saw — reload and check it again.`);
+      const rule: ProjectRule = { ...r, status: "active", decidedBy: decision.by, decidedVia: decision.via, decidedAt: new Date().toISOString() };
+      this.writeMemory(all.map((x) => (x.id === id ? rule : x)), nextId);
+      this.store.appendEvent({ type: "rule", data: { message: `rule ${id} accepted: ${r.text}`, id, by: decision.by, via: decision.via } });
+      return rule;
+    });
+  }
+
+  /** The person rejects a proposal. It stays on file as rejected: the id is never reused, the text never re-proposed. */
+  rejectRule(id: string, decision: RuleDecision): boolean {
+    return this.store.withLock(() => {
+      const { rules: all, nextId } = this.readMemory();
+      const r = all.find((x) => x.id === id);
+      if (!r || !isProposedRule(r)) return false;
+      const rule: ProjectRule = { ...r, status: "rejected", decidedBy: decision.by, decidedVia: decision.via, decidedAt: new Date().toISOString() };
+      this.writeMemory(all.map((x) => (x.id === id ? rule : x)), nextId);
+      this.store.appendEvent({ type: "rule", data: { message: `rule ${id} rejected: ${r.text}`, id, by: decision.by, via: decision.via } });
+      return true;
+    });
+  }
+
+  /** The person removes a rule (active or proposed). The id is not reused. */
+  removeRule(id: string, decision?: RuleDecision): boolean {
+    return this.store.withLock(() => {
+      const { rules: all, nextId } = this.readMemory();
+      const keep = all.filter((r) => r.id !== id);
+      if (keep.length === all.length) return false;
+      this.writeMemory(keep, nextId);
+      this.store.appendEvent({ type: "rule", data: { message: `rule ${id} removed`, id, by: decision?.by, via: decision?.via } });
       return true;
     });
   }
