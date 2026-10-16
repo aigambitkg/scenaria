@@ -16,7 +16,7 @@ export type PromptKind = "mcp" | "cli" | "chat";
 export type Lang = "de" | "en";
 
 function oneLine(s: string | undefined, max: number) {
-  const t = (s ?? "").replace(/\s+/g, " ").trim();
+  const t = (typeof s === "string" ? s : s == null ? "" : String(s)).replace(/\s+/g, " ").trim();
   return t.length > max ? t.slice(0, max - 1) + "…" : t;
 }
 

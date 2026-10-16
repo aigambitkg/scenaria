@@ -98,7 +98,8 @@ The core stays as it is. New features come only through these batches, in this o
 - [ ] **C, audit file for ISO/IEC 42001 (in progress since 2026-10-15):** every Annex A control with evidence from Scenaria, status and fields for organisational evidence; period filter; signed PDF/Markdown/JSON export; read-only access for auditors
   - [x] C1 catalogue (accepted 2026-10-16)
   - [x] C2 evaluation from the project's records (0.9.6): status per control, period, integrity warnings, approvals and reseals, read setting only by the person
-  - [ ] C3 organisational evidence per control
+  - [x] C2.1 corrections (0.9.7): no crash on damaged verdicts, a verdict counts once, verdict history per step, file states checked on every audit file
+  - [x] C3 organisational evidence per control (0.9.8): link + hash, owner role + name, date; signed by the person; never raises a status; take over from another project
   - [ ] C4 signed export and auditor view
 - [ ] **D, the AI manager's view:** cross-project overview, agents and models over time, token use, rules and policies for all projects
 - [ ] **E, course corridor and drift guard** (parked until A–D are done)

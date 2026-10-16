@@ -129,6 +129,16 @@ Independent audit agents (own key outside Scenaria; only they and you can verify
                                         --out-file <f> saves it as JSON. The setting protects the audit file, not
                                         the raw records (steps, export), which stay readable as before
   audit-file access [person|open]       Who may read the audit file (setting it: the person, interactive only)
+  audit-file evidence [--json]          The organisation's documents per control (read like the audit file)
+  audit-file evidence add --control A.2.2 --url https://… (--hash sha256:… | --doc-file <file>)
+                      --role "AI officer" --name "…" --date YYYY-MM-DD [--title ..] [--notes ..]
+                                        Record a document for a control (the person, interactive; signed).
+                                        --doc-file only computes the hash; the file's path is never stored
+  audit-file evidence rm <id> [--discard]  Remove a document (kept as a signed record of the removal);
+                                        entries you did not sign are discarded
+  audit-file evidence confirm <id>      Confirm a teammate's, an unsigned or a re-worded control's document
+  audit-file evidence copy --from <project name or folder> [--control A.2.2]
+                                        Take over the documents of another of your projects (signed anew)
   protocol                              Write .scenaria/protocol.md
   export [--format json|md] [--out-file f]  Full export for audits / BI / governance tools
 
@@ -172,6 +182,12 @@ const opts = {
   token: { type: "string" },
   format: { type: "string" },
   "out-file": { type: "string" },
+  control: { type: "string" },
+  url: { type: "string" },
+  hash: { type: "string" },
+  date: { type: "string" },
+  "doc-file": { type: "string" },
+  discard: { type: "boolean" },
   "args-file": { type: "string" },
   interval: { type: "string" },
   quiet: { type: "string" },
@@ -366,6 +382,91 @@ async function confirmNewProject(root?: string): Promise<boolean> {
   }
   await personConfirm("new", `An earlier Scenaria project in this folder (since ${since.slice(0, 10)}) is anchored on this machine. Start a NEW project here and archive the old integrity anchor?`, "");
   return true;
+}
+
+/** `scenaria audit-file evidence …` (Batch C3): reading follows the audit file's setting; every change is the person's. */
+async function evidenceCommand(s: Scenaria, p: string[], v: Record<string, any>, out: (human: string, data: unknown) => void) {
+  const { addOrgEvidence, confirmOrgEvidence, copyOrgEvidence, documentHash, orgEvidenceStates, readOrgEvidence } = await import("./core/orgevidence.js");
+  const who = { by: process.env.SCENARIA_USER || userInfo().username || "person", via: "terminal" as const };
+  const notPerson = "The organisation's evidence is the person's: run this in an interactive terminal, or use the dashboard (lock → approval mode).";
+  const show = (e: { id: string; control: string; url: string; hash: string; title?: string; owner: { role: string; name: string }; date: string; status: string }) =>
+    `${e.id} ${e.control} ${e.status === "removed" ? "(removed) " : ""}${e.title ? `“${e.title}” ` : ""}${e.url}\n     ${e.hash} · ${e.owner.role}: ${e.owner.name} · ${e.date}`;
+  const sub = p[0];
+  if (!sub || sub === "list") {
+    if (readAuditAccess(s.store).mode !== "open" && !isPersonTerminal()) throw new Error("Only the person reads the audit file (their setting): run this in an interactive terminal, or open the dashboard in approval mode.");
+    const st = orgEvidenceStates(s.store);
+    const lines = [
+      st.error ? `${C.red}${st.error}${C.reset}` : `The organisation's documents: ${st.entries.filter((x) => x.entry.status === "active").length} active`,
+      ...st.entries.map((x) => `${x.trust === "verified" ? (x.catalogueChanged ? `${C.yellow}confirm${C.reset} ` : `${C.green}signed${C.reset}  `) : x.trust === "tampered" ? `${C.red}CHANGED${C.reset} ` : `${C.yellow}${x.trust}${C.reset} `} ${show(x.entry)}`),
+      ...(st.missing.length ? [`${C.red}Deleted outside Scenaria: ${st.missing.join(", ")}${C.reset}`] : []),
+    ];
+    return out(lines.join("\n"), st);
+  }
+  if (sub === "add") {
+    let hash = v.hash as string | undefined;
+    if (v["doc-file"]) {
+      if (hash) throw new Error("Give either --hash or --doc-file, not both.");
+      hash = documentHash(readFileSync(v["doc-file"]));
+    }
+    const input = { control: v.control, url: v.url, hash, role: v.role, name: v.name, date: v.date, title: v.title, note: v.notes };
+    const { validateInput } = await import("./core/orgevidence.js");
+    const x = validateInput(input);
+    await personConfirm("record", `Record for ${x.control}: ${x.title ? `“${x.title}” ` : ""}${x.url}\n  ${x.hash}\n  owner: ${x.role}: ${x.name} · document date ${x.date}\nSigned with your approver key; it never changes the control's status.`, notPerson);
+    const e = addOrgEvidence(s.store, x, who);
+    return out(`Recorded and signed: ${show(e)}`, e);
+  }
+  if (sub === "rm" || sub === "remove") {
+    const id = p[1] ?? "";
+    const e = readOrgEvidence(s.store).entries.find((x) => x.id === id);
+    if (!e) throw new Error(`No entry ${id}. See: scenaria audit-file evidence`);
+    const { planRemove, removeOrgEvidence } = await import("./core/orgevidence.js");
+    // The core says what will happen (one reading of the file); the prompt shows exactly that.
+    const plan = planRemove(s.store, id, { discard: Boolean(v.discard) });
+    if (plan.outcome === "restore_first") throw new Error(`${id} was recorded by you but changed outside Scenaria. To keep its history, restore .scenaria/org-evidence.json from git first; or discard it: scenaria audit-file evidence rm ${id} --discard`);
+    if (plan.outcome === "already_removed") throw new Error(`${id} is already removed.`);
+    const dropNote = plan.dropped ? `\n${plan.dropped} copy(ies) added outside Scenaria under the same id are dropped.` : "";
+    await personConfirm(
+      "remove",
+      plan.outcome === "discard"
+        ? `DISCARD ${id}${e.control ? ` (${e.control})` : ""}: it is not your signed entry; its content is dropped and it never counts.`
+        : plan.outcome === "drop_copies"
+          ? `${id} is already removed.${dropNote}`
+          : `Remove ${show(plan.entry)}\n(kept as a signed record of the removal)${dropNote}`,
+      notPerson,
+    );
+    const r = removeOrgEvidence(s.store, id, who, { discard: Boolean(v.discard) });
+    return out(r.discarded ? `Discarded: ${id}` : `Removed: ${r.entry.id} (${r.entry.control})${r.dropped ? ` · ${r.dropped} copy(ies) added outside Scenaria dropped` : ""}`, r);
+  }
+  if (sub === "confirm") {
+    const id = p[1] ?? "";
+    const st = orgEvidenceStates(s.store).entries.find((x) => x.entry.id === id);
+    if (!st) throw new Error(`No entry ${id}. See: scenaria audit-file evidence`);
+    const e = st.entry;
+    await personConfirm("confirm", `Confirm ${show(e)}${e.copiedFrom ? `\n     (says: taken over from “${e.copiedFrom}”)` : ""}\nas evidence for ${e.control}, signed with your approver key${st.trust === "verified" ? "" : ", in force from now"}?`, notPerson);
+    // Exactly what was shown: if the file changed meanwhile, the digest no longer matches and nothing is signed.
+    const r = confirmOrgEvidence(s.store, id, st.digest, who);
+    return out(`Confirmed and signed: ${r.id} (${r.control})`, r);
+  }
+  if (sub === "copy") {
+    const want = String(v.from ?? "").trim();
+    if (!want) throw new Error("Usage: scenaria audit-file evidence copy --from <project name or folder>");
+    const { listProjects, realRoot } = await import("./core/projects.js");
+    const here = realRoot(s.root);
+    const cands = listProjects().filter((x) => realRoot(x.root) !== here && (x.name === want || realRoot(x.root) === realRoot(want)));
+    if (cands.length !== 1) throw new Error(cands.length ? `"${want}" is the name of several projects: give its folder.` : `"${want}" is none of the projects you opened with Scenaria on this machine.`);
+    const { planCopy } = await import("./core/orgevidence.js");
+    const controls = v.control ? [String(v.control)] : undefined;
+    const plan = planCopy(s.store, cands[0].root, controls);
+    if (!plan.take.length) return out(`Nothing to take over from “${plan.from.name}”${plan.skipped.length ? ` (skipped: ${plan.skipped.map((x) => `${x.id} ${x.reason}`).join(", ")})` : ""}.`, plan);
+    await personConfirm(
+      "copy",
+      `${plan.sameIdElsewhere ? `${C.yellow}Note: ${plan.sameIdElsewhere} other folder(s) on this machine claim the same project id (a second checkout or a copy). Make sure this is the project you mean.${C.reset}\n` : ""}Take over from “${plan.from.name}” into this project, each signed anew, in force from now:\n${plan.take.map((t) => `  ${t.control} ${t.title ? `“${t.title}” ` : ""}${t.url}\n     ${t.hash} · ${t.owner.role}: ${t.owner.name} · ${t.date}`).join("\n")}${plan.skipped.length ? `\nSkipped: ${plan.skipped.map((x) => `${x.id} (${x.reason})`).join(", ")}` : ""}`,
+      notPerson,
+    );
+    const r = copyOrgEvidence(s.store, cands[0].root, who, controls, plan.take.map((t) => t.id));
+    return out(`Taken over: ${r.copied.length}${r.skipped.length ? ` · skipped: ${r.skipped.map((x) => `${x.id} (${x.reason})`).join(", ")}` : ""}`, r);
+  }
+  throw new Error("Usage: scenaria audit-file evidence [add|rm <id>|confirm <id>|copy --from <project>]");
 }
 
 async function main() {
@@ -1267,6 +1368,7 @@ async function main() {
         const a = setAuditAccess(s.store, mode, { by: process.env.SCENARIA_USER || userInfo().username || "person", via: "terminal" });
         return out(show(a), a);
       }
+      if (p[0] === "evidence") return await evidenceCommand(s, p.slice(1), v, out);
       // The person reads it at an interactive terminal (like every person-only command, rule 6); --out-file
       // writes it to a file after that check. An agent's shell reads it only when the person opened it.
       if (readAuditAccess(s.store).mode !== "open" && !isPersonTerminal()) {
@@ -1283,15 +1385,17 @@ async function main() {
         return `${col}${word.padEnd(13)}${col ? C.reset : ""}`;
       };
       const lines = [
-        `ISO/IEC 42001 audit file — ${f.project.name} · ${f.period.whole ? "whole project" : `${f.period.from?.slice(0, 10) ?? "…"} – ${f.period.to?.slice(0, 10) ?? "…"}`} · ${f.period.steps} step(s)`,
+        `ISO/IEC 42001 audit file — ${f.project.name} · ${f.period.whole ? "whole project" : `${f.period.from?.replace("T", " ").slice(0, 16) ?? "…"} – ${f.period.to?.replace("T", " ").slice(0, 16) ?? "…"} UTC`} · ${f.period.steps} step(s)`,
         f.integrity.state === "alarm" ? `${C.red}${lab(f.integrity.headline)}${C.reset}` : lab(f.integrity.headline),
         ...f.integrity.warnings.map((w) => `  ${w.level === "alarm" ? `${C.red}!${C.reset}` : "·"} ${lab(w.title)}${w.count > 1 ? ` (${w.count})` : ""}: ${lab(w.explain)}${w.items.length ? ` [${w.items.slice(0, 8).join(", ")}${w.items.length > 8 ? ", …" : ""}]` : ""}`),
         "",
         `${f.summary.partly} partly evidenced · ${f.summary.not_covered} not covered · ${f.summary.organisational} evidence by the organisation${f.summary.withAlarm ? ` · ${C.red}${f.summary.withAlarm} with an integrity alarm${C.reset}` : ""}`,
+        `The organisation's documents: ${f.summary.orgDocumented} of ${f.summary.controls} controls documented (signed by the person; they never change a status)`,
         "",
-        ...f.controls.map((c) => `${c.alarm ? `${C.red}!${C.reset}` : " "} ${c.id.padEnd(8)} ${status(c)} ${lab(c.title)}${c.missing.length ? `${C.dim}  — no data: ${c.missing.join(", ")}${C.reset}` : ""}`),
+        ...f.controls.map((c) => `${c.alarm ? `${C.red}!${C.reset}` : " "} ${c.id.padEnd(8)} ${status(c)} ${c.orgEvidence.state === "documented" ? `${C.green}doc ✓${C.reset}` : c.orgEvidence.state === "unconfirmed" ? `${C.yellow}doc ?${C.reset}` : "     "} ${lab(c.title)}${c.missing.length ? `${C.dim}  — no data: ${c.missing.join(", ")}${C.reset}` : ""}`),
         "",
-        `Signed approvals of rules and work in the period: ${f.sources.approvals.count}${f.sources.approvals.count ? ` (${Object.entries(f.sources.approvals.facts).map(([k, n]) => `${k} ${n}`).join(", ")})` : ""}${f.approvals.length > f.sources.approvals.count ? ` · also listed (carry no control): ${f.approvals.filter((a) => !a.carries).map((a) => a.kind).join(", ")}` : ""}`,
+        `Signed approvals of rules and work in the period: ${f.sources.approvals.count}${f.sources.approvals.count ? ` (${Object.entries(f.sources.approvals.facts).map(([k, n]) => `${k} ${n}`).join(", ")})` : ""}${f.approvals.length > f.sources.approvals.count ? ` · also listed (not counted as approvals): ${[...new Set(f.approvals.filter((a) => !a.carries).map((a) => a.kind))].join(", ")}` : ""}`,
+        `Independent verdicts in the period: ${f.sources.verdicts.count}${f.verdictHistory.length ? ` · ${f.verdictHistory.filter((h) => h.earlier.length).length} step(s) with earlier verdicts kept for comparison (${f.verdictHistory.reduce((n, h) => n + h.earlier.length, 0)} earlier, never counted)` : ""}`,
         `Reseals: ${f.reseals.authentic.length} authentic${f.reseals.unproven.length ? `, ${C.red}${f.reseals.unproven.length} without proof${C.reset}` : ""}`,
         `${C.dim}${lab(f.scope)}${C.reset}`,
       ];

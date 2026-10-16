@@ -65,6 +65,13 @@ export interface Verification {
   report?: { status: VerificationStatus; origin: "agent" | "auto"; notes?: string; by?: string; at: string; checks?: VerificationCheck[] };
 }
 
+/**
+ * A verdict of the person or an audit agent (or an older one without origin) that a later verdict replaced.
+ * Kept unchanged with its signature, so earlier and current verdicts can be compared (C2.1, Kev 2026-10-16).
+ * Never counts as verified. The node file is in the hash chain, so removing an entry shows as tampering.
+ */
+export type ArchivedVerdict = Verification & { replacedAt: string };
+
 export interface ScenariaNode {
   id: string; // n1, n2, ... (short, per project)
   /** Globally unique, time-sortable id (ULID) — stable across exports and merges. */
@@ -137,6 +144,8 @@ export interface ScenariaNode {
   irreversible?: string[];
 
   verification?: Verification;
+  /** Earlier verdicts of the person / audit agents, oldest first (see ArchivedVerdict). */
+  verificationHistory?: ArchivedVerdict[];
   tags?: string[];
   meta?: Record<string, unknown>;
 }

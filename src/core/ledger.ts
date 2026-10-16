@@ -38,10 +38,10 @@ export function contentHash(n: ScenariaNode): string {
 
 /**
  * Hash of the WORK a verdict is about: everything except the verdict itself and bookkeeping that Scenaria
- * adds later (field history, snapshot folder, lessons attached by a rewind). If the work changes after a
+ * adds later (field history, earlier verdicts, snapshot folder, lessons attached by a rewind). If the work changes after a
  * verdict, the verdict no longer applies to it (it is "superseded").
  */
-const NOT_WORK = new Set(["verification", "meta", "snapshotFolder", "lessons", "status", "summary"]);
+const NOT_WORK = new Set(["verification", "verificationHistory", "meta", "snapshotFolder", "lessons", "status", "summary"]);
 export function workHash(n: ScenariaNode): string {
   const copy: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(n)) if (!NOT_WORK.has(k)) copy[k] = v;

@@ -24,6 +24,7 @@ import { SECTIONS, checkExpectations, resolveRefs, stringPayload, workspace, typ
 import { archivistProposals } from "./core/canon-llm.js";
 import { addAuditor, listAuditors, removeAuditor } from "./core/auditors.js";
 import { buildAuditFile, parsePeriod } from "./core/auditfile.js";
+import { addOrgEvidence, catalogueFingerprint, confirmOrgEvidence, copyOrgEvidence, OrgEvidenceError, orgEvidenceStates, planCopy, removeOrgEvidence } from "./core/orgevidence.js";
 import { AUDIT_ACCESS_MODES, readAuditAccess, setAuditAccess, type AuditAccessMode } from "./core/auditaccess.js";
 import { gateMatrix, runGate } from "./core/gate.js";
 import { effectiveLlm, listModels, readSettings, upstreams, writeSettings } from "./core/settings.js";
@@ -38,7 +39,7 @@ import { adoptRecommendation, expertAnalysis, factSheet, getReport, listPersonal
 import { forgetProject, listProjects, registerProject } from "./core/projects.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
-export const VERSION = "0.9.6";
+export const VERSION = "0.9.8";
 
 const KEY_ENVS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "AZURE_OPENAI_API_KEY"];
 
@@ -553,6 +554,40 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
             return send(res, 400, { error: err?.message ?? String(err) });
           }
           return send(res, 200, buildAuditFile(s, period));
+        }
+        // The organisation's evidence per control (C3): read like the audit file; every change is the person's
+        // (all POST /api/audit-file* are under the personOnly prefix above).
+        if (req.method === "GET" && p === "/api/audit-file/evidence") {
+          if (readAuditAccess(s.store).mode !== "open" && !isApprover(req)) {
+            const how = token ? "open the dashboard with the approver link (SCENARIA_APPROVER_TOKEN)" : "click the lock (Open approval mode) in the dashboard";
+            return send(res, 403, { error: `Only the person reads the audit file (their setting): ${how}.`, code: "approval_required" });
+          }
+          const st = orgEvidenceStates(s.store);
+          return send(res, 200, { ...st, catalogue: catalogueFingerprint(), approval: isApprover(req) });
+        }
+        if (req.method === "POST" && p.startsWith("/api/audit-file/evidence")) {
+          const b = await readBody(req);
+          const who = { by: approver, via: "dashboard" as const };
+          try {
+            if (p === "/api/audit-file/evidence") return send(res, 200, { entry: addOrgEvidence(s.store, b ?? {}, who) });
+            if (p === "/api/audit-file/evidence/remove") return send(res, 200, removeOrgEvidence(s.store, String(b?.id ?? ""), who, { discard: b?.discard === true }));
+            // The digest of exactly what the person was shown (GET …/evidence lists it per entry).
+            if (p === "/api/audit-file/evidence/confirm") return send(res, 200, { entry: confirmOrgEvidence(s.store, String(b?.id ?? ""), String(b?.digest ?? ""), who) });
+            if (p === "/api/audit-file/evidence/copy") {
+              // Only from a project the person has on this machine (the dashboard's project list), never any folder.
+              const from = listProjects().find((x) => realRoot(x.root) === realRoot(String(b?.from ?? "")));
+              if (!from) return send(res, 400, { error: "Choose one of your projects on this machine.", code: "not_a_project" });
+              const controls = Array.isArray(b?.controls) ? b.controls.filter((x: unknown): x is string => typeof x === "string") : undefined;
+              // First the plan (what would be taken over), then the copy of exactly the ids the person saw.
+              if (b?.dryRun === true) return send(res, 200, planCopy(s.store, from.root, controls));
+              if (!Array.isArray(b?.expect)) return send(res, 400, { error: "Show the plan first (dryRun: true), then copy with expect: the ids the person saw.", code: "plan_first" });
+              const expect = b.expect.filter((x: unknown): x is string => typeof x === "string");
+              return send(res, 200, copyOrgEvidence(s.store, from.root, who, controls, expect));
+            }
+          } catch (err: any) {
+            if (err instanceof OrgEvidenceError) return send(res, 400, { error: err.message, code: err.code });
+            throw err;
+          }
         }
 
         // ---------- registered audit agents (rule 11): list is open (public keys), changes are the person's ----------

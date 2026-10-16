@@ -22,32 +22,82 @@ export function verdictParts(id: string, v: Pick<Verification, "status" | "at" |
   return ["verdict/v2", id, v.status, v.at ?? "", v.by ?? "", v.via ?? "", v.notes ?? "", v.work ?? ""];
 }
 
-/** Check every person / audit-agent verdict of the given nodes. Nodes without such a verdict are absent from the map. */
+/** Text fields of a signed record: anything else (a number, an object) is treated as damaged. */
+const text = (x: unknown): x is string => typeof x === "string" && x.length > 0;
+
+/** Check one claimed verdict. Throws nothing a hand-edited file could provoke: the caller turns an exception into "forged". */
+function trustOf(n: ScenariaNode, v: Verification, pid: string, trusted: Set<string>, reg: ReturnType<typeof auditorRegistry>): VerdictTrust {
+  if (v.origin === "person") {
+    if (!pid || !text(v.pub) || !text(v.sig) || !text(v.work) || !verifyEd25519(v.pub, v.sig, JSON.stringify([pid, ...verdictParts(n.id, v)]))) return "forged";
+    if (!trusted.has(publicKeyId(v.pub))) return "untrusted";
+    return v.work === workHash(n) ? "ok" : "superseded";
+  }
+  const env = v.auditor?.request;
+  // A request whose parts are not text cannot be authentic (C2.1, review K1: it used to throw).
+  if (!env || typeof env !== "object" || !text(env.payload) || !text(env.pub) || !text(env.sig)) return "forged";
+  let p: any = null;
+  try {
+    p = JSON.parse(env.payload);
+  } catch {}
+  const keyId = publicKeyId(env.pub);
+  const bound = p?.action === "verdict" && pid && p.project === pid && p.verdict?.node === n.id && p.verdict?.status === v.status && typeof p.verdict?.workHash === "string" && v.auditor?.keyId === keyId;
+  if (!requestSignatureValid(env) || !bound) return "forged";
+  if (!reg.keys.some((k) => k.id === keyId && k.pub === env.pub)) return reg.removed.some((k) => k.id === keyId) ? "revoked" : "untrusted";
+  return p.verdict.workHash === workHash(n) ? "ok" : "superseded";
+}
+
+/**
+ * Check every person / audit-agent verdict of the given nodes. Nodes without such a verdict are absent from the map.
+ * Never throws on a hand-edited node: a verdict that cannot even be read counts as "forged" (tampering, an alarm).
+ */
 export function verdictTrustAll(store: Store, nodes: ScenariaNode[]): Map<string, VerdictTrust> {
   const out = new Map<string, VerdictTrust>();
-  const claimed = nodes.filter((n) => n.verification?.origin === "person" || n.verification?.origin === "auditor");
+  const claimed = nodes.filter((n) => n.verification && typeof n.verification === "object" && (n.verification.origin === "person" || n.verification.origin === "auditor"));
   if (!claimed.length) return out;
   const pid = projectIdentity(store, false);
   const trusted = trustedApproverIdSet();
   const reg = auditorRegistry();
   for (const n of claimed) {
-    const v = n.verification!;
-    if (v.origin === "person") {
-      if (!pid || !v.pub || !v.sig || !v.work || !verifyEd25519(v.pub, v.sig, JSON.stringify([pid, ...verdictParts(n.id, v)]))) out.set(n.id, "forged");
-      else if (!trusted.has(publicKeyId(v.pub))) out.set(n.id, "untrusted");
-      else out.set(n.id, v.work === workHash(n) ? "ok" : "superseded");
-      continue;
-    }
-    const env = v.auditor?.request;
-    let p: any = null;
+    let tr: VerdictTrust;
     try {
-      p = env ? JSON.parse(env.payload) : null;
-    } catch {}
-    const keyId = env ? publicKeyId(env.pub) : "";
-    const bound = p?.action === "verdict" && pid && p.project === pid && p.verdict?.node === n.id && p.verdict?.status === v.status && typeof p.verdict?.workHash === "string" && v.auditor?.keyId === keyId;
-    if (!requestSignatureValid(env) || !bound) out.set(n.id, "forged");
-    else if (!reg.keys.some((k) => k.id === keyId && k.pub === env!.pub)) out.set(n.id, reg.removed.some((k) => k.id === keyId) ? "revoked" : "untrusted");
-    else out.set(n.id, p.verdict.workHash === workHash(n) ? "ok" : "superseded");
+      tr = trustOf(n, n.verification!, pid, trusted, reg);
+    } catch {
+      tr = "forged";
+    }
+    out.set(n.id, tr);
+  }
+  return out;
+}
+
+/** How an archived (replaced) verdict checks out: its signature as given, not the current work (C2.1). */
+export type ArchivedTrust = "signed" | "forged" | "untrusted" | "revoked" | "unsigned";
+
+/**
+ * Check the earlier verdicts of the given nodes (`verificationHistory`). The work hash is not compared: an
+ * archived verdict was given on the work as it was then. Older verdicts without origin are "unsigned".
+ * Returns, per node with a history, one result per entry in the same order. Never throws.
+ */
+export function archivedVerdictTrust(store: Store, nodes: ScenariaNode[]): Map<string, ArchivedTrust[]> {
+  const out = new Map<string, ArchivedTrust[]>();
+  const withHistory = nodes.filter((n) => Array.isArray(n.verificationHistory) && n.verificationHistory.length);
+  if (!withHistory.length) return out;
+  const pid = projectIdentity(store, false);
+  const trusted = trustedApproverIdSet();
+  const reg = auditorRegistry();
+  for (const n of withHistory) {
+    out.set(
+      n.id,
+      n.verificationHistory!.map((v): ArchivedTrust => {
+        if (!v || typeof v !== "object") return "forged";
+        if (v.origin !== "person" && v.origin !== "auditor") return v.origin === undefined ? "unsigned" : "forged";
+        try {
+          const tr = trustOf(n, v, pid, trusted, reg);
+          return tr === "ok" || tr === "superseded" ? "signed" : tr;
+        } catch {
+          return "forged";
+        }
+      }),
+    );
   }
   return out;
 }

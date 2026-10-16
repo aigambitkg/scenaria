@@ -9,7 +9,8 @@ import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writ
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { Scenaria } from "../dist/core/index.js";
-import { buildAuditFile, parsePeriod, INTEGRITY_RULES } from "../dist/core/auditfile.js";
+import { buildAuditFile, parsePeriod, INTEGRITY_RULES, AUDIT_FILE_OWN_CODES, scrubPaths, storedTime } from "../dist/core/auditfile.js";
+import { publicKeyId, verifyEd25519 } from "../dist/core/canon.js";
 import { readAuditAccess, setAuditAccess } from "../dist/core/auditaccess.js";
 import { ANNEX_A_CONTROLS, EVIDENCE_SOURCES } from "../dist/core/iso42001.js";
 import { globalConfigPath } from "../dist/core/global.js";
@@ -181,7 +182,7 @@ test("C2: the audit file names no machine path", () => {
 
 test("C2: every integrity code the audit file maps exists in the project check, and the alarms are mapped", () => {
   const src = readFileSync(join(import.meta.dirname, "..", "dist", "core", "analysis.js"), "utf8");
-  for (const code of Object.keys(INTEGRITY_RULES)) if (code !== "evaluation_failed") assert.match(src, new RegExp(`code: "${code}"`), code);
+  for (const code of Object.keys(INTEGRITY_RULES)) if (!AUDIT_FILE_OWN_CODES.includes(code)) assert.match(src, new RegExp(`code: "${code}"`), code);
   // Every high-severity tamper/signature finding of the project check becomes an alarm in the audit file.
   for (const code of ["tampered", "ledger_missing", "ledger_broken", "ledger_diverged", "ledger_replaced", "reseal_unproven", "verdict_untrusted", "verdict_removed", "canon_tampered", "canon_untrusted", "canon_check_tampered", "canon_gate_tampered", "canon_missing", "canon_unreadable", "rule_tampered", "rule_missing", "project_id_changed"]) {
     assert.equal(INTEGRITY_RULES[code]?.level, "alarm", code);
@@ -280,7 +281,7 @@ test("C2 access in the CLI: an agent's shell neither reads (default) nor changes
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /ISO\/IEC 42001 audit file/);
   assert.match(r.stdout, /A\.6\.2\.3/);
-  assert.match(r.stdout, /Signed approvals of rules and work in the period: 0 · also listed \(carry no control\): access/, "the CLI count matches the list it summarises");
+  assert.match(r.stdout, /Signed approvals of rules and work in the period: 0 · also listed \(not counted as approvals\): access/, "the CLI count matches the list it summarises");
   r = cli(["audit-file", "--from", "nonsense"]);
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /not a date/);
@@ -406,7 +407,9 @@ test("C2 K7: only real days and date-times with a time zone are accepted", () =>
     assert.throws(() => parsePeriod(bad), /not a date/, bad);
   }
   assert.deepEqual(parsePeriod("2026-10-01T12:00+02:00"), { from: "2026-10-01T10:00:00.000Z", to: null });
-  assert.deepEqual(parsePeriod(null, "2026-10-01T10:00Z"), { from: null, to: "2026-10-01T10:00:00.000Z" });
+  // An end given to the minute covers the whole minute (C2.1, review K6).
+  assert.deepEqual(parsePeriod(null, "2026-10-01T10:00Z"), { from: null, to: "2026-10-01T10:00:59.999Z" });
+  assert.deepEqual(parsePeriod(null, "2026-10-01T10:00:30Z"), { from: null, to: "2026-10-01T10:00:30.000Z" });
   assert.throws(() => parsePeriod("2026-10-02", "2026-10-01T23:00Z"), /starts after it ends/);
 });
 
@@ -597,4 +600,176 @@ test("C2 K8: a reseal shows the channel it was signed with", () => {
   const f = buildAuditFile(s);
   assert.equal(f.reseals.authentic[0].via, "dashboard");
   assert.equal(f.approvals.find((a) => a.kind === "reseal").via, "dashboard");
+});
+
+// ------------------------------------------------------------------ C2.1: third review round (K1–K8), Kev's decisions 2026-10-16
+
+test("C2.1 K1: a hand-edited verdict that cannot even be read raises an alarm instead of breaking anything", () => {
+  const { p, s, cp, d } = project();
+  callTool(s, "scenaria_verify", { id: cp.id, status: "passed" }, agent);
+  // An audit agent's verdict without a key; a person's verdict whose key is a number.
+  editNode(p, cp.id, (n) => {
+    n.verification.origin = "auditor";
+    n.verification.auditor = { request: { payload: "{}" } };
+  });
+  s.verify(d.id, { status: "passed", origin: "person", via: "terminal", by: "kev" });
+  editNode(p, d.id, (n) => (n.verification.pub = 42));
+  const s2 = Scenaria.open(p.dir);
+  let integ;
+  assert.doesNotThrow(() => (integ = s2.integrity()), "the integrity check survives");
+  assert.deepEqual([...integ.verdictsForged].sort(), [cp.id, d.id].sort());
+  let f;
+  assert.doesNotThrow(() => (f = buildAuditFile(s2)), "the audit file is always produced");
+  assert.equal(f.integrity.state, "alarm");
+  const w = f.integrity.warnings.find((x) => x.code === "verdict_forged");
+  assert.equal(w.level, "alarm");
+  assert.deepEqual([...w.items].sort(), [cp.id, d.id].sort());
+  assert.equal(f.sources.verdicts.count, 0);
+  assert.ok(!f.integrity.warnings.some((x) => x.code === "evaluation_failed"), "nothing failed: it was recognised");
+  // The root cause: a key id of something that is not text is empty, never an exception.
+  assert.equal(publicKeyId(42), "");
+  assert.equal(publicKeyId(undefined), "");
+  assert.equal(publicKeyId({}), "");
+});
+
+test("C2.1 K2: a verdict counts once — as a verdict, never also as an approval", () => {
+  const { s, cp } = project();
+  s.verify(cp.id, { status: "failed", notes: "tests missing", origin: "person", via: "terminal", by: "kev" });
+  let f = buildAuditFile(s);
+  assert.equal(f.sources.verdicts.count, 1);
+  assert.equal(f.sources.approvals.count, 0, "a verdict is no approval of rules or work");
+  const a = f.approvals.find((x) => x.kind === "verdict");
+  assert.equal(a.carries, false, "still listed, but it carries only the verdicts source");
+  for (const id of ["A.3.2", "A.9.2", "A.6.1.3"]) assert.equal(ctl(f, id).status, "not_covered", id);
+  assert.ok(ctl(f, "A.3.2").missing.includes("approvals"));
+  // With a real approval (a signed project rule) next to it, the pair is complete.
+  s.addRule("Write a test for every bug fix", "manual", undefined, { by: "kev", via: "terminal" });
+  f = buildAuditFile(s);
+  assert.equal(f.sources.approvals.count, 1);
+  assert.equal(ctl(f, "A.3.2").status, "partly");
+});
+
+test("C2.1 history: a replaced verdict is archived with its signature and shown for comparison, never counted", () => {
+  const { p, s, cp } = project();
+  s.verify(cp.id, { status: "failed", notes: "tests missing", origin: "person", via: "terminal", by: "kev" });
+  s.verify(cp.id, { status: "passed", notes: "tests added", origin: "person", via: "dashboard", by: "kev" });
+  // A later self-report is kept next to the person's verdict (as before) and is not archived.
+  callTool(s, "scenaria_verify", { id: cp.id, status: "passed" }, agent);
+  const n = s.store.readNode(cp.id);
+  assert.equal(n.verification.status, "passed");
+  assert.equal(n.verificationHistory.length, 1);
+  assert.deepEqual([n.verificationHistory[0].status, n.verificationHistory[0].origin, n.verificationHistory[0].notes], ["failed", "person", "tests missing"]);
+  assert.ok(n.verificationHistory[0].sig && n.verificationHistory[0].replacedAt);
+  const integ = s.integrity();
+  assert.ok(integ.confirmed.has(cp.id), "archiving does not supersede the current verdict (not part of the work)");
+  let f = buildAuditFile(s);
+  assert.equal(f.integrity.state, "ok");
+  assert.equal(f.sources.verdicts.count, 1, "one step, one verdict that counts");
+  assert.equal(f.sources.verdicts.facts.earlier, 1);
+  const h = f.verdictHistory.find((x) => x.node === cp.id);
+  assert.deepEqual([h.current.status, h.current.counts], ["passed", true]);
+  assert.deepEqual(h.earlier.map((e) => [e.status, e.origin, e.via, e.signature]), [["failed", "person", "terminal", "signed"]]);
+  assert.match(f.sources.verdicts.note.de, /Verlauf/);
+  // Removing or editing an archived verdict is tampering (the step file is in the hash chain).
+  editNode(p, cp.id, (x) => (x.verificationHistory[0].status = "passed"));
+  f = buildAuditFile(Scenaria.open(p.dir));
+  assert.equal(f.integrity.state, "alarm");
+  assert.ok(f.integrity.warnings.some((w) => w.code === "tampered" && w.items.includes(cp.id)));
+  assert.ok(f.integrity.warnings.some((w) => w.code === "verdict_archive_invalid" && w.items.includes(cp.id)), "the edited entry no longer verifies");
+});
+
+test("C2.1 history: an audit agent's verdict replaced by the person's is archived and still verifies", () => {
+  const { p, s, cp } = project();
+  const k = auditorKeygen(mkdtempSync(join(tmpdir(), "c21-auditor-")));
+  addAuditor(k.pub, "CI");
+  s.applyAuditorRequest(signAuditorRequest(buildAuditorRequest(s.store, { action: "verdict", node: cp.id, status: "passed" }), readFileSync(k.keyFile, "utf8")));
+  s.verify(cp.id, { status: "warning", notes: "one test is flaky", origin: "person", via: "terminal", by: "kev" });
+  const f = buildAuditFile(Scenaria.open(p.dir));
+  const h = f.verdictHistory.find((x) => x.node === cp.id);
+  assert.deepEqual(h.earlier.map((e) => [e.status, e.origin, e.signature]), [["passed", "auditor", "signed"]]);
+  assert.equal(h.current.origin, "person");
+  assert.equal(f.integrity.state, "ok");
+});
+
+test("C2.1 K3: every audit file checks that the stored file states still exist", () => {
+  const { p, s } = project();
+  let f = buildAuditFile(s);
+  const withSnap = f.sources.snapshots.count;
+  assert.ok(withSnap >= 2);
+  assert.equal(f.sources.snapshots.facts.missing, 0);
+  assert.ok(!f.integrity.warnings.some((w) => w.code === "snapshot_missing"));
+  const needing = f.controls.filter((c) => c.required.some((r) => r.source === "snapshots") && c.status === "partly").map((c) => c.id);
+  // The snapshot store is deleted outside Scenaria.
+  rmSync(join(p.dir, ".scenaria/shadow.git"), { recursive: true, force: true });
+  f = buildAuditFile(Scenaria.open(p.dir));
+  assert.equal(f.sources.snapshots.count, 0, "nothing restorable is claimed");
+  assert.equal(f.sources.snapshots.facts.missing, withSnap);
+  const w = f.integrity.warnings.find((x) => x.code === "snapshot_missing");
+  assert.equal(w.level, "alarm");
+  assert.equal(w.count, withSnap);
+  for (const id of needing) {
+    assert.equal(ctl(f, id).status, "not_covered", id);
+    assert.ok(ctl(f, id).missing.includes("snapshots"), id);
+  }
+});
+
+test("C2.1 K4/K6: paths with spaces leak nothing; stored times without a zone are UTC; a reseal by an audit agent marks its unsigned fields", () => {
+  const msg = "EACCES: permission denied, open '/Users/Kev Grundmann/Projekte/my app/.scenaria/canon.json'";
+  const out = scrubPaths(msg, ["/Users/Kev Grundmann/Projekte/my app", "/Users/Kev Grundmann"]);
+  assert.ok(!/Grundmann|Projekte|my app/.test(out), out);
+  assert.equal(storedTime("2026-10-01T10:00"), Date.UTC(2026, 9, 1, 10, 0));
+  assert.equal(storedTime("2026-10-01T10:00:00+02:00"), Date.UTC(2026, 9, 1, 8, 0));
+  assert.ok(Number.isNaN(storedTime(1727777777)));
+  const { p, s } = project();
+  const k = auditorKeygen(mkdtempSync(join(tmpdir(), "c21-reseal-")));
+  addAuditor(k.pub, "CI");
+  s.applyAuditorRequest(signAuditorRequest(buildAuditorRequest(s.store, { action: "reseal" }), readFileSync(k.keyFile, "utf8")));
+  const f = buildAuditFile(Scenaria.open(p.dir));
+  const r = f.approvals.find((a) => a.kind === "reseal");
+  assert.deepEqual(r.unsigned, ["by", "via"]);
+});
+
+test("C2.1 K8: catalogue invariants — every control Scenaria can carry needs data; records that approve no work never carry one", () => {
+  for (const c of ANNEX_A_CONTROLS) {
+    if (c.coverage !== "organisational") assert.ok(c.required.length > 0, `${c.id} needs at least one required source`);
+    for (const k of ["signatures", "reseals"]) assert.ok(!c.required.includes(k), `${c.id} must not require ${k}`);
+  }
+});
+
+// ------------------------------------------------------------------ C2.1 review (R1–R11)
+
+test("C2.1 R1: a snapshot check that cannot run claims nothing missing — it says it could not check", () => {
+  const { s } = project();
+  s.repo.missingCommits = () => {
+    throw new Error("git cat-file failed: simulated");
+  };
+  const f = buildAuditFile(s);
+  assert.ok(!f.integrity.warnings.some((w) => w.code === "snapshot_missing"), "no false 'missing' alarm");
+  const w = f.integrity.warnings.find((x) => x.code === "evaluation_failed");
+  assert.ok(w && w.items.includes("snapshots"));
+  assert.equal(f.sources.snapshots.count, 0);
+  assert.equal(f.sources.snapshots.facts.missing ?? 0, 0);
+});
+
+test("C2.1 R2/R6: keys must be text; stored times with a space instead of T are UTC too", () => {
+  assert.equal(verifyEd25519([1, 2, 3], "c2ln", "x"), false);
+  assert.equal(verifyEd25519("", "", "x"), false);
+  assert.equal(storedTime("2026-10-01 10:00"), Date.UTC(2026, 9, 1, 10, 0));
+});
+
+test("C2.1 R3/R4: old automatic checks are not archived; history on a changed step is marked", () => {
+  const { p, s, cp, d } = project();
+  // An older automatic result without origin (as written before 0.9.2), accepted by the person's reseal.
+  editNode(p, cp.id, (n) => (n.verification = { status: "failed", by: "scenaria-auto", at: new Date().toISOString() }));
+  s.reseal({ kind: "person", via: "terminal" }, { user: "kev" });
+  s.verify(cp.id, { status: "passed", origin: "person", via: "terminal", by: "kev" });
+  assert.equal(s.store.readNode(cp.id).verificationHistory, undefined, "an automatic result is no verdict to archive");
+  // Someone copies the current signed verdict into the history of another step by hand.
+  s.verify(d.id, { status: "passed", origin: "person", via: "terminal", by: "kev" });
+  const signed = s.store.readNode(d.id).verification;
+  editNode(p, d.id, (n) => (n.verificationHistory = [{ ...signed, replacedAt: new Date().toISOString() }]));
+  const f = buildAuditFile(Scenaria.open(p.dir));
+  const h = f.verdictHistory.find((x) => x.node === d.id);
+  assert.equal(h.stepChanged, true);
+  assert.equal(f.integrity.state, "alarm");
 });

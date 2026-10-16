@@ -38,7 +38,7 @@ export interface BoardItem {
 }
 
 function one(s: string | undefined, max = 240) {
-  const t = (s ?? "").replace(/\s+/g, " ").trim();
+  const t = (typeof s === "string" ? s : s == null ? "" : String(s)).replace(/\s+/g, " ").trim();
   return t.length > max ? t.slice(0, max - 1) + "…" : t;
 }
 

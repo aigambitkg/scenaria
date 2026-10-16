@@ -140,7 +140,11 @@ function loadOwnKey(create: boolean): { priv: KeyObject; pub: string; id: string
   }
 }
 
-const keyIdOf = (pub: string) => createHash("sha256").update(pub).digest("hex").slice(0, 12);
+/**
+ * Short id of a public key. Hand-edited files can hold anything in a key field: a value that is not text
+ * has no id ("") instead of throwing, so one damaged record can never break a check (C2.1, review K1).
+ */
+const keyIdOf = (pub: unknown): string => (typeof pub === "string" && pub ? createHash("sha256").update(pub).digest("hex").slice(0, 12) : "");
 
 interface TrustedKey {
   id: string;
@@ -156,7 +160,7 @@ function trustedFile() {
 export function trustedApprovers(): TrustedKey[] {
   try {
     const raw = JSON.parse(readFileSync(trustedFile(), "utf8"));
-    return Array.isArray(raw?.keys) ? raw.keys.filter((k: any) => typeof k?.pub === "string" && typeof k?.id === "string" && keyIdOf(k.pub) === k.id) : [];
+    return Array.isArray(raw?.keys) ? raw.keys.filter((k: any) => typeof k?.pub === "string" && typeof k?.id === "string" && k.id !== "" && keyIdOf(k.pub) === k.id) : [];
   } catch {
     return [];
   }
@@ -321,7 +325,8 @@ function raiseAnchors(pid: string, updates: Record<string, Anchor>, kind = "") {
 }
 
 function verifySig(pub: string | undefined, sig: string | undefined, payload: string): boolean {
-  if (!pub || !sig) return false;
+  // Only text: a byte array or a number in a hand-edited file is never a key (C2.1 R2).
+  if (typeof pub !== "string" || typeof sig !== "string" || !pub || !sig || typeof payload !== "string") return false;
   try {
     const key = createPublicKey({ key: Buffer.from(pub, "base64"), format: "der", type: "spki" });
     return edVerify(null, Buffer.from(payload), key, Buffer.from(sig, "base64"));
@@ -629,7 +634,7 @@ export function projectIdentity(store: Store, create = false): string {
   return projectId(store, create);
 }
 /** Short id of an Ed25519 public key (base64 SPKI DER). */
-export const publicKeyId = (pub: string) => keyIdOf(pub);
+export const publicKeyId = (pub: unknown) => keyIdOf(pub);
 /** Ed25519 signature check over a UTF-8 payload. */
 export const verifyEd25519 = (pub: string | undefined, sig: string | undefined, payload: string) => verifySig(pub, sig, payload);
 /** The approver keys this machine trusts (own + trusted teammates), read once for many checks. */
@@ -687,6 +692,19 @@ export function ruleTrustFingerprint(store: Store): string {
 export function ruleAnchors(store: Store) {
   const pid = projectId(store, false);
   return { read: () => readAnchors(pid, "rules"), raise: (u: Record<string, Anchor>) => raiseAnchors(projectId(store, true), u, "rules") };
+}
+/** Folders on this machine bound to a project id (two folders with one id: one of them claims to be the other). */
+export function foldersBoundTo(pid: string): string[] {
+  if (!pid) return [];
+  return Object.entries(readIdRegistry())
+    .filter(([, id]) => id === pid)
+    .map(([root]) => root);
+}
+
+/** The organisation's evidence per ISO/IEC 42001 control (Batch C3): its own high-water marks, like the rules'. */
+export function evidenceAnchors(store: Store) {
+  const pid = projectId(store, false);
+  return { read: () => readAnchors(pid, "evidence"), raise: (u: Record<string, Anchor>) => raiseAnchors(projectId(store, true), u, "evidence") };
 }
 export type { Anchor };
 

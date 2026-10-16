@@ -239,6 +239,13 @@ export function isProposedRule(r: ProjectRule): boolean {
 /** Open rule proposals are capped, so agents cannot flood the person. */
 export const MAX_RULE_PROPOSALS = 50;
 
+/** Verdicts that are archived when replaced: the person's, an audit agent's, and older ones without origin (C2.1). */
+function archivable(v: Verification): boolean {
+  if (v.origin === "person" || v.origin === "auditor") return true;
+  // Older verdicts without origin, but never the automatic checks' (they are no verdicts; review R3).
+  return v.origin === undefined && v.by !== "scenaria-auto" && (v.status === "passed" || v.status === "failed" || v.status === "warning");
+}
+
 function clean(list?: string[]): string[] | undefined {
   const l = (list ?? []).map((s) => String(s).trim()).filter(Boolean);
   return l.length ? l : undefined;
@@ -300,6 +307,8 @@ export class Scenaria {
       restarted: seal.restarted,
       /** Nodes whose "passed" counts as verified: the person's or a registered audit agent's, authentic, on an untampered node. */
       confirmed,
+      /** Verdicts that claim the person or an audit agent but do not verify, or cannot even be read (counted as tampering). */
+      verdictsForged: pick("forged"),
       verdictsUntrusted: pick("untrusted"),
       verdictsRevoked: pick("revoked"),
       /** Verdicts whose work changed afterwards: they no longer apply and need a new verdict. */
@@ -1683,6 +1692,13 @@ export class Scenaria {
           v.work = workHash(node);
           const { pub, sig } = signRecord(this.store, verdictParts(node.id, v));
           Object.assign(v, { pub, sig });
+        }
+        // A replaced verdict of the person or an audit agent (or an older one without origin) is archived
+        // unchanged, for comparison (C2.1, Kev 2026-10-16). It never counts again.
+        const prev = node.verification;
+        if (prev && typeof prev === "object" && archivable(prev)) {
+          const hist = Array.isArray(node.verificationHistory) ? node.verificationHistory : [];
+          node.verificationHistory = [...hist, { ...prev, replacedAt: at }];
         }
         node.verification = v;
       }

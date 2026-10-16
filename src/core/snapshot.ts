@@ -215,6 +215,29 @@ export class ShadowRepo {
     return out ? out.split("\0").filter(Boolean) : [];
   }
 
+  /**
+   * Which of these commits are no longer stored (one git call for all; C2.1, review K3). Without the shadow
+   * repository every one is missing. Ids that are not plain hex are reported missing without asking git.
+   */
+  missingCommits(commits: string[]): Set<string> {
+    const ids = [...new Set(commits.filter((c) => typeof c === "string" && c))];
+    const missing = new Set<string>();
+    if (!ids.length) return missing;
+    if (!this.initialized) return new Set(ids);
+    const ask = ids.filter((c) => /^[0-9a-f]{7,64}$/i.test(c));
+    const asked = new Set(ask);
+    for (const c of ids) if (!asked.has(c)) missing.add(c);
+    if (!ask.length) return missing;
+    const r = this.runOnce(["cat-file", "--batch-check=%(objectname) %(objecttype)"], ask.map((c) => `${c}^{commit}`).join("\n") + "\n");
+    // A check that cannot run proves nothing either way: the caller reports it as "could not be checked" (C2.1 R1).
+    if (r.status !== 0 || r.error) throw new Error(`git cat-file failed: ${String(r.stderr || r.error?.message || "").trim().slice(0, 200)}`);
+    const lines = String(r.stdout ?? "").split("\n");
+    ask.forEach((c, i) => {
+      if (!/ commit$/.test(lines[i] ?? "")) missing.add(c);
+    });
+    return missing;
+  }
+
   hasObject(rev: string): boolean {
     return this.run(["cat-file", "-e", rev]).status === 0;
   }

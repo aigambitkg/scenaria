@@ -189,6 +189,8 @@ export function viewAsOf(s: Scenaria, t: string, h: History = readHistory(s), fo
         if (f === "facts") c.factInfo = undefined;
       }
       if (c.verification && (!c.verification.at || c.verification.at > t)) c.verification = undefined;
+      // Earlier verdicts replaced after t were still current at t; their archive entries are not known yet.
+      if (Array.isArray(c.verificationHistory)) c.verificationHistory = c.verificationHistory.filter((v) => typeof v?.replacedAt === "string" && v.replacedAt <= t);
       if (c.lessons?.length) c.lessons = c.lessons.filter((l) => knownLesson(c, l));
       return c;
     });

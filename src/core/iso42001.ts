@@ -108,7 +108,7 @@ export const EVIDENCE_SOURCES: Record<EvidenceSource, EvidenceSourceInfo> = {
   snapshots: {
     label: { de: "Dateistände", en: "File snapshots" },
     what: { de: "Der Stand der Projektdateien zu jedem Schritt, wiederherstellbar.", en: "The state of the project files at every step, restorable." },
-    limits: { de: "Ohne Dateien, die per .gitignore ausgeschlossen sind; braucht git.", en: "Without files excluded by .gitignore; needs git." },
+    limits: { de: "Ohne Dateien, die per .gitignore ausgeschlossen sind; braucht git. Bei jeder Akte prüft Scenaria, ob die Dateistände noch gespeichert sind; nur diese zählen.", en: "Without files excluded by .gitignore; needs git. With every audit file Scenaria checks that the file states are still stored; only those count." },
     assurance: "chained",
     chained: "yes",
     scope: "project",
@@ -161,7 +161,7 @@ export const EVIDENCE_SOURCES: Record<EvidenceSource, EvidenceSourceInfo> = {
   },
   approvals: {
     label: { de: "Signierte Freigaben", en: "Signed approvals" },
-    what: { de: "Freigaben einer Person oder eines Prüf-Agenten: feste Regeln anlegen, annehmen, ablehnen, beenden oder als erfüllt bestätigen, Projektregeln anlegen, annehmen, ablehnen oder bestätigen, Prüfurteile, Neu-Versiegelungen und Prüfläufe je Arbeitslinie, mit Zeitpunkt und Weg (Dashboard oder Terminal).", en: "Approvals by a person or an audit agent: adding, accepting, rejecting, retiring or confirming fixed rules, adding, accepting, rejecting or confirming project rules, verdicts, reseals and checks per line of work, with time and channel (dashboard or terminal)." },
+    what: { de: "Signierte Freigaben von Regeln und Arbeit: feste Regeln anlegen, annehmen, ablehnen, beenden oder als erfüllt bestätigen, Projektregeln anlegen, annehmen, ablehnen oder bestätigen und Prüfläufe je Arbeitslinie, mit Zeitpunkt und Weg (Dashboard oder Terminal). Prüfurteile und Neu-Versiegelungen stehen in derselben Liste, zählen hier aber nicht: Prüfurteile zählen nur als „Prüfurteile“, damit nichts doppelt zählt.", en: "Signed approvals of rules and work: adding, accepting, rejecting, retiring or confirming fixed rules, adding, accepting, rejecting or confirming project rules, and checks per line of work, with time and channel (dashboard or terminal). Verdicts and reseals are in the same list but do not count here: verdicts count only as “verdicts”, so nothing counts twice." },
     limits: { de: "Andere Aktionen im Dashboard, etwa Rücksprünge, sind nicht an eine Freigabe gebunden und zählen hier nicht; ebenso wenig in Claude Code bestätigte Pläne (nicht signiert).", en: "Other dashboard actions, such as rewinds, are not bound to an approval and do not count here; nor do plans confirmed in Claude Code (not signed)." },
     assurance: "signed",
     chained: "partly",
@@ -171,7 +171,7 @@ export const EVIDENCE_SOURCES: Record<EvidenceSource, EvidenceSourceInfo> = {
   verdicts: {
     label: { de: "Prüfurteile", en: "Verdicts" },
     what: { de: "Prüfergebnisse mit Herkunft: Person, unabhängiger Prüf-Agent, Selbstauskunft des Agenten oder automatische Prüfung. Nur Person und Prüf-Agent zählen als geprüft.", en: "Check results with their origin: person, independent audit agent, agent self-report or automatic check. Only the person and an audit agent count as verified." },
-    limits: { de: "Signiert sind nur Urteile der Person und registrierter Prüf-Agenten. Ein Urteil zählt nur mit gültiger Signatur und solange die Arbeit unverändert ist. Ältere Urteile ohne Herkunft zählen nicht.", en: "Only verdicts of the person and of registered audit agents are signed. A verdict counts only with a valid signature and while the work is unchanged. Older verdicts without an origin do not count." },
+    limits: { de: "Signiert sind nur Urteile der Person und registrierter Prüf-Agenten. Ein Urteil zählt nur mit gültiger Signatur und solange die Arbeit unverändert ist. Ältere Urteile ohne Herkunft zählen nicht. Ersetzte Urteile bleiben je Schritt im Verlauf erhalten (zum Vergleich), zählen aber nicht mehr.", en: "Only verdicts of the person and of registered audit agents are signed. A verdict counts only with a valid signature and while the work is unchanged. Older verdicts without an origin do not count. Replaced verdicts stay in each step's history (for comparison) but no longer count." },
     assurance: "chained",
     chained: "yes",
     scope: "project",

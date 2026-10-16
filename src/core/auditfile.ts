@@ -31,11 +31,12 @@ import { metrics as checkMetrics, projectMetrics, type Issue } from "./analysis.
 import { listReseals } from "./seal.js";
 import { projectIdChanged } from "./canon.js";
 import { gateResults } from "./gate.js";
-import { verdictTrustAll } from "./trust.js";
+import { archivedVerdictTrust, verdictTrustAll, type ArchivedTrust } from "./trust.js";
 import { listAuditors } from "./auditors.js";
 import { projectIdentity, publicKeyId } from "./canon.js";
 import { verdictOrigin } from "./verdict.js";
 import { readAuditAccess, type AuditAccess } from "./auditaccess.js";
+import { catalogueFingerprint, counts as orgCounts, orgEvidenceStates, type OrgEvidenceState, type OrgEvidenceTrust } from "./orgevidence.js";
 import {
   ANNEX_A_CONTROLS,
   ANNEX_A_SCOPE,
@@ -47,6 +48,8 @@ import {
   type Lang2,
 } from "./iso42001.js";
 import type { ScenariaNode } from "./types.js";
+import { homedir } from "node:os";
+import { realRoot } from "./projects.js";
 
 export const AUDIT_FILE_KIND = "scenaria/iso42001-audit-file";
 export const AUDIT_FILE_VERSION = 1;
@@ -82,8 +85,10 @@ export function parsePeriod(from?: string | null, to?: string | null): Period {
     if ((!day && !dt) || !realDay(...((day ?? dt)!.slice(1, 4) as [string, string, string]))) {
       throw new Error(`"${v.slice(0, 40)}" is not a date: use YYYY-MM-DD (a whole day, UTC) or a date-time with a time zone, e.g. 2026-10-01T10:00Z`);
     }
-    const t = Date.parse(day ? `${v}T${end ? "23:59:59.999" : "00:00:00.000"}Z` : v);
+    let t = Date.parse(day ? `${v}T${end ? "23:59:59.999" : "00:00:00.000"}Z` : v);
     if (Number.isNaN(t)) throw new Error(`"${v.slice(0, 40)}" is not a date`);
+    // An end given to the minute covers that whole minute (C2.1, review K6): "18:00" includes 18:00:30.
+    if (end && dt && !/T\d{2}:\d{2}:\d{2}/.test(v)) t += 59_999;
     return new Date(t).toISOString();
   };
   const p = { from: one(from, false), to: one(to, true) };
@@ -91,8 +96,17 @@ export function parsePeriod(from?: string | null, to?: string | null): Period {
   return p;
 }
 
-/** A time stamp as stored: only a string counts (a number would be read as a year). */
-const time = (ts: unknown): number => (typeof ts === "string" ? Date.parse(ts) : NaN);
+/**
+ * A time stamp as stored: only a string counts (a number would be read as a year). A date-time without a
+ * time zone (an imported or hand-edited record) is read as UTC, never in the server's local time (C2.1, K6).
+ */
+const NO_ZONE = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)$/;
+export const storedTime = (ts: unknown): number => {
+  if (typeof ts !== "string") return NaN;
+  const m = NO_ZONE.exec(ts.trim());
+  return Date.parse(m ? `${m[1]}T${m[2]}Z` : ts);
+};
+const time = storedTime;
 const inPeriod = (p: Period, ts: unknown): boolean => {
   const t = time(ts);
   if (Number.isNaN(t)) return false;
@@ -126,6 +140,8 @@ export interface AuditWarning {
   items: string[];
   /** The technical messages of the project check, at most 5. */
   details: string[];
+  /** Controls this finding concerns directly (the organisation's evidence, C3); others go by `sources`. */
+  controls?: string[];
 }
 
 /** Everything that is written per step, and therefore in the hash chain. */
@@ -187,6 +203,54 @@ export const INTEGRITY_RULES: Record<string, Rule> = {
     sources: ["reseals", "ledger", "signatures"],
     title: { de: "Neu-Versiegelung ohne Nachweis", en: "Reseal without proof" },
     explain: { de: "Der Manipulationsnachweis wurde zurückgesetzt, ohne dass ein echter Nachweis der Person oder eines Prüf-Agenten vorliegt.", en: "The tamper evidence was reset without an authentic record of the person or an audit agent." },
+  },
+  verdict_forged: {
+    level: "alarm",
+    sources: ["verdicts", "signatures"],
+    title: { de: "Prüfurteile gefälscht oder beschädigt", en: "Verdicts forged or damaged" },
+    explain: { de: "Prüfurteile geben vor, von der Person oder einem Prüf-Agenten zu stammen, lassen sich aber nicht bestätigen oder nicht einmal lesen. Sie zählen nicht; der Schritt gilt als verändert.", en: "Verdicts claim to come from the person or an audit agent, but cannot be confirmed or cannot even be read. They do not count; the step counts as changed." },
+  },
+  snapshot_missing: {
+    level: "alarm",
+    sources: ["snapshots"],
+    title: { de: "Gesicherte Dateistände fehlen", en: "Stored file states missing" },
+    explain: { de: "Schritte verweisen auf Dateistände, die im Sicherungsspeicher von Scenaria nicht mehr vorhanden sind. Zu diesen Schritten lassen sich die Dateien nicht wiederherstellen; sie zählen nicht.", en: "Steps point to file states that are no longer in Scenaria's snapshot store. Their files cannot be restored; they do not count." },
+  },
+  verdict_archive_invalid: {
+    level: "note",
+    sources: ["verdicts"],
+    title: { de: "Frühere Prüfurteile nicht bestätigt", en: "Earlier verdicts not confirmed" },
+    explain: { de: "Im Verlauf eines Schritts stehen frühere Urteile, deren Signatur sich nicht bestätigen lässt. Sie dienen nur dem Vergleich und zählen ohnehin nicht.", en: "A step's history holds earlier verdicts whose signature cannot be confirmed. They are kept for comparison only and never count." },
+  },
+  org_evidence_tampered: {
+    level: "alarm",
+    sources: [],
+    title: { de: "Nachweise der Organisation verändert", en: "Organisation's evidence changed" },
+    explain: { de: "Einträge zu Dokumenten der Organisation passen nicht mehr zu ihrer Signatur oder wurden auf einen älteren Stand zurückgesetzt. Sie zählen nicht; die Person entfernt sie und trägt das Dokument neu ein.", en: "Entries for the organisation's documents no longer match their signature or were put back to an older state. They do not count; the person removes them and records the document again." },
+  },
+  org_evidence_missing: {
+    level: "alarm",
+    sources: [],
+    title: { de: "Nachweise der Organisation gelöscht", en: "Organisation's evidence deleted" },
+    explain: { de: "Von der Person eingetragene Dokumente fehlen in der Datei. Sie wurden außerhalb von Scenaria entfernt.", en: "Documents the person recorded are missing from the file. They were removed outside Scenaria." },
+  },
+  org_evidence_unreadable: {
+    level: "alarm",
+    sources: [],
+    title: { de: "Nachweise der Organisation nicht lesbar", en: "Organisation's evidence unreadable" },
+    explain: { de: "Die Datei mit den Dokumenten der Organisation ist beschädigt (z. B. ein Merge-Konflikt). Kein Dokument kann gezeigt werden.", en: "The file with the organisation's documents is damaged (e.g. a merge conflict). No document can be shown." },
+  },
+  org_evidence_unconfirmed: {
+    level: "note",
+    sources: [],
+    title: { de: "Nachweise der Organisation noch nicht bestätigt", en: "Organisation's evidence not confirmed yet" },
+    explain: { de: "Einträge ohne Signatur oder mit einem Schlüssel, dem dieser Rechner nicht vertraut (z. B. eines Teammitglieds). Sie zählen erst, wenn die Person sie bestätigt.", en: "Entries without a signature or with a key this machine does not trust (e.g. a teammate's). They count only after the person confirms them." },
+  },
+  org_evidence_catalogue_changed: {
+    level: "note",
+    sources: [],
+    title: { de: "Kontrolle im Katalog geändert", en: "Control changed in the catalogue" },
+    explain: { de: "Der Text der Kontrolle hat sich geändert, seit das Dokument eingetragen wurde. Die Person prüft, ob es noch passt, und bestätigt es.", en: "The control's text changed since the document was recorded. The person checks that it still fits and confirms it." },
   },
   verdict_untrusted: {
     level: "alarm",
@@ -286,12 +350,33 @@ export const INTEGRITY_RULES: Record<string, Rule> = {
   },
 };
 
+/** Codes the audit file computes itself (not from the project check): their own lists, never a message of `scenaria analyze`. */
+export const AUDIT_FILE_OWN_CODES = [
+  "evaluation_failed",
+  "verdict_forged",
+  "snapshot_missing",
+  "verdict_archive_invalid",
+  "org_evidence_tampered",
+  "org_evidence_missing",
+  "org_evidence_unreadable",
+  "org_evidence_unconfirmed",
+  "org_evidence_catalogue_changed",
+];
+
 /**
  * Group the project check's findings by code. Where the engine knows the full list of affected items
  * (e.g. every removed verdict), count and items come from that list, not from the number of messages (review K5).
  */
 /** Error texts can name files: never put a machine path into the audit file (rule 12). */
-const withoutPaths = (msg: string) => msg.replace(/(?:[A-Za-z]:)?(?:[\\/][^\s'",:;)]+){2,}/g, "<path>");
+const PATH_RE = /(?:[A-Za-z]:)?(?:[\\/][^\s'",:;)]+){2,}/g;
+/** Known folders (project, home) are replaced as a whole first, so a path with spaces leaks nothing (C2.1, review K4). */
+let knownRoots: string[] = [];
+export function scrubPaths(msg: string, roots: string[] = []): string {
+  let out = String(msg);
+  for (const r of [...roots].sort((a, b) => b.length - a.length)) if (r && r.length > 1) out = out.split(r).join("<path>");
+  return out.replace(PATH_RE, "<path>");
+}
+const withoutPaths = (msg: string) => scrubPaths(msg, knownRoots);
 
 function warningsFrom(issues: Issue[], lists: Record<string, string[]>, failed: { source: EvidenceSource | "check"; error: string }[]): AuditWarning[] {
   const byCode = new Map<string, AuditWarning>();
@@ -302,7 +387,7 @@ function warningsFrom(issues: Issue[], lists: Record<string, string[]>, failed: 
     w.count++;
     const item = i.nodeId ?? i.subject;
     if (item && !w.items.includes(item)) w.items.push(item);
-    if (w.details.length < 5) w.details.push(i.message);
+    if (w.details.length < 5) w.details.push(withoutPaths(String(i.message ?? "")).slice(0, 300));
     byCode.set(i.code, w);
   }
   // The engine's own lists win: full counts (K5), and the alarm stays even when the project check failed (N3).
@@ -327,7 +412,7 @@ function warningsFrom(issues: Issue[], lists: Record<string, string[]>, failed: 
 
 // ------------------------------------------------------------------ approvals and reseals
 
-export type ApprovalKind = "canon" | "canon-check" | "gate" | "rule" | "verdict" | "reseal" | "access";
+export type ApprovalKind = "canon" | "canon-check" | "gate" | "rule" | "verdict" | "reseal" | "access" | "evidence";
 
 export interface ApprovalEntry {
   at: string;
@@ -355,8 +440,24 @@ export interface ApprovalEntry {
   /**
    * Whether it approves work or rules and therefore carries the "approvals" source (review K2). Reseals
    * (accept a ledger state) and the read setting of the audit file are listed but carry no control.
+   * Verdicts are listed too, but carry only the "verdicts" source, so nothing counts twice (C2.1, Kev 2026-10-16).
    */
   carries: boolean;
+}
+
+/** A step whose verdict was replaced at least once: the current verdict and the earlier ones, for comparison (C2.1). */
+export interface VerdictHistoryEntry {
+  node: string;
+  title: string;
+  /** The verdict in force now; `counts` = it carries the "verdicts" source. */
+  current: { status: string; at: string; origin: string; by: string; counts: boolean } | null;
+  /** Earlier verdicts, oldest first. They never count. */
+  earlier: { status: string; at: string; origin: string; by: string; via: string; replacedAt: string; signature: ArchivedTrust; unsigned: ("by" | "via")[] }[];
+  /**
+   * The step was changed outside Scenaria or written without this machine seeing it: its history may have
+   * been edited too, so a "signed" entry only proves that verdict existed, not that it belonged here (R4).
+   */
+  stepChanged: boolean;
 }
 
 export interface ResealEntry {
@@ -404,8 +505,37 @@ export interface ControlResult {
   /** Some of them is an alarm (tamper evidence damaged). */
   alarm: boolean;
   scenaria: Lang2;
+  /** What the organisation must document (catalogue text). */
   organisation: Lang2;
   appliesWhen?: Lang2;
+  /**
+   * The organisation's own documents for this control (C3, Kev 2026-10-16). Never changes `status`:
+   * "documented" = at least one document in force in the period, signed by the person and confirmed on this
+   * machine; "unconfirmed" = documents exist, but none counts yet; "none".
+   */
+  orgEvidence: { state: "documented" | "unconfirmed" | "none"; entries: OrgEvidenceView[] };
+}
+
+/** One document of the organisation, as shown in the audit file. Every field is signed. */
+export interface OrgEvidenceView {
+  id: string;
+  url: string;
+  hash: string;
+  title?: string;
+  owner: { role: string; name: string };
+  date: string;
+  note?: string;
+  activeFrom: string;
+  removedAt?: string;
+  decidedBy: string;
+  decidedVia: string;
+  decidedAt: string;
+  keyId?: string;
+  copiedFrom?: string;
+  trust: OrgEvidenceTrust;
+  /** Counts for the control in this period. */
+  counts: boolean;
+  catalogueChanged: boolean;
 }
 
 export interface AuditFile {
@@ -434,10 +564,14 @@ export interface AuditFile {
     warnings: AuditWarning[];
     note: Lang2;
   };
-  summary: Record<ControlStatus, number> & { controls: number; withAlarm: number; withNotes: number };
+  summary: Record<ControlStatus, number> & { controls: number; withAlarm: number; withNotes: number; orgDocumented: number };
+  /** The catalogue this file was computed with (a later change shows). */
+  catalogue: { standard: string; controls: number; hash: string };
   sources: Record<EvidenceSource, SourceEvidence>;
   controls: ControlResult[];
   approvals: ApprovalEntry[];
+  /** Steps with replaced verdicts in the period: current and earlier verdicts side by side (never counted twice). */
+  verdictHistory: VerdictHistoryEntry[];
   /** Authentic reseals (record valid AND as this machine anchored them); unproven ones only by id. */
   reseals: { authentic: ResealEntry[]; unproven: string[] };
   access: AuditAccess;
@@ -449,6 +583,7 @@ const uniq = (xs: (string | undefined | null)[]) => [...new Set(xs.filter((x): x
 /** Compute the audit file of a project. Read-only (apart from the bookkeeping every read check does). */
 export function buildAuditFile(s: Scenaria, period: Period = { from: null, to: null }): AuditFile {
   const generatedAt = new Date().toISOString();
+  knownRoots = [s.root, (() => { try { return realRoot(s.root); } catch { return ""; } })(), homedir()].filter((x, i, a) => x && a.indexOf(x) === i).sort((a, b) => b.length - a.length);
   const p = period;
   // A source that cannot be evaluated never breaks the whole file: it shows nothing and raises an alarm (review K4).
   const failed: { source: EvidenceSource | "check"; error: string }[] = [];
@@ -462,6 +597,9 @@ export function buildAuditFile(s: Scenaria, period: Period = { from: null, to: n
   };
 
   const nodes = safe("check", () => s.store.listNodes(), [] as ScenariaNode[]);
+  const boundId = safe("check", () => projectIdentity(s.store, false) || null, null);
+  const configId = safe("check", () => str(s.store.readConfig().projectId), "");
+  const projectName = safe("check", () => str(s.config().projectName), "");
   const events = safe("rewinds", () => s.store.readEvents(), []);
   // If the tamper evidence itself cannot be checked, nothing counts as authentic and the whole file carries the alarm.
   const integ = safe("check", () => s.integrity(), {
@@ -477,6 +615,7 @@ export function buildAuditFile(s: Scenaria, period: Period = { from: null, to: n
     reseals: [],
     restarted: null,
     confirmed: new Set<string>(),
+    verdictsForged: [],
     verdictsUntrusted: [],
     verdictsRevoked: [],
     verdictsSuperseded: [],
@@ -498,7 +637,21 @@ export function buildAuditFile(s: Scenaria, period: Period = { from: null, to: n
   } as ReturnType<typeof projectMetrics>;
 
   const stepsIn = nodes.filter((n) => inPeriod(p, n.createdAt));
-  const sortedTimes = stepsIn.map((n) => str(n.createdAt)).sort();
+  // Is every recorded file state still stored? One git call for the whole project, every time (C2.1, Kev 2026-10-16).
+  const withCommit = nodes.filter((n) => n.snapshot && typeof n.snapshot === "object" && has(n.snapshot.commit));
+  const missingCommits = safe(
+    "snapshots",
+    () => {
+      if (!withCommit.length) return new Set<string>();
+      if (!s.repo) throw new Error("git is not available: the stored file states cannot be checked");
+      return s.repo.missingCommits(withCommit.map((n) => str(n.snapshot!.commit)));
+    },
+    // Not checkable (no git, git failed): nothing is claimed missing; the source shows nothing and the alarm says why (R1).
+    new Set<string>(),
+  );
+  const snapshotMissing = withCommit.filter((n) => missingCommits.has(str(n.snapshot!.commit))).map((n) => n.id);
+  const snapshotMissingSet = new Set(snapshotMissing);
+  const sortedTimes = stepsIn.map((n) => str(n.createdAt)).sort((a, b) => storedTime(a) - storedTime(b));
   const of = (type: ScenariaNode["type"]) => stepsIn.filter((n) => n.type === type);
 
   // ---- reseals: authentic only when the record is valid AND matches what this machine anchored (K1, K6)
@@ -507,7 +660,7 @@ export function buildAuditFile(s: Scenaria, period: Period = { from: null, to: n
   const reseals: ResealEntry[] = integ.reseals.filter((r) => !unproven.has(r.id)).map((r) => ({ id: r.id, at: r.at, kind: r.kind, by: r.by, via: resealVia.get(r.id) ?? "" }));
 
   // ---- verdicts: independent and authentic only carry (rule 11)
-  const trust = verdictTrustAll(s.store, nodes);
+  const trust = safe("verdicts", () => verdictTrustAll(s.store, nodes), new Map<string, never>() as ReturnType<typeof verdictTrustAll>);
   const unseen = new Set(integ.unseenWrites);
   const removed = new Set(integ.verdictsRemoved);
   const independent = (n: ScenariaNode) =>
@@ -517,7 +670,35 @@ export function buildAuditFile(s: Scenaria, period: Period = { from: null, to: n
     !unseen.has(n.id) &&
     !removed.has(n.id);
   const verdictNodes = nodes.filter((n) => n.verification && typeof n.verification === "object" && n.verification.status !== "unverified" && inPeriod(p, n.verification.at));
+  // Earlier (replaced) verdicts: kept for comparison, never counted (C2.1, Kev 2026-10-16).
+  const archivedTrust = safe("verdicts", () => archivedVerdictTrust(s.store, nodes), new Map<string, ArchivedTrust[]>());
+  const verdictHistory: VerdictHistoryEntry[] = [];
+  let earlierInPeriod = 0;
+  const archiveInvalid: string[] = [];
+  for (const n of nodes) {
+    const hist = Array.isArray(n.verificationHistory) ? n.verificationHistory : [];
+    if (!hist.length) continue;
+    const tr = archivedTrust.get(n.id) ?? [];
+    if (tr.some((x) => x === "forged" || x === "untrusted" || x === "revoked")) archiveInvalid.push(n.id);
+    const earlier = hist
+      .map((v, i) => ({ v, i }))
+      .filter(({ v }) => v && typeof v === "object" && inPeriod(p, v.at))
+      .map(({ v, i }) => ({ status: str(v.status), at: str(v.at), origin: str(verdictOrigin(v) ?? "legacy"), by: str(v.by), via: v.origin === "auditor" ? "signed request" : str(v.via), replacedAt: str(v.replacedAt), signature: tr[i] ?? "forged", unsigned: (v.origin === "auditor" ? ["by"] : v.origin === "person" ? [] : ["by", "via"]) as ("by" | "via")[] }));
+    const cur = n.verification && typeof n.verification === "object" ? n.verification : null;
+    const curIn = cur && cur.status !== "unverified" && inPeriod(p, cur.at);
+    if (!earlier.length && !curIn) continue;
+    earlierInPeriod += earlier.length;
+    verdictHistory.push({
+      node: n.id,
+      title: str(n.title),
+      current: cur ? { status: str(cur.status), at: str(cur.at), origin: str(verdictOrigin(cur) ?? "legacy"), by: str(cur.by), counts: false } : null,
+      earlier,
+      stepChanged: integ.state.get(n.id) === "tampered" || (integ.unseenWrites ?? []).includes(n.id),
+    });
+  }
   const independentNodes = verdictNodes.filter(independent);
+  const counting = new Set(independentNodes.map((n) => n.id));
+  for (const h of verdictHistory) if (h.current) h.current.counts = counting.has(h.node);
   const byOrigin: Record<string, number> = { person: 0, auditor: 0, agent: 0, auto: 0, legacy: 0 };
   for (const n of verdictNodes) {
     const o = verdictOrigin(n.verification) ?? "legacy";
@@ -548,15 +729,80 @@ export function buildAuditFile(s: Scenaria, period: Period = { from: null, to: n
   for (const n of independentNodes) {
     const v = n.verification!;
     const auditor = v.origin === "auditor";
-    approvals.push({ at: str(v.at), kind: "verdict", ref: n.id, action: v.status, by: str(v.by) || (auditor ? "auditor" : "person"), via: auditor ? "signed request" : str(v.via), origin: auditor ? "auditor" : "person", keyId: auditor ? v.auditor?.keyId : v.pub ? publicKeyId(v.pub) : undefined, text: str(n.title), unsigned: auditor ? ["by"] : [], carries: true });
+    approvals.push({ at: str(v.at), kind: "verdict", ref: n.id, action: v.status, by: str(v.by) || (auditor ? "auditor" : "person"), via: auditor ? "signed request" : str(v.via), origin: auditor ? "auditor" : "person", keyId: auditor ? v.auditor?.keyId : v.pub ? publicKeyId(v.pub) : undefined, text: str(n.title), unsigned: auditor ? ["by"] : [], carries: false });
   }
   for (const r of reseals) {
-    if (inPeriod(p, r.at)) approvals.push({ at: r.at, kind: "reseal", ref: r.id, action: "resealed", by: r.by, via: r.via, origin: r.kind, unsigned: [], carries: false });
+    // An audit agent's request signs the ledger state, not who or how it is shown (C2.1, review K5).
+    if (inPeriod(p, r.at)) approvals.push({ at: r.at, kind: "reseal", ref: r.id, action: "resealed", by: r.by, via: r.via, origin: r.kind, unsigned: r.kind === "auditor" ? ["by", "via"] : [], carries: false });
   }
-  const access = readAuditAccess(s.store);
+  const access = safe("check", () => readAuditAccess(s.store), { mode: "person", trust: "invalid", set: null } as unknown as AuditAccess);
   if (access.trust === "verified" && access.set && inPeriod(p, access.set.at)) {
     approvals.push({ at: access.set.at, kind: "access", ref: "audit-file", action: access.set.mode, by: access.set.by, via: access.set.via, origin: "person", keyId: access.set.keyId, unsigned: [], carries: false });
   }
+  // ---- the organisation's own documents per control (C3): signed by the person, never raise a status
+  const org = safe("check", () => orgEvidenceStates(s.store), { entries: [] as OrgEvidenceState[], missing: [] as string[], error: null as string | null });
+  const periodEnd = p.to ? Date.parse(p.to) : Infinity;
+  // Whole project: the current state; a period: in force at some point of it.
+  const periodStart = p.from ? Date.parse(p.from) : p.to ? -Infinity : Date.now();
+  const inForce = (x: OrgEvidenceState) => {
+    if (x.entry.discarded) return false;
+    const from = time(x.entry.activeFrom);
+    if (Number.isNaN(from) || from > periodEnd) return false;
+    if (x.entry.status === "removed") {
+      const gone = time(x.entry.removedAt);
+      return !Number.isNaN(gone) && gone > periodStart;
+    }
+    return true;
+  };
+  const orgByControl = new Map<string, OrgEvidenceView[]>();
+  for (const x of org.entries) {
+    if (!inForce(x)) continue;
+    const e = x.entry;
+    const view: OrgEvidenceView = {
+      id: e.id,
+      url: e.url,
+      hash: e.hash,
+      ...(e.title ? { title: e.title } : {}),
+      owner: { role: e.owner.role, name: e.owner.name },
+      date: e.date,
+      ...(e.note ? { note: e.note } : {}),
+      activeFrom: e.activeFrom,
+      ...(e.removedAt ? { removedAt: e.removedAt } : {}),
+      decidedBy: e.decidedBy,
+      decidedVia: e.decidedVia,
+      decidedAt: e.decidedAt,
+      ...(e.pub ? { keyId: publicKeyId(e.pub) } : {}),
+      ...(e.copiedFrom ? { copiedFrom: e.copiedFrom } : {}),
+      trust: x.trust,
+      counts: orgCounts(x),
+      catalogueChanged: x.catalogueChanged,
+    };
+    orgByControl.set(e.control, [...(orgByControl.get(e.control) ?? []), view]);
+  }
+  for (const x of org.entries) {
+    // The person's signed decisions on documents, in the chronological list: when it came into force (recorded
+    // or a teammate's entry confirmed) and the latest decision. They approve no work (carry nothing).
+    if (x.trust !== "verified") continue;
+    const e = x.entry;
+    const keyId = e.pub ? publicKeyId(e.pub) : undefined;
+    const ref = e.discarded ? e.id : `${e.control}/${e.id}`;
+    if (!e.discarded && inPeriod(p, e.recordedAt)) {
+      approvals.push({ at: e.recordedAt, kind: "evidence", ref, action: "recorded", by: e.recordedBy, via: e.recordedVia, origin: "person", keyId, text: e.title || e.url, unsigned: [], carries: false });
+    }
+    if (e.decidedAt !== e.recordedAt && inPeriod(p, e.decidedAt)) {
+      approvals.push({ at: e.decidedAt, kind: "evidence", ref, action: e.discarded ? "discarded" : e.status === "removed" ? "removed" : "confirmed", by: e.decidedBy, via: e.decidedVia, origin: "person", keyId, text: e.discarded ? "" : e.title || e.url, unsigned: [], carries: false });
+    } else if (e.discarded && inPeriod(p, e.decidedAt)) {
+      approvals.push({ at: e.decidedAt, kind: "evidence", ref, action: "discarded", by: e.decidedBy, via: e.decidedVia, origin: "person", keyId, text: "", unsigned: [], carries: false });
+    }
+  }
+  const controlsOf = (pred: (x: OrgEvidenceState) => boolean) => [...new Set(org.entries.filter(pred).map((x) => x.entry.control).filter(Boolean))];
+  const orgLists: Record<string, { items: string[]; controls: string[] }> = {
+    org_evidence_tampered: { items: org.entries.filter((x) => x.trust === "tampered").map((x) => x.entry.id), controls: controlsOf((x) => x.trust === "tampered") },
+    org_evidence_missing: { items: org.missing, controls: [] },
+    org_evidence_unreadable: { items: org.error ? ["org-evidence"] : [], controls: org.error ? ANNEX_A_CONTROLS.map((c) => c.id) : [] },
+    org_evidence_unconfirmed: { items: org.entries.filter((x) => x.entry.status === "active" && !x.entry.discarded && (x.trust === "unsigned" || x.trust === "untrusted")).map((x) => x.entry.id), controls: controlsOf((x) => x.entry.status === "active" && !x.entry.discarded && (x.trust === "unsigned" || x.trust === "untrusted")) },
+    org_evidence_catalogue_changed: { items: org.entries.filter((x) => x.trust === "verified" && x.catalogueChanged).map((x) => x.entry.id), controls: controlsOf((x) => x.trust === "verified" && x.catalogueChanged) },
+  };
   approvals.sort((a, b) => time(a.at) - time(b.at) || a.kind.localeCompare(b.kind) || a.ref.localeCompare(b.ref));
   const carrying = approvals.filter((a) => a.carries);
   const kindsOf = (xs: ApprovalEntry[]) => {
@@ -597,6 +843,10 @@ export function buildAuditFile(s: Scenaria, period: Period = { from: null, to: n
       tampered: nodes.filter((n) => integ.state.get(n.id) === "tampered").map((n) => n.id),
       step_missing: integ.stepsMissing ?? [],
       verdict_removed: integ.verdictsRemoved,
+      verdict_forged: integ.verdictsForged ?? [],
+      snapshot_missing: snapshotMissing,
+      verdict_archive_invalid: archiveInvalid,
+      ...Object.fromEntries(Object.entries(orgLists).map(([k, v]) => [k, v.items])),
       verdict_untrusted: integ.verdictsUntrusted,
       verdict_superseded: integ.verdictsSuperseded,
       verdict_revoked: integ.verdictsRevoked,
@@ -606,6 +856,7 @@ export function buildAuditFile(s: Scenaria, period: Period = { from: null, to: n
     },
     failed,
   );
+  for (const w of warnings) if (orgLists[w.code]) w.controls = orgLists[w.code].controls;
   // A failed project check does not empty the "health" source (its steps are still there); the alarm says what failed.
   const unreadable = new Set<string>(failed.map((x) => x.source).filter((x) => x !== "health"));
 
@@ -630,7 +881,12 @@ export function buildAuditFile(s: Scenaria, period: Period = { from: null, to: n
       automatic: of("checkpoint").filter((n) => n.source === "watch" || n.agent === "watch").length,
       autosaves: of("autosave").length,
     }),
-    snapshots: src("snapshots", stepsIn.filter((n) => n.snapshot && has(n.snapshot.commit)).length, t("Schritte mit wiederherstellbarem Dateistand", "steps with a restorable file state")),
+    snapshots: src(
+      "snapshots",
+      stepsIn.filter((n) => n.snapshot && typeof n.snapshot === "object" && has(n.snapshot.commit) && !missingCommits.has(str(n.snapshot.commit))).length,
+      t("Schritte, deren Dateistand noch gespeichert ist (bei dieser Akte geprüft)", "steps whose file state is still stored (checked for this audit file)"),
+      { missing: stepsIn.filter((n) => snapshotMissingSet.has(n.id)).length },
+    ),
     attribution: src("attribution", attributed.length, t("Schritte mit Angabe zu Agent, Modell oder Konto (wie angegeben)", "steps stating agent, model or account (as stated)"), {
       agents: uniq(stepsIn.map((n) => str(n.agent))),
       users: uniq(stepsIn.map((n) => str(n.user))),
@@ -642,26 +898,29 @@ export function buildAuditFile(s: Scenaria, period: Period = { from: null, to: n
       unsealedSteps: stepsIn.filter((n) => integ.state.get(n.id) === "unsealed").map((n) => n.id),
       changedSteps: stepsIn.filter((n) => integ.state.get(n.id) === "tampered").map((n) => n.id),
     }),
-    signatures: src("signatures", approvals.length, t("gültig signierte Nachweise im Zeitraum (Freigaben, Prüfurteile, Neu-Versiegelungen, Leseeinstellung)", "validly signed records in the period (approvals, verdicts, reseals, read setting)"), kindsOf(approvals)),
+    signatures: src("signatures", approvals.length, t("gültig signierte Nachweise im Zeitraum (Freigaben, Prüfurteile, Neu-Versiegelungen, Leseeinstellung, Dokumente der Organisation)", "validly signed records in the period (approvals, verdicts, reseals, read setting, the organisation's documents)"), kindsOf(approvals)),
     reseals: src("reseals", reseals.filter((r) => inPeriod(p, r.at)).length, t("echte Neu-Versiegelungen im Zeitraum", "authentic reseals in the period"), { unproven: integ.resealsUnproven }),
     approvals: src(
       "approvals",
       carrying.length,
-      t("signierte Freigaben von Regeln und Arbeit (feste Regeln, Prüfläufe, Projektregeln, Prüfurteile) im Zeitraum", "signed approvals of rules and work (fixed rules, checks, project rules, verdicts) in the period"),
+      t("signierte Freigaben von Regeln und Arbeit (feste Regeln, Prüfläufe, Projektregeln) im Zeitraum", "signed approvals of rules and work (fixed rules, checks, project rules) in the period"),
       kindsOf(carrying),
       approvals.length > carrying.length
-        ? t("Neu-Versiegelungen und die Leseeinstellung der Akte stehen in der Liste, tragen aber keine Kontrolle: Sie geben keine Arbeit frei.", "Reseals and the audit file's read setting are listed, but carry no control: they approve no work.")
+        ? t(
+            "Prüfurteile, Neu-Versiegelungen, die Leseeinstellung der Akte und Dokumente der Organisation stehen in der Liste, tragen aber keine Kontrolle: Prüfurteile zählen nur als „Prüfurteile“ (nichts zählt doppelt), Dokumente stehen bei ihrer Kontrolle, die anderen geben keine Arbeit frei.",
+            "Verdicts, reseals, the audit file's read setting and the organisation's documents are listed, but carry no control here: verdicts count only as “verdicts” (nothing counts twice), documents are shown at their control, the others approve no work.",
+          )
         : undefined,
     ),
     verdicts: src(
       "verdicts",
       independentNodes.length,
       t("unabhängige, echte Prüfurteile (Person oder Prüf-Agent) im Zeitraum", "independent, authentic verdicts (person or audit agent) in the period"),
-      { ...byOrigin, confirmedPasses: independentNodes.filter((n) => integ.confirmed.has(n.id)).length, all: verdictNodes.length },
-      verdictNodes.length > independentNodes.length
+      { ...byOrigin, confirmedPasses: independentNodes.filter((n) => integ.confirmed.has(n.id)).length, all: verdictNodes.length, earlier: earlierInPeriod },
+      verdictNodes.length > independentNodes.length || earlierInPeriod > 0
         ? t(
-            "Selbstauskünfte, automatische und nicht (mehr) gültige Urteile sind mitgezählt unter „alle“, tragen aber keine Kontrolle.",
-            "Self-reported, automatic and no longer valid verdicts are counted under “all”, but carry no control.",
+            "Selbstauskünfte, automatische und nicht (mehr) gültige Urteile sind mitgezählt unter „alle“, tragen aber keine Kontrolle. Frühere, ersetzte Urteile stehen im Verlauf („früher“) zum Vergleich und zählen nie.",
+            "Self-reported, automatic and no longer valid verdicts are counted under “all”, but carry no control. Earlier, replaced verdicts are in the history (“earlier”) for comparison and never count.",
           )
         : undefined,
     ),
@@ -711,7 +970,8 @@ export function buildAuditFile(s: Scenaria, period: Period = { from: null, to: n
     const missing = req.filter((r) => !r.hasData).map((r) => r.source);
     const status: ControlStatus = c.coverage === "organisational" ? "organisational" : missing.length ? "not_covered" : c.coverage;
     const all = [...c.required, ...c.supporting];
-    const ws = warnings.filter((w) => w.sources.some((x) => all.includes(x))).map((w) => w.code);
+    const ws = warnings.filter((w) => w.sources.some((x) => all.includes(x)) || (w.controls ?? []).includes(c.id)).map((w) => w.code);
+    const docs = orgByControl.get(c.id) ?? [];
     return {
       id: c.id,
       area: c.area,
@@ -727,6 +987,7 @@ export function buildAuditFile(s: Scenaria, period: Period = { from: null, to: n
       scenaria: c.scenaria,
       organisation: c.organisation,
       ...(c.appliesWhen ? { appliesWhen: c.appliesWhen } : {}),
+      orgEvidence: { state: docs.some((d) => d.counts) ? "documented" : docs.length ? "unconfirmed" : "none", entries: docs },
     };
   });
 
@@ -738,6 +999,7 @@ export function buildAuditFile(s: Scenaria, period: Period = { from: null, to: n
     not_covered: controls.filter((c) => c.status === "not_covered").length,
     withAlarm: controls.filter((c) => c.alarm).length,
     withNotes: controls.filter((c) => !c.alarm && c.warnings.length > 0).length,
+    orgDocumented: controls.filter((c) => c.orgEvidence.state === "documented").length,
   };
 
   const state: AuditFile["integrity"]["state"] = alarmCodes.size ? "alarm" : warnings.length ? "notes" : "ok";
@@ -753,15 +1015,14 @@ export function buildAuditFile(s: Scenaria, period: Period = { from: null, to: n
           );
 
   const whole = !p.from && !p.to;
-  const boundId = projectIdentity(s.store, false) || null;
-  const configId = str(s.store.readConfig().projectId);
+
   return {
     kind: AUDIT_FILE_KIND,
     version: AUDIT_FILE_VERSION,
     standard: ANNEX_A_STANDARD,
     scope: ANNEX_A_SCOPE,
     generatedAt,
-    project: { name: str(s.config().projectName), id: boundId, ...(configId && configId !== boundId ? { configId } : {}) },
+    project: { name: projectName, id: boundId, ...(configId && configId !== boundId ? { configId } : {}) },
     period: {
       from: p.from,
       to: p.to,
@@ -771,7 +1032,10 @@ export function buildAuditFile(s: Scenaria, period: Period = { from: null, to: n
       lastStep: sortedTimes[sortedTimes.length - 1] ?? null,
       note: whole
         ? t("Zeitraum: das ganze Projekt.", "Period: the whole project.")
-        : t("Zeitraum wie gewählt (Tage ohne Uhrzeit gelten ganz, in UTC). Hauptziel, feste Regeln, Projektregeln und Prüf-Agenten zählen, wenn sie vor dem Ende des Zeitraums galten.", "Period as chosen (days without a time count whole, in UTC). The main goal, fixed rules, project rules and audit agents count when they applied before the end of the period."),
+        : t(
+            "Zeitraum wie gewählt, in UTC (Tage ohne Uhrzeit gelten ganz; in Deutschland beginnt ein UTC-Tag um 1 Uhr, im Sommer um 2 Uhr; ein Ende auf die Minute schließt diese Minute ein). Hauptziel, feste Regeln, Projektregeln und Prüf-Agenten zählen, wenn sie vor dem Ende des Zeitraums galten; Regeln ab ihrer letzten Entscheidung.",
+            "Period as chosen, in UTC (days without a time count whole; an end given to the minute includes that minute). The main goal, fixed rules, project rules and audit agents count when they applied before the end of the period; rules from their latest decision.",
+          ),
     },
     integrity: {
       state,
@@ -783,9 +1047,11 @@ export function buildAuditFile(s: Scenaria, period: Period = { from: null, to: n
       ),
     },
     summary,
+    catalogue: catalogueFingerprint(),
     sources,
     controls,
     approvals,
+    verdictHistory,
     reseals: { authentic: reseals, unproven: integ.resealsUnproven },
     access,
   };

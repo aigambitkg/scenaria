@@ -325,7 +325,7 @@ export function metrics(
 }
 
 function short(s: string | undefined, max = 90): string {
-  const one = (s ?? "").replace(/\s+/g, " ").trim();
+  const one = (typeof s === "string" ? s : s == null ? "" : String(s)).replace(/\s+/g, " ").trim();
   return one.length > max ? one.slice(0, max - 1) + "…" : one;
 }
 
