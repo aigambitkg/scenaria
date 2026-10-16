@@ -366,6 +366,10 @@ export function AnalysisDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessio
   const [proposals, setProposals] = useState<ProjectRule[]>([]);
   const [ruleApproval, setRuleApproval] = useState(false);
   const [proposalCount, setProposalCount] = useState(0);
+  const [unconfirmed, setUnconfirmed] = useState<(ProjectRule & { trust: string })[]>([]);
+  const [tamperedRules, setTamperedRules] = useState<(ProjectRule & { trust: string })[]>([]);
+  const [missingRules, setMissingRules] = useState<string[]>([]);
+  const [needsYou, setNeedsYou] = useState(0);
   const [newRule, setNewRule] = useState("");
   const [records, setRecords] = useState<AnalysisRecord[]>([]);
   const [current, setCurrent] = useState<AnalysisRecord | null>(null);
@@ -382,11 +386,15 @@ export function AnalysisDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessio
 
   const reload = async () => {
     // The proposals must never keep the rest of the dialog from loading.
-    const [mm, rr, recs, pp] = await Promise.all([api.analysis(), api.rules(), api.analyses(), api.ruleProposals().catch(() => ({ proposals: [] as ProjectRule[], count: 0, approval: false }))]);
+    const [mm, rr, recs, pp] = await Promise.all([api.analysis(), api.rules(), api.analyses(), api.ruleProposals().catch(() => ({ proposals: [] as ProjectRule[], count: 0, unconfirmed: [], tampered: [], missing: [] as string[], needsYou: 0, approval: false }))]);
     setM(mm);
     setRules(rr);
     setProposals(pp.proposals);
     setProposalCount(pp.count);
+    setUnconfirmed(pp.unconfirmed);
+    setTamperedRules(pp.tampered);
+    setMissingRules(pp.missing);
+    setNeedsYou(pp.needsYou);
     setRuleApproval(pp.approval);
     setRecords(recs);
     setCurrent((c) => recs.find((r) => r.id === c?.id) ?? recs[0] ?? null);
@@ -519,7 +527,59 @@ export function AnalysisDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessio
         <section className="a-sec">
           <h3>{t.rulesTitle}</h3>
           <p className="hint">{t.rulesHint}</p>
-          {!ruleApproval && <LockedNote t={t} text={proposalCount > 0 ? `${t.ruleProposalsWaiting(proposalCount)} ${t.rulesLocked}` : t.rulesLocked} small />}
+          {!ruleApproval && <LockedNote t={t} text={[proposalCount > 0 ? t.ruleProposalsWaiting(proposalCount) : "", needsYou > 0 ? t.rulesNeedYou(needsYou) : "", t.rulesLocked].filter(Boolean).join(" ")} small />}
+          {missingRules.length > 0 && <p className="qnote q-bad">{t.rulesMissing(missingRules.join(", "))}</p>}
+          {[
+            { list: tamperedRules, title: t.rulesTamperedTitle, hint: t.rulesTamperedHint, cls: "rule-proposals rule-bad" },
+            { list: unconfirmed, title: t.rulesUnconfirmedTitle, hint: t.rulesUnconfirmedHint, cls: "rule-proposals" },
+          ]
+            .filter((g) => g.list.length > 0)
+            .map((g) => (
+              <div key={g.title} className={g.cls}>
+                <h4>{g.title}</h4>
+                <p className="hint">{g.hint}</p>
+                <ul className="rules">
+                  {g.list.map((r) => (
+                    <li key={r.id}>
+                      <span className="muted">{r.id}</span> {r.text}{" "}
+                      <span className="muted">
+                        · {r.trust === "tampered" ? "" : `${r.trust === "untrusted" ? t.ruleUntrusted : t.ruleUnsigned} · `}
+                        {t.ruleOrigin(r.source, (r.createdAt ?? "").slice(0, 10))}
+                      </span>{" "}
+                      <button
+                        className="btn"
+                        disabled={!ruleApproval}
+                        onClick={async () => {
+                          try {
+                            await api.confirmRule(r.id, r.text);
+                            props.toast(t.ruleConfirmed);
+                          } catch (e: any) {
+                            setErr(String(e?.message ?? e));
+                          }
+                          reload();
+                        }}
+                      >
+                        {t.ruleConfirm}
+                      </button>{" "}
+                      <button
+                        className="btn"
+                        disabled={!ruleApproval}
+                        onClick={async () => {
+                          try {
+                            await api.deleteRule(r.id);
+                          } catch (e: any) {
+                            setErr(String(e?.message ?? e));
+                          }
+                          reload();
+                        }}
+                      >
+                        {t.remove}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
           {rules.length > 0 && (
             <ul className="rules">
               {rules.map((r) => (

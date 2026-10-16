@@ -2,6 +2,7 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readF
 import { spawnSync } from "node:child_process";
 import { basename, join } from "node:path";
 import { userInfo } from "node:os";
+import { createHash } from "node:crypto";
 import { composeContext, estimateTokens, nearestGoal, optionLabel, taskNodes } from "./context.js";
 import { renderNodeNote, renderProtocol } from "./protocol.js";
 import { ShadowRepo, cleanEnv } from "./snapshot.js";
@@ -12,6 +13,7 @@ import type {
   NodeType,
   ProjectRule,
   RuleDecision,
+  RuleTrust,
   ScenariaConfig,
   ScenariaNode,
   SnapshotFolderConfig,
@@ -30,7 +32,7 @@ import { ulid, versionLabel } from "./ids.js";
 import { isForbiddenRoot } from "./global.js";
 import { Ledger, checkIntegrity, contentHash, workHash } from "./ledger.js";
 import { fidelityAll } from "./fidelity.js";
-import { activeCanon, addCanon, canonLines, canonState, decideCanon, readCanon, runCanonChecks, signRecord, suggestCanon, type CanonAction, type CanonInput } from "./canon.js";
+import { activeCanon, addCanon, canonLines, canonState, decideCanon, projectIdentity, publicKeyId, rebindProjectId, ruleAnchors, ruleTrustFingerprint, readCanon, runCanonChecks, signRecord, suggestCanon, trustedApproverIdSet, verifyEd25519, type CanonAction, type CanonInput } from "./canon.js";
 
 export interface Actor {
   agent?: string;
@@ -218,14 +220,20 @@ function splitFacts(list?: FactInput[]): { facts?: string[]; factInfo?: ({ confi
 /** Active = binding for agents. Older projects stored no status: those rules count as active, except the
  * ones agents added (they become proposals: only the person makes a rule binding). */
 export function isActiveRule(r: ProjectRule): boolean {
+  if (isProposedRule(r)) return false;
   if (r.status) return r.status === "active";
-  return r.source !== "agent";
+  return true;
 }
 
-/** Waiting for the person's decision (including older agent rules without a status). */
+/**
+ * Waiting for the person's decision: proposals, older agent rules without a status, and unsigned entries
+ * that name an agent as their origin, whatever status they claim (written into the file by an agent).
+ */
 export function isProposedRule(r: ProjectRule): boolean {
-  if (r.status) return r.status === "proposed";
-  return r.source === "agent";
+  if (r.status === "proposed") return true;
+  if (r.status === "rejected" || r.status === "removed") return false;
+  if (!r.sig && (r.source === "agent" || r.proposedBy)) return true;
+  return false;
 }
 
 /** Open rule proposals are capped, so agents cannot flood the person. */
@@ -469,6 +477,12 @@ export class Scenaria {
           if (prev) store.appendEvent({ type: "update", data: { message: `a new project was started in this folder by the person; the previous project's integrity anchor (since ${prev.since}) is archived` } });
         } catch {}
       }
+      // The project's identity for signatures, bound to the folder outside the project (S2-3): a fresh one for
+      // the person's confirmed new project; otherwise the id this machine already bound here (or a new one).
+      try {
+        if (opts.newProjectInFolder) rebindProjectId(store);
+        else projectIdentity(store, true);
+      } catch {}
     }
     const repo = ShadowRepo.gitAvailable() ? new ShadowRepo(r, store.dir) : null;
     repo?.init(store.readConfig().exclude);
@@ -494,6 +508,11 @@ export class Scenaria {
       if (!repo.initialized) repo.init(store.readConfig().exclude);
       else repo.writeExcludes(store.readConfig().exclude);
     }
+    // Older projects: bind their identity on first open (trust on first use), so a later edit of config.json
+    // cannot import another project's signed records.
+    try {
+      projectIdentity(store, true);
+    } catch {}
     const s = new Scenaria(store, repo);
     s.upgrade();
     return s;
@@ -1812,48 +1831,129 @@ export class Scenaria {
         rules = [];
       }
     }
-    // Ids only go up: a rejected or removed id is never handed out again (a stale approval can't hit new text).
-    nextId = Math.max(nextId, rules.reduce((m, r) => Math.max(m, numIdOf(r.id)), 0) + 1);
+    // Ids only go up: a rejected or removed id is never handed out again (a stale approval can't hit new text),
+    // also when nextId was lost: the marks outside the project remember every id that was ever signed.
+    const marked = Object.keys(ruleAnchors(this.store).read()).filter((k) => k.startsWith("rule:")).map((k) => numIdOf(k.slice(5)));
+    nextId = Math.max(nextId, rules.reduce((m, r) => Math.max(m, numIdOf(r.id)), 0) + 1, ...marked.map((n) => n + 1));
     return { rules, nextId };
   }
 
   private writeMemory(rules: ProjectRule[], nextId: number) {
+    this.ruleCache = null;
     writeJsonAtomic(this.memoryFile(), { rules, nextId });
+  }
+
+  // ---- signatures (0.9.5, like canon): the person's decision is signed with the approver key and bound to
+  // the project and a revision; the newest revision per rule is anchored outside the project, so an older
+  // signed version (or a removed rule copied back) never counts again.
+  private ruleParts(r: ProjectRule, status = r.status ?? ""): unknown[] {
+    return ["rule/v1", r.rev ?? 0, r.id, r.text, status, r.decidedBy ?? "", r.decidedVia ?? "", r.decidedAt ?? ""];
+  }
+
+  /** Sign the person's decision on a rule (sets rev, keyId, pub, sig) and raise its anchor. */
+  private signRule(r: ProjectRule): ProjectRule {
+    const anchors = ruleAnchors(this.store);
+    r.rev = Math.max(r.rev ?? 0, anchors.read()[`rule:${r.id}`]?.rev ?? 0) + 1;
+    const signed = signRecord(this.store, this.ruleParts(r));
+    r.pub = signed.pub;
+    r.keyId = publicKeyId(signed.pub);
+    r.sig = signed.sig;
+    anchors.raise({ [`rule:${r.id}`]: { rev: r.rev, status: r.status ?? "", sig: r.sig } });
+    return r;
+  }
+
+  /** Every stored rule with how far this machine can vouch for it, plus approved rules missing from the file. */
+  private ruleCache: { key: string; value: { rules: { rule: ProjectRule; trust: RuleTrust }[]; missing: string[] } } | null = null;
+
+  ruleStates(): { rules: { rule: ProjectRule; trust: RuleTrust }[]; missing: string[] } {
+    // Cached while nothing that decides trust changed (rules() is read by every capsule, prompt and board).
+    // The key holds the file's CONTENT hash (an edit of the same length within the same instant is still seen);
+    // reading is cheap, checking signatures is what the cache saves.
+    let mem = "-";
+    try {
+      mem = createHash("sha256").update(readFileSync(this.memoryFile())).digest("hex");
+    } catch {}
+    const key = `${mem}|${ruleTrustFingerprint(this.store)}`;
+    if (this.ruleCache?.key === key) return this.ruleCache.value;
+    const value = this.computeRuleStates();
+    this.ruleCache = { key: `${mem}|${ruleTrustFingerprint(this.store)}`, value };
+    return value;
+  }
+
+  private computeRuleStates(): { rules: { rule: ProjectRule; trust: RuleTrust }[]; missing: string[] } {
+    const { rules } = this.readMemory();
+    const pid = projectIdentity(this.store, false);
+    const anchors = ruleAnchors(this.store).read();
+    const trusted = trustedApproverIdSet();
+    const raise: Record<string, { rev: number; status: string; sig: string }> = {};
+    const out = rules.map((rule) => {
+      const a = anchors[`rule:${rule.id}`];
+      let trust: RuleTrust;
+      if (a && ((rule.rev ?? 0) < a.rev || ((rule.rev ?? 0) === a.rev && rule.sig !== a.sig))) trust = "tampered";
+      else if (isProposedRule(rule) && !a && !rule.sig) trust = "proposal";
+      else if (!rule.sig || !rule.pub || !pid) trust = "unsigned";
+      else if (!verifyEd25519(rule.pub, rule.sig, JSON.stringify([pid, ...this.ruleParts(rule)]))) trust = "tampered";
+      else trust = trusted.has(publicKeyId(rule.pub)) ? "verified" : "untrusted";
+      // A newer verified revision (a teammate's, pulled with git) raises this machine's mark.
+      if (trust === "verified" && (!a || (rule.rev ?? 0) > a.rev)) raise[`rule:${rule.id}`] = { rev: rule.rev ?? 0, status: rule.status ?? "", sig: rule.sig! };
+      return { rule, trust };
+    });
+    if (Object.keys(raise).length) ruleAnchors(this.store).raise(raise);
+    const present = new Set(rules.map((r) => r.id));
+    const missing = Object.entries(anchors)
+      .filter(([k, a]) => k.startsWith("rule:") && a.status === "active" && !present.has(k.slice(5)))
+      .map(([k]) => k.slice(5));
+    return { rules: out, missing };
   }
 
   /**
    * Durable project rules: accepted lessons/recommendations every capsule and prompt carries.
-   * Only ACTIVE rules: proposals never reach agents (security rule 5).
+   * Only ACTIVE rules signed by the person (verified): proposals, unsigned and changed rules never reach
+   * agents (security rule 5).
    */
   rules(): ProjectRule[] {
-    return this.readMemory().rules.filter(isActiveRule);
+    return this.ruleStates().rules.filter((x) => x.trust === "verified" && isActiveRule(x.rule)).map((x) => x.rule);
   }
 
   /** Rules agents proposed, waiting for the person's decision. */
   ruleProposals(): ProjectRule[] {
-    return this.readMemory().rules.filter(isProposedRule);
+    return this.ruleStates().rules.filter((x) => x.trust === "proposal").map((x) => x.rule);
   }
 
   /**
-   * The PERSON's rule: active at once. Callers must make sure a person acts (dashboard approval mode,
-   * interactive terminal, or the person's adoption of an analysis); agents use `proposeRule`.
-   * The same text proposed (or rejected) earlier becomes active instead of being stored twice.
+   * Rules that do not count although they say "active": not signed yet (older projects), signed by a key
+   * this machine does not trust, or changed outside Scenaria; and approved rules deleted from the file.
+   */
+  ruleIssues(): { unconfirmed: (ProjectRule & { trust: RuleTrust })[]; tampered: (ProjectRule & { trust: RuleTrust })[]; missing: string[] } {
+    const st = this.ruleStates();
+    return {
+      unconfirmed: st.rules.filter((x) => isActiveRule(x.rule) && (x.trust === "unsigned" || x.trust === "untrusted")).map((x) => ({ ...x.rule, trust: x.trust })),
+      tampered: st.rules.filter((x) => x.trust === "tampered").map((x) => ({ ...x.rule, trust: x.trust })),
+      missing: st.missing,
+    };
+  }
+
+  /**
+   * The PERSON's rule: active at once, signed. Callers must make sure a person acts (dashboard approval
+   * mode, interactive terminal, or the person's adoption of an analysis); agents use `proposeRule`.
+   * The same text stored earlier (proposed, rejected or not yet confirmed) becomes active and signed.
    */
   addRule(text: string, source: ProjectRule["source"], evidence: string[] | undefined, decision: RuleDecision): ProjectRule {
     const t = text.replace(/\s+/g, " ").trim().slice(0, 400);
     if (!t) throw new Error("rule text is empty");
     return this.store.withLock(() => {
       const { rules: all, nextId } = this.readMemory();
+      const verified = new Set(this.ruleStates().rules.filter((x) => x.trust === "verified").map((x) => x.rule.id));
       const dup = all.find((r) => r.text.toLowerCase() === t.toLowerCase());
-      if (dup && isActiveRule(dup)) return dup;
+      if (dup && isActiveRule(dup) && verified.has(dup.id)) return dup;
       const decided = decision ? { decidedBy: decision.by, decidedVia: decision.via, decidedAt: new Date().toISOString() } : {};
       if (dup) {
-        const rule: ProjectRule = { ...dup, status: "active", ...decided };
+        const rule = this.signRule({ ...dup, status: "active", ...decided });
         this.writeMemory(all.map((r) => (r.id === dup.id ? rule : r)), nextId);
         this.store.appendEvent({ type: "rule", data: { message: `rule ${rule.id} accepted: ${t}`, id: rule.id, by: decision?.by, via: decision?.via } });
         return rule;
       }
-      const rule: ProjectRule = { id: `r${nextId}`, text: t, source, evidence: clean(evidence), createdAt: new Date().toISOString(), status: "active", ...decided };
+      const rule = this.signRule({ id: `r${nextId}`, text: t, source, evidence: clean(evidence), createdAt: new Date().toISOString(), status: "active", ...decided });
       this.writeMemory([...all, rule], nextId + 1);
       this.store.appendEvent({ type: "rule", data: { message: `rule ${rule.id} added: ${t}`, id: rule.id, by: decision?.by, via: decision?.via } });
       return rule;
@@ -1881,44 +1981,70 @@ export class Scenaria {
     });
   }
 
+  /** The current entry of a rule the person is deciding on, with the text check (`text` = what they saw). */
+  private ruleForDecision(id: string, text: string | undefined, allowed: RuleTrust[], what: string) {
+    const st = this.ruleStates().rules.find((x) => x.rule.id === id);
+    if (!st) throw new Error(`No rule ${id}`);
+    if (!allowed.includes(st.trust)) throw new Error(`Rule ${id} is not ${what}.`);
+    if (text !== undefined && text.replace(/\s+/g, " ").trim() !== st.rule.text) throw new Error(`Rule ${id} is not the text you saw — reload and check it again.`);
+    return st.rule;
+  }
+
   /**
-   * The person accepts a proposal: from now on every agent receives it. `text` is the text the person saw;
-   * if the proposal is not exactly that any more, nothing is accepted.
+   * The person accepts a proposal: signed, and from now on every agent receives it. `text` is the text the
+   * person saw; if the proposal is not exactly that any more, nothing is accepted.
    */
   approveRule(id: string, decision: RuleDecision, text?: string): ProjectRule {
     return this.store.withLock(() => {
+      const r = this.ruleForDecision(id, text, ["proposal"], "an open proposal");
       const { rules: all, nextId } = this.readMemory();
-      const r = all.find((x) => x.id === id);
-      if (!r) throw new Error(`No rule ${id}`);
-      if (!isProposedRule(r)) throw new Error(`Rule ${id} is not an open proposal (${isActiveRule(r) ? "already active" : "rejected"}).`);
-      if (text !== undefined && text.replace(/\s+/g, " ").trim() !== r.text) throw new Error(`Rule ${id} is not the text you saw — reload and check it again.`);
-      const rule: ProjectRule = { ...r, status: "active", decidedBy: decision.by, decidedVia: decision.via, decidedAt: new Date().toISOString() };
+      const rule = this.signRule({ ...r, status: "active", decidedBy: decision.by, decidedVia: decision.via, decidedAt: new Date().toISOString() });
       this.writeMemory(all.map((x) => (x.id === id ? rule : x)), nextId);
       this.store.appendEvent({ type: "rule", data: { message: `rule ${id} accepted: ${r.text}`, id, by: decision.by, via: decision.via } });
       return rule;
     });
   }
 
-  /** The person rejects a proposal. It stays on file as rejected: the id is never reused, the text never re-proposed. */
+  /**
+   * The person confirms a rule that says "active" but does not count yet: not signed (older projects),
+   * signed by a key this machine does not trust, or changed outside Scenaria. `text` is what they saw.
+   */
+  confirmRule(id: string, decision: RuleDecision, text?: string): ProjectRule {
+    return this.store.withLock(() => {
+      const r = this.ruleForDecision(id, text, ["unsigned", "untrusted", "tampered"], "waiting for your confirmation");
+      if (!isActiveRule(r) && r.status !== "active") throw new Error(`Rule ${id} is not an active rule.`);
+      const { rules: all, nextId } = this.readMemory();
+      const rule = this.signRule({ ...r, status: "active", decidedBy: decision.by, decidedVia: decision.via, decidedAt: new Date().toISOString() });
+      this.writeMemory(all.map((x) => (x.id === id ? rule : x)), nextId);
+      this.store.appendEvent({ type: "rule", data: { message: `rule ${id} confirmed: ${r.text}`, id, by: decision.by, via: decision.via } });
+      return rule;
+    });
+  }
+
+  /** The person rejects a proposal. It stays on file as rejected (signed): the id is never reused, the text never re-proposed. */
   rejectRule(id: string, decision: RuleDecision): boolean {
     return this.store.withLock(() => {
+      const st = this.ruleStates().rules.find((x) => x.rule.id === id);
+      if (!st || st.trust !== "proposal") return false;
       const { rules: all, nextId } = this.readMemory();
-      const r = all.find((x) => x.id === id);
-      if (!r || !isProposedRule(r)) return false;
-      const rule: ProjectRule = { ...r, status: "rejected", decidedBy: decision.by, decidedVia: decision.via, decidedAt: new Date().toISOString() };
+      const rule = this.signRule({ ...st.rule, status: "rejected", decidedBy: decision.by, decidedVia: decision.via, decidedAt: new Date().toISOString() });
       this.writeMemory(all.map((x) => (x.id === id ? rule : x)), nextId);
-      this.store.appendEvent({ type: "rule", data: { message: `rule ${id} rejected: ${r.text}`, id, by: decision.by, via: decision.via } });
+      this.store.appendEvent({ type: "rule", data: { message: `rule ${id} rejected: ${st.rule.text}`, id, by: decision.by, via: decision.via } });
       return true;
     });
   }
 
-  /** The person removes a rule (active or proposed). The id is not reused. */
+  /**
+   * The person removes a rule (active, proposed or waiting). It stays on file as a signed "removed" entry,
+   * so every machine (a teammate's too) sees the removal and a copy of the old signed rule never counts again.
+   */
   removeRule(id: string, decision?: RuleDecision): boolean {
     return this.store.withLock(() => {
       const { rules: all, nextId } = this.readMemory();
-      const keep = all.filter((r) => r.id !== id);
-      if (keep.length === all.length) return false;
-      this.writeMemory(keep, nextId);
+      const r = all.find((x) => x.id === id);
+      if (!r || r.status === "removed") return false;
+      const rule = this.signRule({ ...r, status: "removed", decidedBy: decision?.by, decidedVia: decision?.via, decidedAt: new Date().toISOString() });
+      this.writeMemory(all.map((x) => (x.id === id ? rule : x)), nextId);
       this.store.appendEvent({ type: "rule", data: { message: `rule ${id} removed`, id, by: decision?.by, via: decision?.via } });
       return true;
     });

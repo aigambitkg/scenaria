@@ -248,6 +248,8 @@ test("K1/K8: codes from the lock live next to the start link (which stays valid)
   }
 });
 
+// Since 0.9.5 the opener is the system's own program by absolute path (an empty PATH no longer hides it), so the
+// missing browser is simulated with SCENARIA_NO_BROWSER=fail.
 test("K2: no browser program → a clear answer, the server keeps running, the code is withdrawn", async () => {
   const script = `
     process.env.SCENARIA_HOME = ${JSON.stringify(mkdtempSync(join(tmpdir(), "scenaria-home-")))};
@@ -261,7 +263,7 @@ test("K2: no browser program → a clear answer, the server keeps running, the c
     console.log(JSON.stringify({ status: r.status, alive: h.ok }));
     srv.close();`;
   const out = await new Promise((resolve, reject) =>
-    execFile(process.execPath, ["--input-type=module", "-e", script], { env: { ...process.env, PATH: "", SCENARIA_NO_BROWSER: "" }, timeout: 20_000 }, (err, stdout, stderr) => (err ? reject(new Error(`${err.message}\n${stderr}`)) : resolve(stdout))),
+    execFile(process.execPath, ["--input-type=module", "-e", script], { env: { ...process.env, SCENARIA_NO_BROWSER: "fail" }, timeout: 20_000 }, (err, stdout, stderr) => (err ? reject(new Error(`${err.message}\n${stderr}`)) : resolve(stdout))),
   );
   assert.deepEqual(JSON.parse(out.trim().split("\n").at(-1)), { status: 409, alive: true });
 });

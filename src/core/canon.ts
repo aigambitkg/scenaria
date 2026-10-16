@@ -27,7 +27,7 @@
  */
 import { spawn } from "node:child_process";
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign as edSign, verify as edVerify, type KeyObject } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Store } from "./store.js";
 import { writeJsonAtomic } from "./store.js";
@@ -197,14 +197,90 @@ function checkPayload(pid: string, e: CanonEvent, c: CanonCheck) {
   return JSON.stringify(["check/v2", pid, e.rev ?? 0, e.id, e.check ?? "", c.status, c.at, c.node ?? "", c.clean, c.how ?? "command"]);
 }
 
-/** The project's identity for signatures (config.json; created on the first signed change). */
+// The project's identity is bound to its folder OUTSIDE the project (S2-3): ~/.config/scenaria/project-ids.json.
+// Signatures are verified against that bound id, so changing (or deleting) projectId in config.json can
+// neither make another project's signed records count here nor turn signed records into "not signed yet".
+function idRegistryFile() {
+  return join(cfgDir(), "project-ids.json");
+}
+function folderKey(root: string) {
+  try {
+    return realpathSync(root);
+  } catch {
+    return root;
+  }
+}
+function readIdRegistry(): Record<string, string> {
+  try {
+    const raw = JSON.parse(readFileSync(idRegistryFile(), "utf8"));
+    return raw?.roots && typeof raw.roots === "object" ? raw.roots : {};
+  } catch {
+    return {};
+  }
+}
+function bindProjectId(root: string, pid: string, replace = false) {
+  try {
+    const roots = readIdRegistry();
+    const k = folderKey(root);
+    if (roots[k] && !replace) return; // the first binding wins; only the person's confirmed new project replaces it
+    roots[k] = pid;
+    mkdirSync(cfgDir(), { recursive: true });
+    writeJsonAtomic(idRegistryFile(), { version: 1, roots });
+  } catch {
+    /* best effort: without the registry the id in config.json is used */
+  }
+}
+
+/**
+ * The project's identity for signatures: the id this machine bound to the folder; on first use on this
+ * machine (a moved folder, a teammate's clone) the id in config.json, which is then bound; created on the
+ * first signed change.
+ */
 function projectId(store: Store, create: boolean): string {
+  const bound = readIdRegistry()[folderKey(store.root)];
+  if (bound) {
+    // config.json lost its id (deleted, or a project set up again here): give it back the bound one, so
+    // teammates (who read config.json on first use) verify against the same id.
+    if (create) {
+      const cfg = store.readConfig();
+      if (!cfg.projectId) {
+        cfg.projectId = bound;
+        store.writeConfig(cfg);
+      }
+    }
+    return bound;
+  }
   const cfg = store.readConfig();
-  if (cfg.projectId) return cfg.projectId;
+  if (cfg.projectId) {
+    bindProjectId(store.root, cfg.projectId);
+    return cfg.projectId;
+  }
   if (!create) return "";
   cfg.projectId = randomBytes(12).toString("hex");
   store.writeConfig(cfg);
+  bindProjectId(store.root, cfg.projectId);
   return cfg.projectId;
+}
+
+/**
+ * A NEW project in a folder whose earlier project this machine knew — the person's confirmed start-over only:
+ * a fresh id, bound to the folder in place of the old one (the old project's signed records and marks stay
+ * with the old id and never mix with the new project's).
+ */
+export function rebindProjectId(store: Store): string {
+  const cfg = store.readConfig();
+  cfg.projectId = randomBytes(12).toString("hex");
+  store.writeConfig(cfg);
+  bindProjectId(store.root, cfg.projectId, true);
+  return cfg.projectId;
+}
+
+/** config.json names another project id than the one this machine bound to the folder (edited by hand or by an agent). */
+export function projectIdChanged(store: Store): { bound: string; inConfig: string } | null {
+  const bound = readIdRegistry()[folderKey(store.root)];
+  if (!bound) return null;
+  const inConfig = store.readConfig().projectId ?? "";
+  return inConfig === bound ? null : { bound, inConfig };
 }
 
 // ------------------------------------------------------------------ anchors (high-water marks)
@@ -219,26 +295,26 @@ interface Anchor {
   sig: string;
 }
 
-function anchorFile(pid: string) {
-  return join(cfgDir(), "anchors", `${pid.replace(/[^a-z0-9]/gi, "")}.json`);
+function anchorFile(pid: string, kind = "") {
+  return join(cfgDir(), "anchors", `${pid.replace(/[^a-z0-9]/gi, "")}${kind ? `.${kind}` : ""}.json`);
 }
-function readAnchors(pid: string): Record<string, Anchor> {
+function readAnchors(pid: string, kind = ""): Record<string, Anchor> {
   if (!pid) return {};
   try {
-    const raw = JSON.parse(readFileSync(anchorFile(pid), "utf8"));
+    const raw = JSON.parse(readFileSync(anchorFile(pid, kind), "utf8"));
     return raw && typeof raw === "object" ? raw : {};
   } catch {
     return {};
   }
 }
-function raiseAnchors(pid: string, updates: Record<string, Anchor>) {
+function raiseAnchors(pid: string, updates: Record<string, Anchor>, kind = "") {
   if (!pid || !Object.keys(updates).length) return;
   try {
     // Re-read and keep the maximum: two processes raising at once can never lower a mark.
-    const cur = readAnchors(pid);
+    const cur = readAnchors(pid, kind);
     for (const [id, a] of Object.entries(updates)) if (!cur[id] || a.rev >= cur[id].rev) cur[id] = a;
-    mkdirSync(dirname(anchorFile(pid)), { recursive: true });
-    writeJsonAtomic(anchorFile(pid), cur);
+    mkdirSync(dirname(anchorFile(pid, kind)), { recursive: true });
+    writeJsonAtomic(anchorFile(pid, kind), cur);
   } catch {
     /* best effort: the anchor only adds detection */
   }
@@ -591,6 +667,26 @@ export function verifyRecord(store: Store, parts: unknown[], pub?: string, sig?:
 export function projectAnchors(store: Store) {
   const pid = projectId(store, false);
   return { read: () => readAnchors(pid), raise: (u: Record<string, Anchor>) => raiseAnchors(projectId(store, true), u) };
+}
+
+/** Changes whenever anything that decides a rule's trust changes (key, trusted keys, rule marks, folder binding). */
+export function ruleTrustFingerprint(store: Store): string {
+  const pid = projectId(store, false);
+  const st = (f: string) => {
+    try {
+      const x = statSync(f);
+      return `${x.mtimeMs}:${x.size}`;
+    } catch {
+      return "-";
+    }
+  };
+  return [pid, st(join(cfgDir(), "approver-key.pem")), st(trustedFile()), st(anchorFile(pid, "rules")), st(idRegistryFile())].join("|");
+}
+
+/** The project rules' own high-water marks (separate file: canon's "missing" check must never see them). */
+export function ruleAnchors(store: Store) {
+  const pid = projectId(store, false);
+  return { read: () => readAnchors(pid, "rules"), raise: (u: Record<string, Anchor>) => raiseAnchors(projectId(store, true), u, "rules") };
 }
 export type { Anchor };
 

@@ -144,7 +144,7 @@ export const EVIDENCE_SOURCES: Record<EvidenceSource, EvidenceSourceInfo> = {
   signatures: {
     label: { de: "Signaturen", en: "Signatures" },
     what: { de: "Freigaben, Prüfurteile, Neu-Versiegelungen und Berichte sind signiert und an Projekt und Inhalt gebunden.", en: "Approvals, verdicts, reseals and reports are signed and bound to the project and the content." },
-    limits: { de: "Der Schlüssel der Person liegt auf diesem Rechner. Eine Signatur belegt den Freigabeweg in Scenaria, nicht, welcher Mensch am Rechner saß.", en: "The person's key is on this machine. A signature proves Scenaria's approval path, not which human sat at the machine." },
+    limits: { de: "Der Schlüssel der Person liegt auf diesem Rechner. Voraussetzung, die Scenaria nicht erzwingt: Agenten laufen in einer Sandbox ohne Zugriff auf den Scenaria-Konfigurationsordner und starten Scenaria nicht unter dem Konto der Person. Eine Signatur belegt den Freigabeweg in Scenaria, nicht, welcher Mensch am Rechner saß.", en: "The person's key is on this machine. A precondition Scenaria does not enforce: agents run in a sandbox without access to the Scenaria config folder and do not start Scenaria under the person's account. A signature proves Scenaria's approval path, not which human sat at the machine." },
     assurance: "signed",
     chained: "partly",
     scope: "project",
@@ -161,8 +161,8 @@ export const EVIDENCE_SOURCES: Record<EvidenceSource, EvidenceSourceInfo> = {
   },
   approvals: {
     label: { de: "Signierte Freigaben", en: "Signed approvals" },
-    what: { de: "Freigaben einer Person oder eines Prüf-Agenten: feste Regeln anlegen, annehmen, ablehnen, beenden oder als erfüllt bestätigen, Prüfurteile, Neu-Versiegelungen und Prüfläufe je Arbeitslinie, mit Zeitpunkt und Weg (Dashboard oder Terminal).", en: "Approvals by a person or an audit agent: adding, accepting, rejecting, retiring or confirming fixed rules, verdicts, reseals and checks per line of work, with time and channel (dashboard or terminal)." },
-    limits: { de: "Andere Aktionen im Dashboard, etwa Rücksprünge, sind nicht an eine Freigabe gebunden und zählen hier nicht. Projektregeln brauchen die Freigabe der Person, sind aber nicht signiert und zählen hier deshalb nicht; ebenso wenig in Claude Code bestätigte Pläne (nicht signiert).", en: "Other dashboard actions, such as rewinds, are not bound to an approval and do not count here. Project rules need the person's approval but are not signed, so they do not count here either; nor do plans confirmed in Claude Code (not signed)." },
+    what: { de: "Freigaben einer Person oder eines Prüf-Agenten: feste Regeln anlegen, annehmen, ablehnen, beenden oder als erfüllt bestätigen, Projektregeln anlegen, annehmen, ablehnen oder bestätigen, Prüfurteile, Neu-Versiegelungen und Prüfläufe je Arbeitslinie, mit Zeitpunkt und Weg (Dashboard oder Terminal).", en: "Approvals by a person or an audit agent: adding, accepting, rejecting, retiring or confirming fixed rules, adding, accepting, rejecting or confirming project rules, verdicts, reseals and checks per line of work, with time and channel (dashboard or terminal)." },
+    limits: { de: "Andere Aktionen im Dashboard, etwa Rücksprünge, sind nicht an eine Freigabe gebunden und zählen hier nicht; ebenso wenig in Claude Code bestätigte Pläne (nicht signiert).", en: "Other dashboard actions, such as rewinds, are not bound to an approval and do not count here; nor do plans confirmed in Claude Code (not signed)." },
     assurance: "signed",
     chained: "partly",
     scope: "project",
@@ -224,12 +224,12 @@ export const EVIDENCE_SOURCES: Record<EvidenceSource, EvidenceSourceInfo> = {
   },
   rules: {
     label: { de: "Projektregeln", en: "Project rules" },
-    what: { de: "Regeln, die Agenten in der Kontext-Kapsel mitgegeben werden, mit Herkunft (manuell, Analyse, Agent) und der Entscheidung der Person: wer, über welchen Weg, wann.", en: "Rules handed to agents in the context capsule, with their origin (manual, analysis, agent) and the person's decision: who, through which channel, when." },
-    limits: { de: "Aktiv wird eine Regel über den Freigabe-Modus im Dashboard oder ein interaktives Terminal mit Bestätigung; Agenten können nur vorschlagen. Wer entschieden hat, ist ein angegebener Name, nicht geprüft. Ein Agent mit Shell unter dem Konto der Person kann diese Wege nutzen, und eine Änderung direkt an der Datei bleibt unbemerkt (nicht signiert, nicht in der Hash-Kette). Ältere Regeln tragen keine Entscheidung und können von Agenten stammen. Ob Regeln eingehalten werden, prüft Scenaria nicht.", en: "A rule becomes active through the approval mode in the dashboard or an interactive terminal with confirmation; agents can only propose. Who decided is a stated name, not verified. An agent with a shell under the person's account can use these paths, and an edit made directly to the file goes unnoticed (not signed, not in the hash chain). Older rules carry no decision and may come from agents. Scenaria does not check whether rules are kept." },
-    assurance: "recorded",
+    what: { de: "Regeln, die Agenten in der Kontext-Kapsel mitgegeben werden, mit Herkunft (manuell, Analyse, Agent) und der signierten Entscheidung der Person: wer, über welchen Weg, wann.", en: "Rules handed to agents in the context capsule, with their origin (manual, analysis, agent) and the person's signed decision: who, through which channel, when." },
+    limits: { de: "Agenten bekommen nur Regeln mit gültiger Signatur der Person oder eines Teammitglieds, dessen Schlüssel dieser Rechner vertraut (im Team müssen sich alle gegenseitig vertrauen); Agenten können nur vorschlagen. Eine Änderung an der Datei, eine zurückgespielte ältere Fassung, eine wieder eingefügte entfernte Regel oder eine Regel aus einem anderen Projekt wird erkannt, sobald dieser Rechner den neueren Stand einmal gesehen hat; ein neuer Rechner vertraut der ersten gültigen Fassung. Der Name in der Entscheidung ist eine Angabe. Voraussetzung, die Scenaria nicht erzwingt: Agenten laufen in einer Sandbox ohne Zugriff auf den Scenaria-Konfigurationsordner (Schlüssel, vertraute Schlüssel, Marken) und starten Scenaria nicht unter dem Benutzerkonto der Person. Ältere Regeln zählen erst nach einer Bestätigung. Ob Regeln eingehalten werden, prüft Scenaria nicht.", en: "Agents receive only rules with a valid signature of the person or of a teammate whose key this machine trusts (in a team, everyone must trust each other); agents can only propose. An edit to the file, an older version restored, a removed rule put back or a rule from another project is detected once this machine has seen the newer state; a new machine trusts the first valid version. The name in the decision is a statement. A precondition Scenaria does not enforce: agents run in a sandbox without access to the Scenaria config folder (key, trusted keys, marks) and do not start Scenaria under the person's account. Older rules count only after a confirmation. Scenaria does not check whether rules are kept." },
+    assurance: "signed",
     chained: "no",
     scope: "project",
-    timed: "partly",
+    timed: "yes",
   },
   health: {
     label: { de: "Projekt-Check", en: "Health check" },

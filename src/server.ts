@@ -36,7 +36,7 @@ import { adoptRecommendation, expertAnalysis, factSheet, getReport, listPersonal
 import { forgetProject, listProjects, registerProject } from "./core/projects.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
-export const VERSION = "0.9.4";
+export const VERSION = "0.9.5";
 
 const KEY_ENVS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "AZURE_OPENAI_API_KEY"];
 
@@ -92,11 +92,29 @@ function openPath(path: string) {
   void launch(cmd, [path]);
 }
 
+/**
+ * The operating system's own "open" program, by absolute path (S2-1): a program placed earlier in PATH
+ * (or a BROWSER variable) must never receive the approval link.
+ */
+function systemOpener(): string | null {
+  if (process.platform === "darwin") return "/usr/bin/open";
+  if (process.platform === "win32") return join(process.env.SystemRoot || "C:\\Windows", "System32", "cmd.exe");
+  return ["/usr/bin/xdg-open", "/usr/local/bin/xdg-open", "/bin/xdg-open"].find((x) => existsSync(x)) ?? null;
+}
+
+/** The environment for the opener: the caller's, without anything that redirects the link. */
+function openerEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.BROWSER;
+  if (process.platform !== "win32") env.PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+  return env;
+}
+
 /** Start a helper program; resolves false when it does not exist (never crashes the server). */
-function launch(cmd: string, args: string[]): Promise<boolean> {
+function launch(cmd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<boolean> {
   return new Promise((resolve) => {
     try {
-      const c = spawn(cmd, args, { stdio: "ignore", detached: true });
+      const c = spawn(cmd, args, { stdio: "ignore", detached: true, ...(env ? { env } : {}) });
       c.once("error", () => resolve(false)); // ENOENT arrives as an event, not as an exception
       c.once("spawn", () => {
         c.unref();
@@ -846,11 +864,20 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         }
         // ---------- project rules: agents read the active ones; adding, accepting, rejecting and removing are the person's ----------
         if (req.method === "GET" && p === "/api/rules") return send(res, 200, s.rules());
-        // The proposals' texts are for the person; agents only learn how many are waiting.
+        // The texts of proposals and of rules waiting for confirmation are for the person; agents only learn counts.
         if (req.method === "GET" && p === "/api/rules/proposals") {
           const proposals = s.ruleProposals();
+          const issues = s.ruleIssues();
           const approval = isApprover(req);
-          return send(res, 200, { proposals: approval ? proposals : [], count: proposals.length, approval });
+          return send(res, 200, {
+            proposals: approval ? proposals : [],
+            count: proposals.length,
+            unconfirmed: approval ? issues.unconfirmed : [],
+            tampered: approval ? issues.tampered : [],
+            missing: approval ? issues.missing : [],
+            needsYou: issues.unconfirmed.length + issues.tampered.length,
+            approval,
+          });
         }
         if (req.method === "POST" && p === "/api/rules") {
           const b = await readBody(req);
@@ -868,6 +895,16 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           if (typeof b?.text !== "string" || !b.text.trim()) return send(res, 400, { error: "text required: the proposal's text as shown to you" });
           try {
             return send(res, 200, s.approveRule(String(b?.id ?? ""), { by: approver, via: "dashboard" }, b.text));
+          } catch (err: any) {
+            const msg = String(err?.message ?? err);
+            return send(res, /^No rule/.test(msg) ? 404 : /busy/.test(msg) ? 503 : 409, { error: msg });
+          }
+        }
+        if (req.method === "POST" && p === "/api/rules/confirm") {
+          const b = await readBody(req);
+          if (typeof b?.text !== "string" || !b.text.trim()) return send(res, 400, { error: "text required: the rule's text as shown to you" });
+          try {
+            return send(res, 200, s.confirmRule(String(b?.id ?? ""), { by: approver, via: "dashboard" }, b.text));
           } catch (err: any) {
             const msg = String(err?.message ?? err);
             return send(res, /^No rule/.test(msg) ? 404 : /busy/.test(msg) ? 503 : 409, { error: msg });
@@ -997,9 +1034,10 @@ function openBrowser(url: string): Promise<boolean> {
     browserLog.push(url);
     return Promise.resolve(process.env.SCENARIA_NO_BROWSER !== "fail");
   }
-  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+  const cmd = systemOpener();
+  if (!cmd) return Promise.resolve(false);
   const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-  return launch(cmd, args);
+  return launch(cmd, args, openerEnv());
 }
 
 function realRoot(p: string) {
@@ -1029,7 +1067,9 @@ export async function startServer(
   }
   const approvalCode = randomBytes(18).toString("base64url");
   // Print the link only to a person's terminal: when an agent starts the server, its output is the agent's.
-  const showLink = opts.showApprovalLink ?? Boolean(process.stdout.isTTY);
+  // The approval link is handed to the browser only, never printed (S1-1): a program that fakes a terminal
+  // would read it. `--print-approval-link` exists for a machine without a browser, chosen by the person.
+  const showLink = opts.showApprovalLink ?? false;
   const approverToken = opts.approverToken ?? process.env.SCENARIA_APPROVER_TOKEN;
   registerProject(s.root, s.config().projectName);
   // One server, one approval session for the person; the dashboard can switch between their projects.
@@ -1122,7 +1162,7 @@ export async function startServer(
           : `  approve: off over HTTP (set SCENARIA_APPROVER_TOKEN to allow approvals of canon and project rules in team mode)`
         : showLink
           ? `  approve: ${url}/?approve=${approvalCode}  (approval link for canon and project rules — works once, only for you)`
-          : `  approve: ${opts.open ? "opened in your browser" : "start Scenaria from your own terminal to get the approval link"}`,
+          : `  approve: ${opts.open ? "opened in your browser" : "click the lock 🔒 in the dashboard — Scenaria opens the approval link in your browser"}`,
       "Ctrl+C to stop.",
       "",
     ].join("\n"),

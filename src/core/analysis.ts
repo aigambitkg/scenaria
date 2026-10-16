@@ -20,6 +20,7 @@ import { estimateTokens, optionLabel, taskNodes, taskRollup } from "./context.js
 import { writeJsonAtomic } from "./store.js";
 import type { AnalysisConfig, ProjectRule, RuleDecision, ScenariaNode } from "./types.js";
 import type { CanonEvent } from "./canon.js";
+import { projectIdChanged } from "./canon.js";
 import { gateResults } from "./gate.js";
 import { effectiveStatus, isConfirmedPass, isUnconfirmedPass } from "./verdict.js";
 
@@ -117,7 +118,7 @@ function emptyStat(): AgentStat {
 export function metrics(
   nodes: ScenariaNode[],
   head: string | null,
-  opts: { rewinds?: number; integrity?: Map<string, "ok" | "tampered" | "unsealed">; ledgerBrokenAt?: number | null; ledgerMissing?: boolean; ledgerReplaced?: boolean; ledgerDiverged?: { expected: { lines: number }; found: { lines: number }; kind: "extended" | "rewritten"; since: string[] } | null; resealsUnproven?: string[]; reseals?: { id: string; at: string; kind: string; by: string }[]; restarted?: { at: string; since: string } | null; confirmed?: Set<string>; verdictsUntrusted?: string[]; verdictsRevoked?: string[]; verdictsSuperseded?: string[]; verdictsRemoved?: string[]; canon?: CanonEvent[]; canonError?: string | null; canonMissing?: string[]; gateTampered?: string[] } = {},
+  opts: { rewinds?: number; integrity?: Map<string, "ok" | "tampered" | "unsealed">; ledgerBrokenAt?: number | null; ledgerMissing?: boolean; ledgerReplaced?: boolean; ledgerDiverged?: { expected: { lines: number }; found: { lines: number }; kind: "extended" | "rewritten"; since: string[] } | null; resealsUnproven?: string[]; reseals?: { id: string; at: string; kind: string; by: string }[]; restarted?: { at: string; since: string } | null; confirmed?: Set<string>; verdictsUntrusted?: string[]; verdictsRevoked?: string[]; verdictsSuperseded?: string[]; verdictsRemoved?: string[]; canon?: CanonEvent[]; canonError?: string | null; canonMissing?: string[]; gateTampered?: string[]; rules?: { unconfirmed: { id: string; text: string }[]; tampered: { id: string; text: string }[]; missing: string[]; proposals: number }; projectIdChanged?: { bound: string; inConfig: string } | null } = {},
 ): Metrics {
   const issues: Issue[] = [];
   // Canon: fixed points broken, checks failed, deadlines passed, proposals waiting.
@@ -146,6 +147,16 @@ export function metrics(
     const proposed = canon.filter((k) => k.status === "proposed").length;
     if (proposed) issues.push({ code: "canon_proposed", severity: "low", message: `${proposed} proposed canon event(s) await your approval.`, value: proposed });
     if (!act.length && nodes.filter((n) => n.type === "decision").length >= 5) issues.push({ code: "no_canon", severity: "low", message: "No canon events (fixed points) yet — decisions cannot be checked against hard constraints." });
+  }
+  if (opts.projectIdChanged) issues.push({ code: "project_id_changed", severity: "high", message: `The project id in .scenaria/config.json was changed ("${opts.projectIdChanged.inConfig || "(missing)"}"; this machine bound "${opts.projectIdChanged.bound}" to the folder) — edited by hand or by an agent. Signatures are still checked against the bound id; restore config.json. (A new project in this folder gets a new id only when you confirm it in a terminal: scenaria init.)`, subject: opts.projectIdChanged.inConfig || "-" });
+  // Project rules (0.9.5): only rules signed by the person reach agents.
+  if (opts.rules) {
+    const r = opts.rules;
+    if (r.unconfirmed.length) issues.push({ code: "rules_unconfirmed", severity: "medium", message: `${r.unconfirmed.length} project rule(s) are not confirmed by you (not signed yet, or signed by a key this machine does not trust) — agents do not receive them until you confirm them (Analysis → Project rules).`, value: r.unconfirmed.length });
+    // Only the id: agents read the health check too, and a rule that is not in effect must not reach them as text.
+    for (const x of r.tampered) issues.push({ code: "rule_tampered", severity: "high", message: `Project rule ${x.id} was changed outside Scenaria (signature invalid or older than seen) — agents do not receive it until you check and confirm it (Analysis → Project rules).`, subject: x.id });
+    for (const id of r.missing) issues.push({ code: "rule_missing", severity: "high", message: `Project rule ${id} was deleted outside Scenaria — agents no longer receive it. Restore memory.json or add the rule again.`, subject: id });
+    if (r.proposals) issues.push({ code: "rules_proposed", severity: "low", message: `${r.proposals} project rule proposal(s) from agents await your decision.`, value: r.proposals });
   }
   if (opts.ledgerMissing) issues.push({ code: "ledger_missing", severity: "high", message: "The integrity ledger was deleted — changes since then cannot be verified. Review, then run: scenaria integrity --reseal" });
   if (opts.ledgerBrokenAt) issues.push({ code: "ledger_broken", severity: "high", message: `The integrity ledger was edited or truncated (line ${opts.ledgerBrokenAt}) — history may have been manipulated.`, value: opts.ledgerBrokenAt });
@@ -290,7 +301,7 @@ export function metrics(
   let health = 100;
   if (!root?.goal) health -= 20;
   health -= Math.min(40, issues.filter((i) => ["tampered", "ledger_broken", "ledger_missing", "ledger_replaced", "ledger_diverged", "reseal_unproven", "verdict_untrusted", "verdict_removed"].includes(i.code)).length * 20);
-  health -= Math.min(30, issues.filter((i) => ["canon_broken", "canon_check_failed", "canon_tampered", "canon_untrusted", "canon_missing", "canon_check_tampered", "canon_gate_tampered", "canon_unreadable"].includes(i.code) && i.severity === "high").length * 15);
+  health -= Math.min(30, issues.filter((i) => ["canon_broken", "canon_check_failed", "canon_tampered", "canon_untrusted", "canon_missing", "canon_check_tampered", "canon_gate_tampered", "canon_unreadable", "rule_tampered", "rule_missing", "project_id_changed"].includes(i.code) && i.severity === "high").length * 15);
   health -= Math.min(25, Math.round((1 - decisionQualityAvg) * 40));
   health -= Math.min(30, issues.filter((i) => i.code === "built_on_failure").length * 15);
   health -= Math.min(10, counts.openDecisions * 2);
@@ -322,7 +333,8 @@ export function projectMetrics(s: Scenaria): Metrics {
   const integ = s.integrity();
   return metrics(s.store.listNodes(), s.store.readState().head, { rewinds, integrity: integ.state, ledgerBrokenAt: integ.ledgerBrokenAt, ledgerMissing: integ.ledgerMissing, ledgerReplaced: integ.ledgerReplaced, ledgerDiverged: integ.ledgerDiverged, resealsUnproven: integ.resealsUnproven, reseals: integ.reseals, restarted: integ.restarted, confirmed: integ.confirmed, verdictsUntrusted: integ.verdictsUntrusted, verdictsRevoked: integ.verdictsRevoked, verdictsSuperseded: integ.verdictsSuperseded, verdictsRemoved: integ.verdictsRemoved, ...(() => {
     const cs = s.canonState();
-    return { canon: cs.events, canonError: cs.error, canonMissing: cs.missing, gateTampered: gateResults(s).tampered };
+    const ri = s.ruleIssues();
+    return { canon: cs.events, canonError: cs.error, canonMissing: cs.missing, gateTampered: gateResults(s).tampered, rules: { unconfirmed: ri.unconfirmed, tampered: ri.tampered, missing: ri.missing, proposals: s.ruleProposals().length }, projectIdChanged: projectIdChanged(s.store) };
   })() });
 }
 

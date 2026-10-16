@@ -4,7 +4,7 @@ This is the working protocol for the next agent or developer who continues Scena
 
 - **Product owner:** Kev (Kevin Grundmann, AI-Gambit). He reads and writes German, so give your summaries to him in German. He is not a developer by trade, so explain results in plain words.
 - **License:** MIT. Vendor-neutral: any LLM, any agent, any framework.
-- **State at handoff:** v0.9.4 (2026-10-16, S1: project rules only by the person), branch `main`. All tests pass (`npm test`). GitHub CI was green on Linux and macOS (Node 20 and 22) for 0.9.3.
+- **State at handoff:** v0.9.5 (2026-10-16, S1 + S2: project rules only by the person, signed; approval link never printed), branch `main`. All tests pass (`npm test`). GitHub CI was green on Linux and macOS (Node 20 and 22) for 0.9.3.
 - **Current phase (since 2026-10-14): feature freeze.** Work only on the batch plan in §11, one batch at a time, and start a batch only after Kev's go.
 - **Now (since 2026-10-15): Batch C** (ISO/IEC 42001 audit file), started with Kev's go. Batch B is accepted.
 
@@ -32,9 +32,11 @@ Every review so far has enforced these. Treat them as hard requirements.
 2. **Session keys go only to the same provider.** Use `keyFor`; an OpenAI key never goes to Anthropic. Environment keys go only to official or trusted endpoints.
 3. **Never touch the user's own `.git`.** File snapshots live in a private shadow repository, `.scenaria/shadow.git`. The only exception is opt-in mirror refs.
 4. **Never initialise a project in the home folder.**
-5. **Only a person approves.** "Der Archivar kann diese vorschlagen mit Freigabe durch User": agents may *propose* canon, rules and decisions, but only a person approves. Project rules follow this since 0.9.4 (S1): agents' rules are proposals; `/api/rules*` and `/api/analysis/accept` are person-only; the CLI needs a terminal and a typed confirmation.
+5. **Only a person approves.** "Der Archivar kann diese vorschlagen mit Freigabe durch User": agents may *propose* canon, rules and decisions, but only a person approves. Project rules follow this since 0.9.4 (S1): agents' rules are proposals; `/api/rules*` and `/api/analysis/accept` are person-only; the CLI needs a terminal and a typed confirmation. Since 0.9.5 (S2) every rule decision is signed, and only signed rules reach agents.
 6. **Person-only actions need a person.**
    - Anything that spends the person's model quota or acts for them needs the **approval session** in the dashboard (the "approval mode": cookie from a single-use approval link that `scenaria start` opens in the browser, or that the lock 🔒 in the dashboard asks Scenaria to open), or an **interactive TTY** in the CLI.
+   - The approval link is never printed (since 0.9.5, S2): Scenaria hands it to the browser only; `--print-approval-link` is the person's explicit choice for a machine without a browser.
+   - **Agents run in a sandbox** (Kev's decision, 2026-10-16; a precondition Scenaria does not enforce): the agent, and every process it starts, has no access to the Scenaria config folder (`~/.config/scenaria`: approver key, trusted keys, anchors, project-id bindings) and never starts Scenaria under the person's account. Otherwise any Scenaria process the agent starts signs with the person's key. Scenaria adds speed bumps (link only to the browser via the system opener by absolute path without `BROWSER`; `--print-approval-link` only at a terminal with a typed confirmation), but these are not a security boundary.
    - The approval link never travels in an HTTP answer. `POST /api/approval/open` only makes the Scenaria process hand a fresh link to the operating system's browser (local mode; single use, valid 60 s, used up even by an already approved browser; once per 15 s from the dashboard, once per minute otherwise; logged with who asked). This covers check commands, approvals, the chat, the relay, the multiverse, the AI check, backtests, settings and project switching.
    - In `src/server.ts` this is enforced by the `personOnly` prefix list (for example every `POST /api/forecast*`). New person actions must go under such a prefix.
    - The CLI checks `process.stdin.isTTY && process.stdout.isTTY`.
@@ -58,7 +60,7 @@ npm install
 npm run build          # tsc (core → dist/) + vite (ui → dist/ui)
 npm test               # node --test, all test/*.test.mjs, ~4–6 min
 npm run typecheck:ui   # strict TS check of the dashboard
-node dist/cli.js start # dashboard + approval link (in a project folder)
+node dist/cli.js start # dashboard, approval link opened in the browser (in a project folder)
 ```
 
 - **Node:** ≥ 20. Kev's Mac has Node 24.
@@ -187,7 +189,7 @@ A good next task is a committed e2e suite (`test/e2e/`, opt-in) built from this.
   1. `npm run build`, if `dist/` was not shipped.
   2. Restart `scenaria start`.
   3. Hard-reload the browser (Cmd+Shift+R).
-  4. Open the approval link again.
+  4. Unlock the approval mode again (the lock 🔒 in the dashboard).
 
 ## 9. Open points and good next steps
 
@@ -197,10 +199,11 @@ From the latest reviews (all optional and low):
 
 Resolved in S1 (0.9.4, 2026-10-16, Kev's decision): agents' project rules are only proposals (K5), and adding, accepting, rejecting and removing rules is the person's (K4). Review S1-1…S1-11: S1-3 to S1-11 fixed with tests (`test/rules.test.mjs`).
 
-Open from the S1 review (Kev decides):
-- **S1-1 (HIGH, older than S1, affects all of rule 6):** an agent with a shell under the person's account can fake a terminal (`script`). With it, it passes the CLI's terminal check and typed confirmation, and `scenaria serve`/`start` print the approval link to that "terminal". Options: never print the approval link to stdout (only hand it to the browser), and document that real separation needs the agent under its own OS account or in a sandbox.
-- **S1-2 (MEDIUM):** `memory.json` is not signed. An edit made directly to the file (or a commit by someone else) activates a rule. Option: sign rule decisions with the person's approver key like canon, show only verified rules to agents, and add a one-time "confirm older rules" step in the dashboard.
-- Release notes for 0.9.4: in team mode without `SCENARIA_APPROVER_TOKEN`, token holders can no longer manage rules over HTTP; rules that agents added before 0.9.4 stop reaching agents until the person accepts them.
+Resolved in S2 (0.9.5, 2026-10-16, Kev's decisions): S1-1 (the approval link is never printed; agents run in a sandbox, documented) and S1-2 (rule decisions are signed; only signed rules reach agents; older rules need one confirmation).
+
+S2 review (S2-1…S2-10), fixed: S2-1 (approval link: system opener by absolute path, cleaned environment; `--print-approval-link` only at a terminal with typed confirmation; sandbox scope documented), S2-2 (removals kept as signed tombstones, so teammates see them), S2-3 (project id bound to the folder outside the project, `project-ids.json`; signatures of canon and rules are checked against it; `project_id_changed` finding), S2-4 (unsigned entries naming an agent are proposals; origin and date shown), S2-5 (ids never reused, also from the marks), S2-6 (rule trust cached by content hash and trust files), S2-8 (agents' shells see counts only), S2-9 (ISO wording), S2-10 (tests). Open, LOW: S2-7 (anchor writes have no lock across processes, like canon).
+
+- Release notes for 0.9.4/0.9.5: in team mode without `SCENARIA_APPROVER_TOKEN`, token holders can no longer manage rules over HTTP; rules that agents added before 0.9.4 stop reaching agents until the person accepts them; since 0.9.5 every older rule reaches agents only after the person confirms it once (dashboard → Analysis → Project rules, or `scenaria rules confirm <id>`); the approval link is no longer printed in the terminal.
 
 Open after Batch A (from the reviews, documented limits):
 - The anchor is per machine. A project used from two computers, or from a devcontainer with another home, reports "extended" writes (medium, with the steps named). External anchoring (git remote / signed export) is on the roadmap.
@@ -228,6 +231,7 @@ Product ideas already discussed or noted (see `docs/ROADMAP.md`; the batch plan 
 | 0.9.2 | Batch A (rule 11): verdict origins; only the person or a registered audit agent can verify or reseal; signed, work-bound verdicts; anchor with high-water mark outside the project; reseal records; audit-agent registry and signed requests; dashboard reseal; two independent review rounds (K1–K11, R1–R7) |
 | 0.9.3 | Batch B (office users, two review rounds K1–K21): three views (Simple / Audit / Manage), Simple view with history in plain words, "Back to this state" + Undo, "What did the AI do?", states as folders; plain wording DE/EN incl. help and onboarding; settings with one model and "Advanced"; forecasts, relay and Prüf-Experte under "Extensions"; Claude Desktop per project; start icon; approval mode without copying a link (lock 🔒); a second start reuses the running Scenaria; macOS CI fix (real folder paths in the cross-project report, APFS clones in snapshot folders) |
 | 0.9.4 | S1 (security rule 5 for project rules): agents only propose rules; adding, accepting, rejecting and removing are the person's (approval session, or terminal with typed confirmation); decisions recorded; proposals hidden from agents; ids never reused; accepting needs the text the person saw; two review rounds (K4/K5, S1-1…S1-11) |
+| 0.9.5 | S2: project rules signed like canon (revision, anchor outside the project; tampered, rolled-back and deleted rules detected; older rules need one confirmation); only signed rules reach agents; the approval link is never printed (`--print-approval-link` for a machine without a browser); agents run in a sandbox (documented) |
 
 ## 11. Product decisions (2026-10-14) and the batch plan
 
@@ -296,7 +300,7 @@ Product ideas already discussed or noted (see `docs/ROADMAP.md`; the batch plan 
 
 ### Batch C: audit file (ISO/IEC 42001) — IN PROGRESS (Kev's go 2026-10-15)
 - **Steps (one commit each, an independent review each):**
-  - **C1, catalogue (built 2026-10-15, three review rounds K1–K17, R1–R10; waiting for Kev's mapping check in `docs/intern/batch-c/zuordnung-pruefen.md`):** the 38 Annex A controls as a data module (`src/core/iso42001.ts`, no imports, shared with the UI): own short titles in DE/EN, the area, the evidence sources in Scenaria, the best coverage Scenaria can reach (evidenced / partly / organisational) and what the organisation must document. Kev checks the mapping (`docs/intern/batch-c/`) before C2.
+  - **C1, catalogue (built 2026-10-15, three review rounds K1–K17, R1–R10; DONE — Kev accepted the mapping on 2026-10-16 for now; controls Scenaria does not carry yet are added later, once everything runs):** the 38 Annex A controls as a data module (`src/core/iso42001.ts`, no imports, shared with the UI): own short titles in DE/EN, the area, the evidence sources in Scenaria, the best coverage Scenaria can reach (evidenced / partly / organisational) and what the organisation must document. Kev checks the mapping (`docs/intern/batch-c/`) before C2.
   - **C2, evaluation:** compute each control's status from the project's real data, with a period filter, the integrity status and the list of approvals and reseals.
   - **C3, organisational evidence:** document reference, owner and date per control; person-only and signed; an edited file shows as unverified.
   - **C4, export and view:** signed export (PDF, Markdown, JSON) and a read-only view for auditors; the current "Prüfung" area (forecast audits) moves to the extensions. Kev decides beforehand how the PDF is made and how an auditor gets access.

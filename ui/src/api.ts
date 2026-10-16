@@ -166,7 +166,8 @@ export const api = {
   rules: () => req<ProjectRule[]>("/api/rules"),
   addRule: (text: string) => req<ProjectRule>("/api/rules", { text }),
   deleteRule: (id: string) => req<{ ok: boolean }>("/api/rules/delete", { id }),
-  ruleProposals: () => req<{ proposals: ProjectRule[]; count: number; approval: boolean }>("/api/rules/proposals"),
+  ruleProposals: () => req<{ proposals: ProjectRule[]; count: number; unconfirmed: (ProjectRule & { trust: string })[]; tampered: (ProjectRule & { trust: string })[]; missing: string[]; needsYou: number; approval: boolean }>("/api/rules/proposals"),
+  confirmRule: (id: string, text: string) => req<ProjectRule>("/api/rules/confirm", { id, text }),
   approveRule: (id: string, text: string) => req<ProjectRule>("/api/rules/approve", { id, text }),
   rejectRule: (id: string) => req<{ ok: boolean }>("/api/rules/reject", { id }),
   // v0.7

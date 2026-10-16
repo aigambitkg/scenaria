@@ -31,7 +31,9 @@ Setup
   init [--for <targets>] [--no-rules]   Initialize .scenaria/ and wire agents:
                                         claude, claude-desktop, cursor, vscode, gemini, codex, windsurf,
                                         generic, all (all = every agent except the Claude Desktop app)
-  ui [--port 4477] [--no-open]          Dashboard / scenario map (local only)
+  ui [--port 4477] [--no-open] [--print-approval-link]
+                                        Dashboard / scenario map (local only). The approval link goes to your
+                                        browser; --print-approval-link only on a machine without a browser
   serve [--host 0.0.0.0] [--port 4477] [--token ..]
                                         Dashboard + HTTP API for teams (token required off-localhost)
   mcp                                   MCP server (stdio) for any MCP client
@@ -100,7 +102,8 @@ Prompts, analysis & rules
   forecast [<decision> | --prompt "<text>" [--options "variant A|variant B"]] [--quick]
                                         Multiverse forecast: does each option / prompt keep the context? (no args: list + hit rate)
                                         Health check; with --llm: pattern analysis by ANY LLM (Ollama, OpenAI, Anthropic, …)
-  rules [add "<rule>" | rm <id>]        Project rules every capsule and prompt carries
+  rules [add "<rule>" | rm <id> | approve <id> | reject <id> | confirm <id>]
+                                        Project rules every capsule carries (yours only, signed; agents propose)
 
 Verify & document
   verify <id> [--status passed|warning|failed] [--notes ..] [--by ..] [--run] [--no-auto]
@@ -178,6 +181,7 @@ const opts = {
   name: { type: "string" },
   port: { type: "string" },
   "no-open": { type: "boolean" },
+  "print-approval-link": { type: "boolean" },
   goal: { type: "string" },
   brief: { type: "string" },
   option: { type: "string", short: "o", multiple: true },
@@ -311,6 +315,20 @@ function isPersonTerminal() {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
 
+/**
+ * `--print-approval-link`: only for a machine without a browser, and only the person's choice at an
+ * interactive terminal with a typed confirmation (S2-1) — never from an agent's shell.
+ */
+async function allowPrintedApprovalLink(v: Record<string, unknown>): Promise<boolean> {
+  if (!v["print-approval-link"]) return false;
+  await personConfirm(
+    "print",
+    "Print the approval link in this terminal? Use this only on a machine without a browser: anyone who can read this terminal gets your approval rights.",
+    "--print-approval-link is the person's choice: run it in an interactive terminal. Without it, Scenaria opens the approval link in your browser.",
+  );
+  return true;
+}
+
 /** A person's action: an interactive terminal AND typing the confirmation word on it. */
 async function personConfirm(confirm: string, what: string, notInteractive: string) {
   if (!isPersonTerminal()) throw new Error(notInteractive);
@@ -396,7 +414,7 @@ async function main() {
         tok = randomBytes(18).toString("base64url");
         process.stdout.write(`${C.yellow}No token given — generated one for this session:${C.reset} ${tok}\n`);
       }
-      await startServer(s, { port: v.port ? Number(v.port) : 4477, open: cmd === "ui" && !v["no-open"], host, token: tok, showToken: tok !== token });
+      await startServer(s, { port: v.port ? Number(v.port) : 4477, open: cmd === "ui" && !v["no-open"], host, token: tok, showToken: tok !== token, showApprovalLink: await allowPrintedApprovalLink(v) });
       return;
     }
     case "watch": {
@@ -450,7 +468,7 @@ async function main() {
       // Baseline AFTER wiring, so agent config files are part of the starting state.
       if (!v["no-watch"]) s.ensureBaseline({ agent: "scenaria", user: v.user, source: "cli" });
       const port = v.port ? Number(v.port) : 4477;
-      const srv = await startServer(s, { port, open: !v["no-open"], host: "127.0.0.1", quiet: true });
+      const srv = await startServer(s, { port, open: !v["no-open"], host: "127.0.0.1", quiet: true, showApprovalLink: await allowPrintedApprovalLink(v) });
       const base = srv.url;
       const lines = [
         "",
@@ -459,7 +477,7 @@ async function main() {
         `  Dashboard      ${C.cyan}${base}${C.reset}`,
         srv.approvalUrl
           ? `  Approval link  ${C.cyan}${srv.approvalUrl}${C.reset}  ${C.dim}(approvals: canon and project rules — works once${v["no-open"] ? "" : "; already opened in your browser"})${C.reset}`
-          : `  Approval link  ${C.dim}${v["no-open"] ? "only shown in an interactive terminal" : "opened in your browser"}${C.reset}`,
+          : `  Approval       ${C.dim}${v["no-open"] ? "click the lock 🔒 in the dashboard — Scenaria opens the approval link in your browser" : "opened in your browser (never printed here)"}${C.reset}`,
         `  Agents wired   ${targets.length ? targets.join(", ") : "none detected (MCP/HTTP/CLI still available)"}`,
         `  Auto-save      ${v["no-watch"] ? "off" : "on — every file change becomes a version"}`,
         "",
@@ -995,7 +1013,7 @@ async function main() {
     case "rules": {
       const s = Scenaria.open(v.root);
       const sub = p[0];
-      if (sub === "add" || sub === "rm" || sub === "remove" || sub === "approve" || sub === "reject") {
+      if (sub === "add" || sub === "rm" || sub === "remove" || sub === "approve" || sub === "reject" || sub === "confirm") {
         // Project rules reach every agent: adding, accepting, rejecting and removing are the person's (rule 5):
         // an interactive terminal AND typing the confirmation (a speed bump against agents, like canon).
         const notPerson = 'Project rules are the person\'s decision: run this in an interactive terminal, or use the dashboard (lock → approval mode). Agents can only propose a rule, e.g. with a ```scenaria {"rule": "…"}``` block.';
@@ -1008,12 +1026,18 @@ async function main() {
           const r = s.addRule(text, "manual", undefined, decision);
           return out(`${r.id}: ${r.text}`, r);
         }
-        const target = s.ruleProposals().find((r) => r.id === p[1]) ?? s.rules().find((r) => r.id === p[1]);
+        const iss = s.ruleIssues();
+        const target = [...s.ruleProposals(), ...s.rules(), ...iss.unconfirmed, ...iss.tampered].find((r) => r.id === p[1]);
         if (!target) throw new Error(`No rule ${p[1] ?? ""}`);
         if (sub === "approve") {
           await personConfirm("approve", `Accept ${target.id}? Every agent receives it from now on:\n  ${target.text}`, notPerson);
           const r = s.approveRule(target.id, decision, target.text);
           return out(`${C.green}✔${C.reset} ${r.id} is active: ${r.text}`, r);
+        }
+        if (sub === "confirm") {
+          await personConfirm("confirm", `Confirm ${target.id}? It is signed with your approver key, and every agent receives it from now on:\n  ${target.text}`, notPerson);
+          const r = s.confirmRule(target.id, decision, target.text);
+          return out(`${C.green}✔${C.reset} ${r.id} is confirmed: ${r.text}`, r);
         }
         if (sub === "reject") {
           await personConfirm("reject", `Reject ${target.id}?\n  ${target.text}`, notPerson);
@@ -1026,11 +1050,24 @@ async function main() {
       }
       const rules = s.rules();
       const proposals = s.ruleProposals();
+      const issues = s.ruleIssues();
+      // Texts of rules that are NOT in effect are for the person: an agent's shell only learns the counts (S2-8).
+      if (!isPersonTerminal()) {
+        const waiting = proposals.length + issues.unconfirmed.length + issues.tampered.length + issues.missing.length;
+        const lines = [
+          ...(rules.length ? rules.map((r) => `${r.id}  ${r.text}  ${C.dim}(${r.source})${C.reset}`) : ["No project rules in effect."]),
+          ...(waiting ? ["", `${proposals.length} proposal(s), ${issues.unconfirmed.length} rule(s) to confirm, ${issues.tampered.length} changed, ${issues.missing.length} deleted — the person decides in the dashboard or an interactive terminal.`] : []),
+        ];
+        return out(lines.join("\n"), { rules, counts: { proposals: proposals.length, unconfirmed: issues.unconfirmed.length, tampered: issues.tampered.length, missing: issues.missing.length } });
+      }
       const lines = [
         ...(rules.length ? rules.map((r) => `${r.id}  ${r.text}  ${C.dim}(${r.source})${C.reset}`) : ['No project rules yet. Add one: scenaria rules add "<rule>"']),
         ...(proposals.length ? ["", "Proposals (accept: scenaria rules approve <id> · reject: scenaria rules reject <id>):", ...proposals.map((r) => `${r.id}  ${r.text}  ${C.dim}(proposed by ${r.proposedBy ? `"${r.proposedBy}" (stated)` : "an agent"})${C.reset}`)] : []),
+        ...(issues.unconfirmed.length ? ["", "Not confirmed — agents do not receive these until you confirm them (scenaria rules confirm <id>):", ...issues.unconfirmed.map((r) => `${r.id}  ${r.text}  ${C.dim}(${r.trust === "untrusted" ? "signed by a key this machine does not trust" : "not signed yet"}; ${r.source}, ${r.createdAt.slice(0, 10)})${C.reset}`)] : []),
+        ...(issues.tampered.length ? ["", `${C.red}Changed outside Scenaria — not in effect (check, then confirm or remove):${C.reset}`, ...issues.tampered.map((r) => `${r.id}  ${r.text}`)] : []),
+        ...(issues.missing.length ? ["", `${C.red}Deleted outside Scenaria:${C.reset} ${issues.missing.join(", ")}`] : []),
       ];
-      return out(lines.join("\n"), { rules, proposals });
+      return out(lines.join("\n"), { rules, proposals, ...issues });
     }
     case "decide": {
       const s = Scenaria.openOrInit(v.root);

@@ -211,17 +211,26 @@ export interface ProjectRule {
   evidence?: string[];
   createdAt: string;
   /**
-   * "proposed": waiting for the person; "rejected": the person said no (kept, so the id is never reused and
-   * the same text cannot be proposed again). Missing (older projects): active, except rules from agents.
+   * "proposed": waiting for the person; "rejected": the person said no; "removed": the person removed it.
+   * Rejected and removed rules are kept (signed), so the id is never reused, the text is not proposed again
+   * and every machine sees the removal. Missing (older projects): active, except rules from agents.
    */
-  status?: "active" | "proposed" | "rejected";
+  status?: "active" | "proposed" | "rejected" | "removed";
   /** Who proposed it: the name the agent STATED (not verified), for proposals. */
   proposedBy?: string;
   /** The person's decision: by whom and through which channel (dashboard approval mode or terminal). */
   decidedBy?: string;
   decidedVia?: "dashboard" | "terminal";
   decidedAt?: string;
+  /** Signature of the person's decision (0.9.5): revision, approver key and Ed25519 signature. */
+  rev?: number;
+  keyId?: string;
+  pub?: string;
+  sig?: string;
 }
+
+/** Can this machine vouch for a rule? Only "verified" active rules reach agents. */
+export type RuleTrust = "verified" | "unsigned" | "untrusted" | "tampered" | "proposal";
 
 /** The person's decision on a rule, recorded with it. */
 export interface RuleDecision {

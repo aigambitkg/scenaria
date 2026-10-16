@@ -94,6 +94,7 @@ The core stays as it is. New features come only through these batches, in this o
 - [x] **A, integrity by a person or an independent audit agent (0.9.2):** reseal only by the person or a registered audit agent (own key outside Scenaria); verdicts carry their origin; self-reported work no longer counts as verified
 - [x] **B, easy to use for office users (0.9.3):** three views (Simple / Audit / Manage), plain wording, one model by default, forecasts and relay moved to "Extensions", Claude Desktop per project, start icon, approval mode without copying a link
 - [x] **S1, project rules only by the person (0.9.4):** agents only propose rules; the person adds, accepts, rejects and removes them (approval mode or terminal with confirmation)
+- [x] **S2, signed project rules (0.9.5):** rules signed like canon; only signed rules reach agents; the approval link is never printed; agents run in a sandbox
 - [ ] **C, audit file for ISO/IEC 42001 (in progress since 2026-10-15):** every Annex A control with evidence from Scenaria, status and fields for organisational evidence; period filter; signed PDF/Markdown/JSON export; read-only access for auditors
 - [ ] **D, the AI manager's view:** cross-project overview, agents and models over time, token use, rules and policies for all projects
 - [ ] **E, course corridor and drift guard** (parked until A–D are done)
@@ -103,7 +104,7 @@ The core stays as it is. New features come only through these batches, in this o
 
 - [ ] Streaming chat answers; chat history browser
 - [ ] Relay with parallel branches (craftsman options explored as forks, gate on each)
-- [ ] Approver keys in the OS keychain / hardware keys (passkey, YubiKey) so a local process cannot read them
+- [ ] Approver keys in the OS keychain / hardware keys (passkey, YubiKey) so a local process cannot read them (until then: agents in a sandbox)
 
 ## Next: capture everywhere
 

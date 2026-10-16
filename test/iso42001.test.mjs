@@ -112,7 +112,6 @@ test("catalogue: evidence sources state assurance, hash-chain, scope, period and
   assert.equal(EVIDENCE_SOURCES.attribution.assurance, "self-reported", "attribution is stated by the caller");
   assert.equal(EVIDENCE_SOURCES.decisions.assurance, "self-reported");
   assert.equal(EVIDENCE_SOURCES.irreversible.assurance, "self-reported");
-  assert.equal(EVIDENCE_SOURCES.rules.assurance, "recorded", "rules are not signed");
   assert.equal(EVIDENCE_SOURCES.rules.chained, "no");
   assert.equal(EVIDENCE_SOURCES.conversations.chained, "no");
   assert.equal(EVIDENCE_SOURCES.auditors.scope, "machine");
@@ -122,15 +121,13 @@ test("catalogue: evidence sources state assurance, hash-chain, scope, period and
   assert.doesNotMatch(JSON.stringify(ANNEX_A_CONTROLS), /lückenlos|complete,? chained/i, "no claim of a complete log");
   for (const k of ["approvals", "signatures", "canon", "reseals"]) assert.equal(EVIDENCE_SOURCES[k].assurance, "signed", k);
   assert.match(EVIDENCE_SOURCES.approvals.limits.de, /nicht an eine Freigabe gebunden/);
-  // Project rules: only the person activates them (S1, review K4/K5), but they are unsigned and outside the
-  // chain — the catalogue says so and never counts them as signed approvals.
+  // Project rules (S1, S2): only rules signed by the person reach agents; the limits are stated.
+  assert.equal(EVIDENCE_SOURCES.rules.assurance, "signed");
   assert.match(EVIDENCE_SOURCES.rules.limits.de, /Agenten können nur vorschlagen/);
-  assert.match(EVIDENCE_SOURCES.rules.limits.de, /Ein Agent mit Shell unter dem Konto der Person kann diese Wege nutzen/);
-  assert.match(EVIDENCE_SOURCES.rules.limits.de, /angegebener Name, nicht geprüft/);
-  assert.match(EVIDENCE_SOURCES.rules.limits.de, /Änderung direkt an der Datei bleibt unbemerkt/);
-  assert.match(EVIDENCE_SOURCES.approvals.limits.de, /Projektregeln brauchen die Freigabe der Person, sind aber nicht signiert/);
-  assert.match(EVIDENCE_SOURCES.rewinds.limits.de, /wer zurückgesprungen ist, wird nicht aufgezeichnet/);
-  assert.match(EVIDENCE_SOURCES.canon.limits.de, /nicht als gebrochen gemeldet/);
+  assert.match(EVIDENCE_SOURCES.rules.limits.de, /Voraussetzung, die Scenaria nicht erzwingt: Agenten laufen in einer Sandbox ohne Zugriff auf den Scenaria-Konfigurationsordner/);
+  assert.match(EVIDENCE_SOURCES.rules.limits.de, /sobald dieser Rechner den neueren Stand einmal gesehen hat/);
+  assert.match(EVIDENCE_SOURCES.rules.limits.de, /Ältere Regeln zählen erst nach einer Bestätigung/);
+  assert.match(EVIDENCE_SOURCES.approvals.what.de, /Projektregeln anlegen, annehmen, ablehnen oder bestätigen/);
   // The status shown for a project can also be "not covered".
   for (const k of ["evidenced", "partly", "organisational", "not_covered"]) assert.ok(both(COVERAGE_LABEL[k]), k);
   for (const k of Object.keys(ASSURANCE_LABEL)) assert.ok(both(ASSURANCE_LABEL[k]), k);
