@@ -118,7 +118,7 @@ function emptyStat(): AgentStat {
 export function metrics(
   nodes: ScenariaNode[],
   head: string | null,
-  opts: { rewinds?: number; integrity?: Map<string, "ok" | "tampered" | "unsealed">; ledgerBrokenAt?: number | null; ledgerMissing?: boolean; ledgerReplaced?: boolean; ledgerDiverged?: { expected: { lines: number }; found: { lines: number }; kind: "extended" | "rewritten"; since: string[] } | null; resealsUnproven?: string[]; reseals?: { id: string; at: string; kind: string; by: string }[]; restarted?: { at: string; since: string } | null; confirmed?: Set<string>; verdictsUntrusted?: string[]; verdictsRevoked?: string[]; verdictsSuperseded?: string[]; verdictsRemoved?: string[]; canon?: CanonEvent[]; canonError?: string | null; canonMissing?: string[]; gateTampered?: string[]; rules?: { unconfirmed: { id: string; text: string }[]; tampered: { id: string; text: string }[]; missing: string[]; proposals: number }; projectIdChanged?: { bound: string; inConfig: string } | null } = {},
+  opts: { rewinds?: number; integrity?: Map<string, "ok" | "tampered" | "unsealed">; stepsMissing?: string[]; ledgerBrokenAt?: number | null; ledgerMissing?: boolean; ledgerReplaced?: boolean; ledgerDiverged?: { expected: { lines: number }; found: { lines: number }; kind: "extended" | "rewritten"; since: string[] } | null; resealsUnproven?: string[]; reseals?: { id: string; at: string; kind: string; by: string }[]; restarted?: { at: string; since: string } | null; confirmed?: Set<string>; verdictsUntrusted?: string[]; verdictsRevoked?: string[]; verdictsSuperseded?: string[]; verdictsRemoved?: string[]; canon?: CanonEvent[]; canonError?: string | null; canonMissing?: string[]; gateTampered?: string[]; rules?: { unconfirmed: { id: string; text: string }[]; tampered: { id: string; text: string }[]; missing: string[]; proposals: number }; projectIdChanged?: { bound: string; inConfig: string } | null } = {},
 ): Metrics {
   const issues: Issue[] = [];
   // Canon: fixed points broken, checks failed, deadlines passed, proposals waiting.
@@ -158,6 +158,7 @@ export function metrics(
     for (const id of r.missing) issues.push({ code: "rule_missing", severity: "high", message: `Project rule ${id} was deleted outside Scenaria — agents no longer receive it. Restore memory.json or add the rule again.`, subject: id });
     if (r.proposals) issues.push({ code: "rules_proposed", severity: "low", message: `${r.proposals} project rule proposal(s) from agents await your decision.`, value: r.proposals });
   }
+  for (const id of opts.stepsMissing ?? []) issues.push({ code: "step_missing", severity: "high", message: `Step ${id} is in the integrity ledger, but its file was deleted or destroyed outside Scenaria — what it recorded is gone. Restore it (e.g. from a backup), or review and run: scenaria integrity --reseal`, nodeId: id, subject: id });
   if (opts.ledgerMissing) issues.push({ code: "ledger_missing", severity: "high", message: "The integrity ledger was deleted — changes since then cannot be verified. Review, then run: scenaria integrity --reseal" });
   if (opts.ledgerBrokenAt) issues.push({ code: "ledger_broken", severity: "high", message: `The integrity ledger was edited or truncated (line ${opts.ledgerBrokenAt}) — history may have been manipulated.`, value: opts.ledgerBrokenAt });
   if (opts.ledgerDiverged && !opts.ledgerMissing) {
@@ -331,7 +332,7 @@ function short(s: string | undefined, max = 90): string {
 export function projectMetrics(s: Scenaria): Metrics {
   const rewinds = s.store.readEvents().filter((e) => e.type === "rewind").length;
   const integ = s.integrity();
-  return metrics(s.store.listNodes(), s.store.readState().head, { rewinds, integrity: integ.state, ledgerBrokenAt: integ.ledgerBrokenAt, ledgerMissing: integ.ledgerMissing, ledgerReplaced: integ.ledgerReplaced, ledgerDiverged: integ.ledgerDiverged, resealsUnproven: integ.resealsUnproven, reseals: integ.reseals, restarted: integ.restarted, confirmed: integ.confirmed, verdictsUntrusted: integ.verdictsUntrusted, verdictsRevoked: integ.verdictsRevoked, verdictsSuperseded: integ.verdictsSuperseded, verdictsRemoved: integ.verdictsRemoved, ...(() => {
+  return metrics(s.store.listNodes(), s.store.readState().head, { rewinds, integrity: integ.state, stepsMissing: integ.stepsMissing, ledgerBrokenAt: integ.ledgerBrokenAt, ledgerMissing: integ.ledgerMissing, ledgerReplaced: integ.ledgerReplaced, ledgerDiverged: integ.ledgerDiverged, resealsUnproven: integ.resealsUnproven, reseals: integ.reseals, restarted: integ.restarted, confirmed: integ.confirmed, verdictsUntrusted: integ.verdictsUntrusted, verdictsRevoked: integ.verdictsRevoked, verdictsSuperseded: integ.verdictsSuperseded, verdictsRemoved: integ.verdictsRemoved, ...(() => {
     const cs = s.canonState();
     const ri = s.ruleIssues();
     return { canon: cs.events, canonError: cs.error, canonMissing: cs.missing, gateTampered: gateResults(s).tampered, rules: { unconfirmed: ri.unconfirmed, tampered: ri.tampered, missing: ri.missing, proposals: s.ruleProposals().length }, projectIdChanged: projectIdChanged(s.store) };

@@ -374,8 +374,9 @@ export function sealFindings(store: Store, st: LedgerState): SealFindings {
   const records = listReseals(store);
   const authentic = records.filter((r) => r.verified);
   const unproven = new Set<string>();
-  for (const r of anchor?.reseals ?? []) if (!authentic.some((x) => x.id === r.id && x.newGenesis === r.newGenesis)) unproven.add(r.id);
-  for (const r of records) if (!r.verified || (anchor && anchor.genesis !== null && !anchor.reseals.some((x) => x.id === r.id))) unproven.add(r.id);
+  // The record's time is not signed for audit agents (C2 review K1): it must match what this machine anchored.
+  for (const r of anchor?.reseals ?? []) if (!authentic.some((x) => x.id === r.id && x.newGenesis === r.newGenesis && x.at === r.at)) unproven.add(r.id);
+  for (const r of records) if (!r.verified || (anchor && anchor.genesis !== null && !anchor.reseals.some((x) => x.id === r.id && x.at === r.at))) unproven.add(r.id);
   const diverged = anchor?.diverged ?? (anchor?.hw && st.exists && !atHighWater(st, anchor.hw) ? { expected: { lines: anchor.hw.lines, head: anchor.hw.head }, found: { lines: st.lines, head: st.head } } : null);
   let detail: { kind: "extended" | "rewritten"; since: string[] } | null = null;
   if (diverged && st.exists) {

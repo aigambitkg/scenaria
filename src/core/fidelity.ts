@@ -147,7 +147,7 @@ export function fidelityAll(nodes: ScenariaNode[], opts: { integrity?: Map<strin
   const out = new Map<string, FidelityPoint>();
   const kids = new Map<string, ScenariaNode[]>();
   for (const n of nodes) if (n.parentId) kids.set(n.parentId, [...(kids.get(n.parentId) ?? []), n]);
-  for (const l of kids.values()) l.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  for (const l of kids.values()) l.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
   const ids = new Set(nodes.map((n) => n.id));
   const roots = nodes.filter((n) => !n.parentId || !ids.has(n.parentId));
   const goalChanges = (opts.goalChanges ?? []).slice().sort();

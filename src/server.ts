@@ -23,6 +23,8 @@ import { recall } from "./core/recall.js";
 import { SECTIONS, checkExpectations, resolveRefs, stringPayload, workspace, type Section } from "./core/workspace.js";
 import { archivistProposals } from "./core/canon-llm.js";
 import { addAuditor, listAuditors, removeAuditor } from "./core/auditors.js";
+import { buildAuditFile, parsePeriod } from "./core/auditfile.js";
+import { AUDIT_ACCESS_MODES, readAuditAccess, setAuditAccess, type AuditAccessMode } from "./core/auditaccess.js";
 import { gateMatrix, runGate } from "./core/gate.js";
 import { effectiveLlm, listModels, readSettings, upstreams, writeSettings } from "./core/settings.js";
 import { listRelays, runRelay } from "./core/relay.js";
@@ -36,7 +38,7 @@ import { adoptRecommendation, expertAnalysis, factSheet, getReport, listPersonal
 import { forgetProject, listProjects, registerProject } from "./core/projects.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
-export const VERSION = "0.9.5";
+export const VERSION = "0.9.6";
 
 const KEY_ENVS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "AZURE_OPENAI_API_KEY"];
 
@@ -503,7 +505,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         // Binding canon actions, the person's settings, the built-in chat and the relay: only with the
         // approval session (not with the API/agent token) — they act for the person or use the person's keys.
         // (The archivist and the analysis also spend the person's quota with the person's keys.)
-        const personOnly = p.startsWith("/api/auditors") || p.startsWith("/api/integrity") || p.startsWith("/api/canon") || p.startsWith("/api/settings") || p.startsWith("/api/agents") || p === "/api/chat" || p === "/api/relay" || p.startsWith("/api/forecast") || p === "/api/analysis/run" || p === "/api/analysis/config" || p.startsWith("/api/expert") || p.startsWith("/api/projects") || p.startsWith("/api/rules") || p === "/api/analysis/accept";
+        const personOnly = p.startsWith("/api/auditors") || p.startsWith("/api/integrity") || p.startsWith("/api/canon") || p.startsWith("/api/settings") || p.startsWith("/api/agents") || p === "/api/chat" || p === "/api/relay" || p.startsWith("/api/forecast") || p === "/api/analysis/run" || p === "/api/analysis/config" || p.startsWith("/api/expert") || p.startsWith("/api/projects") || p.startsWith("/api/rules") || p === "/api/analysis/accept" || p.startsWith("/api/audit-file");
         // The person gets the approval mode without copying a link: Scenaria opens a fresh single-use link
         // in the default browser itself. Nothing secret is returned; at most once per 15 s; logged.
         if (req.method === "POST" && p === "/api/approval/open") {
@@ -524,6 +526,34 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         // The approver is the person at this machine (local) — client-supplied names are only a claim in team mode.
         const approver = token ? `${ctx.user ?? "approver"} (team approver link)` : `${defaultUserName()} (local approval link)`;
         if (req.method === "GET" && p === "/api/v1/string") return send(res, 200, stringPayload(s, url.searchParams.get("at") ?? undefined));
+
+        // ---------- ISO/IEC 42001 audit file (Batch C2): who may read it is the person's setting ----------
+        if (req.method === "GET" && p === "/api/audit-file/access") {
+          const a = readAuditAccess(s.store);
+          return send(res, 200, { ...a, modes: AUDIT_ACCESS_MODES, approval: isApprover(req) });
+        }
+        if (req.method === "POST" && p === "/api/audit-file/access") {
+          const b = await readBody(req);
+          const mode = String(b?.mode ?? "") as AuditAccessMode;
+          if (!AUDIT_ACCESS_MODES.includes(mode)) return send(res, 400, { error: `mode must be one of: ${AUDIT_ACCESS_MODES.join(", ")}` });
+          const a = setAuditAccess(s.store, mode, { by: approver, via: "dashboard" });
+          return send(res, 200, { ...a, modes: AUDIT_ACCESS_MODES, approval: true });
+        }
+        if (req.method === "GET" && p === "/api/audit-file") {
+          // Default "person": only the approval session reads the audit file (fail-closed on anything unverified).
+          if (readAuditAccess(s.store).mode !== "open" && !isApprover(req)) {
+            // The setting protects the audit file itself; the raw records stay readable as before (rule 10).
+            const how = token ? "open the dashboard with the approver link (SCENARIA_APPROVER_TOKEN)" : "click the lock (Open approval mode) in the dashboard";
+            return send(res, 403, { error: `Only the person reads the audit file (their setting): ${how}. The person can open it to everyone: scenaria audit-file access open.`, code: "approval_required" });
+          }
+          let period;
+          try {
+            period = parsePeriod(url.searchParams.get("from"), url.searchParams.get("to"));
+          } catch (err: any) {
+            return send(res, 400, { error: err?.message ?? String(err) });
+          }
+          return send(res, 200, buildAuditFile(s, period));
+        }
 
         // ---------- registered audit agents (rule 11): list is open (public keys), changes are the person's ----------
         if (req.method === "GET" && p === "/api/auditors") return send(res, 200, { auditors: listAuditors(), approval: isApprover(req) });

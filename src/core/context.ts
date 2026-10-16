@@ -52,7 +52,7 @@ export function taskNodes(goalId: string, all: ScenariaNode[]): ScenariaNode[] {
     out.push(n);
     stack.push(...(kids.get(n.id) ?? []));
   }
-  return out.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  return out.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
 }
 
 /**

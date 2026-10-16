@@ -43,6 +43,7 @@ Every decision point of an agent run leaves a **restorable, verifiable state**. 
 | Verdicts | `src/core/verdict.ts`, `src/core/trust.ts` | Verdict origins, what counts (rule 11), signature/content checks |
 | Seal | `src/core/seal.ts` | Anchor outside the project, high-water mark, reseal records |
 | Audit agents | `src/core/auditors.ts` | Registry, signed requests, key generation |
+| ISO/IEC 42001 | `src/core/iso42001.ts`, `src/core/auditfile.ts`, `src/core/auditaccess.ts` | Annex A catalogue (C1), the audit file computed from the records (C2), who may read it (C2) |
 | Protocol | `src/core/protocol.ts` | Knowledge-base notes, audit protocol |
 | **Tools** | `src/tools.ts` | Vendor-neutral tool registry + schema export (OpenAI, Anthropic, Gemini, JSON, MCP) |
 | MCP | `src/mcp.ts` | Registers the registry over stdio |
@@ -214,6 +215,25 @@ Only the person, or a registered audit agent that is independent of Scenaria and
   - A process with the person's full user rights can read the approver key, edit the anchor and the registries, or fake a terminal.
   - The anchor is per machine. A project used from two computers, or from a container with another home, shows "extended" writes.
   - After updating Scenaria, restart agents and MCP servers so no older version keeps writing.
+
+## The ISO/IEC 42001 audit file (Batch C, 0.9.6)
+
+The audit file shows, for each of the 38 Annex A controls, what this project's records evidence. The catalogue (`core/iso42001.ts`, C1) names per control the best coverage Scenaria can reach and the evidence sources it needs (`required`) or that support it (`supporting`). `buildAuditFile(s, period)` (`core/auditfile.ts`, C2) computes the status from the real records:
+
+- **Status.** `organisational` when the catalogue says so; `partly` when every required source holds data in the period; otherwise `not_covered`, with the missing sources named. Never higher than the catalogue's coverage. No control reaches `evidenced`.
+- **What counts (rule 11).**
+  - Verdicts carry a control only when they are independent and authentic: the person's or a registered audit agent's, signature valid, on an untampered step whose work did not change, not an unseen write, not removed. Self-reported, automatic and legacy verdicts are counted under "all" and never carry.
+  - The "approvals" source counts signed approvals of rules and work: canon decisions and checks, line checks (gate), project-rule decisions, independent verdicts. Reseals and the audit file's read setting are listed with `carries: false`: they approve no work.
+  - Each approval names the fields its signature does not cover (`unsigned`, e.g. a canon decision's channel).
+  - Canon and project rules count when signed by a trusted key and in force before the period ended; the main goal when it was recorded before the period ended (`meta.goalSince` on the root, in the hash chain; older projects: the root's time or the later "goal set" event).
+  - Reseals count only when the record is authentic AND matches what this machine anchored (time included).
+- **Period.** The whole project by default (Kev, 2026-10-16). `YYYY-MM-DD` is a whole day in UTC; a date-time needs a time zone. Anything else is refused.
+- **Integrity (Kev, 2026-10-16).** A damaged tamper evidence lowers no status. It shows a headline and a warning at every control that uses an affected source. The warnings come from the project check's codes (`INTEGRITY_RULES`: alarm or note, affected sources, plain words DE/EN); counts and items come from the engine's own lists, so they stay complete even when the project check fails. They concern the whole record, not only the period. A source that cannot be evaluated (a destroyed file) shows nothing and raises `evaluation_failed`; the file is always produced. Error details never carry machine paths.
+- **Steps that vanished.** `integrity().stepsMissing` lists steps that are in the ledger but whose file was deleted or cannot be read (Scenaria never deletes step files). The project check reports them as `step_missing` (high).
+- **Who may read it (`core/auditaccess.ts`).** Only the person sets it: `person` (default: approval session or interactive terminal) or `open` (everyone who can reach this Scenaria). Kept outside the project in `~/.config/scenaria/audit-access.json`, keyed by the bound project id and the real folder, signed with the approver key (`audit-access/v2`, bound to project and folder), with a separate high-water mark (`audit-access.marks.json`) against older settings put back. Anything that does not verify means `person` (fail-closed). Every change is logged.
+  - **Limit:** this protects the audit file (view and export). The raw records (steps, export, canon, analysis) stay readable as before (rule 10).
+- **Routes.** `GET /api/audit-file?from&to` (403 `approval_required` unless the setting is `open` or the request has the approval session), `GET /api/audit-file/access` (open), `POST /api/audit-file/access {mode}` (person-only gate). CLI: `scenaria audit-file [--from] [--to] [--json] [--out-file f]` (reading at an interactive terminal unless opened), `scenaria audit-file access [person|open]` (interactive terminal and typed confirmation).
+- **Next (C3, C4).** Organisational evidence per control (person-only, signed), a signed export (PDF, Markdown, JSON) and a read-only view for auditors.
 
 ## Canon events (fixed points)
 

@@ -96,6 +96,10 @@ The core stays as it is. New features come only through these batches, in this o
 - [x] **S1, project rules only by the person (0.9.4):** agents only propose rules; the person adds, accepts, rejects and removes them (approval mode or terminal with confirmation)
 - [x] **S2, signed project rules (0.9.5):** rules signed like canon; only signed rules reach agents; the approval link is never printed; agents run in a sandbox
 - [ ] **C, audit file for ISO/IEC 42001 (in progress since 2026-10-15):** every Annex A control with evidence from Scenaria, status and fields for organisational evidence; period filter; signed PDF/Markdown/JSON export; read-only access for auditors
+  - [x] C1 catalogue (accepted 2026-10-16)
+  - [x] C2 evaluation from the project's records (0.9.6): status per control, period, integrity warnings, approvals and reseals, read setting only by the person
+  - [ ] C3 organisational evidence per control
+  - [ ] C4 signed export and auditor view
 - [ ] **D, the AI manager's view:** cross-project overview, agents and models over time, token use, rules and policies for all projects
 - [ ] **E, course corridor and drift guard** (parked until A–D are done)
 - [ ] **F, agent modules** (later, optional): forecasts and other model-based helpers as ready-made agents that only need a model

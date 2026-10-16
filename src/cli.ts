@@ -15,6 +15,8 @@ import { addAuditor, auditorKeygen, buildAuditorRequest, listAuditors, normalize
 import { dossier, analysisPrompt, projectMetrics, renderMetrics, runAnalysis } from "./core/analysis.js";
 import type { ScenariaNode } from "./core/types.js";
 import { isUnconfirmedPass, verdictOrigin } from "./core/verdict.js";
+import { buildAuditFile, parsePeriod } from "./core/auditfile.js";
+import { AUDIT_ACCESS_MODES, readAuditAccess, setAuditAccess, type AuditAccessMode } from "./core/auditaccess.js";
 
 const HELP = `Scenaria — quicksave & checkpoints for AI agents (any LLM, any framework)
 
@@ -120,6 +122,13 @@ Independent audit agents (own key outside Scenaria; only they and you can verify
                                         The payload the audit agent signs (bound to the node / the ledger, 24 h)
   auditor sign --key <pem> [file|-]     Sign a payload with an audit key (or use: openssl pkeyutl -sign -rawin)
   auditor submit [file|-]               Hand in a signed request (verdict or reseal)
+  audit-file [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--json]
+                                        ISO/IEC 42001 audit file: every Annex A control with its status from this
+                                        project's records, integrity warnings, approvals and reseals (whole project
+                                        unless a period is given). Only the person reads it, unless they open it;
+                                        --out-file <f> saves it as JSON. The setting protects the audit file, not
+                                        the raw records (steps, export), which stay readable as before
+  audit-file access [person|open]       Who may read the audit file (setting it: the person, interactive only)
   protocol                              Write .scenaria/protocol.md
   export [--format json|md] [--out-file f]  Full export for audits / BI / governance tools
 
@@ -155,6 +164,7 @@ const opts = {
   "no-rules": { type: "boolean" },
   for: { type: "string" },
   to: { type: "string" },
+  from: { type: "string" },
   launcher: { type: "boolean" },
   model: { type: "string" },
   user: { type: "string" },
@@ -1235,6 +1245,57 @@ async function main() {
       const s = Scenaria.open(v.root);
       const n = s.lastGood(p[0]);
       return out(n ? describe(n) : "No step on this path was verified by the person or a registered audit agent yet.", n);
+    }
+    case "audit-file": {
+      const s = Scenaria.open(v.root);
+      if (p[0] === "access") {
+        const cur = readAuditAccess(s.store);
+        const show = (a: typeof cur) =>
+          `Audit file readable by: ${a.mode === "open" ? "everyone who can reach this Scenaria (open)" : "only you, the person (approval mode or interactive terminal)"}` +
+          (a.set ? `\n  set by ${a.set.by} via ${a.set.via} on ${a.set.at.slice(0, 16).replace("T", " ")} (signed)` : a.trust === "invalid" ? `\n  ${C.red}The stored setting does not verify (changed outside Scenaria or another key): "only you" applies.${C.reset}` : "\n  (default — never changed)");
+        if (!p[1]) return out(show(cur), cur);
+        const mode = p[1] as AuditAccessMode;
+        if (!AUDIT_ACCESS_MODES.includes(mode)) throw new Error(`Usage: scenaria audit-file access [${AUDIT_ACCESS_MODES.join("|")}]`);
+        const notPerson = "Who may read the audit file is the person's setting: run this in an interactive terminal, or use the dashboard (lock → approval mode).";
+        await personConfirm(
+          mode,
+          mode === "open"
+            ? "Open the audit file to everyone who can reach this Scenaria (agents too, like the other read endpoints)?"
+            : "Allow only you (approval mode or interactive terminal) to read the audit file?",
+          notPerson,
+        );
+        const a = setAuditAccess(s.store, mode, { by: process.env.SCENARIA_USER || userInfo().username || "person", via: "terminal" });
+        return out(show(a), a);
+      }
+      // The person reads it at an interactive terminal (like every person-only command, rule 6); --out-file
+      // writes it to a file after that check. An agent's shell reads it only when the person opened it.
+      if (readAuditAccess(s.store).mode !== "open" && !isPersonTerminal()) {
+        throw new Error("Only the person reads the audit file (their setting): run this in an interactive terminal (to save it: --out-file <file>), or open the dashboard in approval mode. The person can open it to everyone: scenaria audit-file access open.");
+      }
+      const f = buildAuditFile(s, parsePeriod(v.from, v.to));
+      if (v["out-file"]) {
+        writeFileSync(v["out-file"], JSON.stringify(f, null, 2) + "\n");
+        return out(`Audit file written to ${v["out-file"]} (${f.summary.partly} partly evidenced, ${f.summary.not_covered} not covered, integrity: ${f.integrity.state})`, { written: v["out-file"], summary: f.summary, integrity: f.integrity.state });
+      }
+      const lab = (x: { de: string; en: string }) => x.en;
+      const status = (c: (typeof f.controls)[number]) => {
+        const [word, col] = c.status === "partly" ? ["partly", C.green] : c.status === "not_covered" ? ["not covered", C.yellow] : c.status === "organisational" ? ["organisation", C.dim] : [c.status, ""];
+        return `${col}${word.padEnd(13)}${col ? C.reset : ""}`;
+      };
+      const lines = [
+        `ISO/IEC 42001 audit file — ${f.project.name} · ${f.period.whole ? "whole project" : `${f.period.from?.slice(0, 10) ?? "…"} – ${f.period.to?.slice(0, 10) ?? "…"}`} · ${f.period.steps} step(s)`,
+        f.integrity.state === "alarm" ? `${C.red}${lab(f.integrity.headline)}${C.reset}` : lab(f.integrity.headline),
+        ...f.integrity.warnings.map((w) => `  ${w.level === "alarm" ? `${C.red}!${C.reset}` : "·"} ${lab(w.title)}${w.count > 1 ? ` (${w.count})` : ""}: ${lab(w.explain)}${w.items.length ? ` [${w.items.slice(0, 8).join(", ")}${w.items.length > 8 ? ", …" : ""}]` : ""}`),
+        "",
+        `${f.summary.partly} partly evidenced · ${f.summary.not_covered} not covered · ${f.summary.organisational} evidence by the organisation${f.summary.withAlarm ? ` · ${C.red}${f.summary.withAlarm} with an integrity alarm${C.reset}` : ""}`,
+        "",
+        ...f.controls.map((c) => `${c.alarm ? `${C.red}!${C.reset}` : " "} ${c.id.padEnd(8)} ${status(c)} ${lab(c.title)}${c.missing.length ? `${C.dim}  — no data: ${c.missing.join(", ")}${C.reset}` : ""}`),
+        "",
+        `Signed approvals of rules and work in the period: ${f.sources.approvals.count}${f.sources.approvals.count ? ` (${Object.entries(f.sources.approvals.facts).map(([k, n]) => `${k} ${n}`).join(", ")})` : ""}${f.approvals.length > f.sources.approvals.count ? ` · also listed (carry no control): ${f.approvals.filter((a) => !a.carries).map((a) => a.kind).join(", ")}` : ""}`,
+        `Reseals: ${f.reseals.authentic.length} authentic${f.reseals.unproven.length ? `, ${C.red}${f.reseals.unproven.length} without proof${C.reset}` : ""}`,
+        `${C.dim}${lab(f.scope)}${C.reset}`,
+      ];
+      return out(lines.join("\n"), f);
     }
     case "protocol": {
       const s = Scenaria.open(v.root);

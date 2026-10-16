@@ -246,5 +246,9 @@ export function checkIntegrity(nodes: ScenariaNode[], ledger: Ledger, opts: { ex
       state.set(n.id, !overTampered.has(n.id) && (c === h[0] || interrupted) ? "ok" : "tampered");
     }
   }
-  return { state, ledgerBrokenAt: brokenAt, entries: lines.length, torn, ledgerMissing: missing };
+  // A step that is in the chain but whose file is gone or unreadable was deleted or destroyed outside Scenaria
+  // (Scenaria never deletes step files). The last line / an in-flight write is a new step not on disk yet.
+  const present = new Set(nodes.map((n) => n.id));
+  const stepsMissing = [...last.keys()].filter((id) => !present.has(id) && lastLine?.id !== id && !opts.inflight?.some((x) => x.id === id));
+  return { state, ledgerBrokenAt: brokenAt, entries: lines.length, torn, ledgerMissing: missing, stepsMissing };
 }

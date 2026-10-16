@@ -308,6 +308,8 @@ export class Scenaria {
       verdictsRemoved,
       /** Steps written in ledger lines this machine's Scenaria did not write. */
       unseenWrites,
+      /** Steps in the ledger whose file was deleted or cannot be read (C2 review N1). */
+      stepsMissing: r.stepsMissing,
     };
   }
 
@@ -1040,6 +1042,8 @@ export class Scenaria {
     if (!g || g === root.goal) return root;
     const prev = root.goal;
     root.goal = g;
+    // When a main goal was first recorded, in the hash chain (the audit file's period filter reads it, C2 review N4).
+    if (!prev && !root.meta?.goalSince) root.meta = { ...(root.meta ?? {}), goalSince: new Date().toISOString() };
     if (prev) root.meta = { ...(root.meta ?? {}), goalHistory: [...(Array.isArray(root.meta?.goalHistory) ? (root.meta!.goalHistory as any[]) : []), { goal: prev, until: new Date().toISOString() }].slice(-100) };
     this.save(root);
     this.store.appendEvent({ type: "update", nodeId: root.id, data: { fields: ["goal"], message: prev ? "main goal changed" : "main goal set" } });

@@ -4,9 +4,9 @@ This is the working protocol for the next agent or developer who continues Scena
 
 - **Product owner:** Kev (Kevin Grundmann, AI-Gambit). He reads and writes German, so give your summaries to him in German. He is not a developer by trade, so explain results in plain words.
 - **License:** MIT. Vendor-neutral: any LLM, any agent, any framework.
-- **State at handoff:** v0.9.5 (2026-10-16, S1 + S2: project rules only by the person, signed; approval link never printed), branch `main`. All tests pass (`npm test`). GitHub CI was green on Linux and macOS (Node 20 and 22) for 0.9.3.
+- **State at handoff:** v0.9.6 (2026-10-16, Batch C2: the ISO/IEC 42001 audit file computed from the records; who may read it is the person's setting), branch `main`. All tests pass (`npm test`). GitHub CI was green on Linux and macOS (Node 20 and 22) for 0.9.5.
 - **Current phase (since 2026-10-14): feature freeze.** Work only on the batch plan in §11, one batch at a time, and start a batch only after Kev's go.
-- **Now (since 2026-10-15): Batch C** (ISO/IEC 42001 audit file), started with Kev's go. Batch B is accepted.
+- **Now (since 2026-10-15): Batch C** (ISO/IEC 42001 audit file), started with Kev's go. Batch B is accepted. C1 accepted; C2 built (0.9.6), waiting for Kev's acceptance; C3 next after his go.
 
 ---
 
@@ -38,7 +38,8 @@ Every review so far has enforced these. Treat them as hard requirements.
    - The approval link is never printed (since 0.9.5, S2): Scenaria hands it to the browser only; `--print-approval-link` is the person's explicit choice for a machine without a browser.
    - **Agents run in a sandbox** (Kev's decision, 2026-10-16; a precondition Scenaria does not enforce): the agent, and every process it starts, has no access to the Scenaria config folder (`~/.config/scenaria`: approver key, trusted keys, anchors, project-id bindings) and never starts Scenaria under the person's account. Otherwise any Scenaria process the agent starts signs with the person's key. Scenaria adds speed bumps (link only to the browser via the system opener by absolute path without `BROWSER`; `--print-approval-link` only at a terminal with a typed confirmation), but these are not a security boundary.
    - The approval link never travels in an HTTP answer. `POST /api/approval/open` only makes the Scenaria process hand a fresh link to the operating system's browser (local mode; single use, valid 60 s, used up even by an already approved browser; once per 15 s from the dashboard, once per minute otherwise; logged with who asked). This covers check commands, approvals, the chat, the relay, the multiverse, the AI check, backtests, settings and project switching.
-   - In `src/server.ts` this is enforced by the `personOnly` prefix list (for example every `POST /api/forecast*`). New person actions must go under such a prefix.
+   - In `src/server.ts` this is enforced by the `personOnly` prefix list (for example every `POST /api/forecast*`, `POST /api/audit-file/access`). New person actions must go under such a prefix.
+   - Reading the ISO/IEC 42001 audit file (`GET /api/audit-file`, `scenaria audit-file`) is the person's unless they set it to `open` (C2); the setting protects the file, not the raw records.
    - The CLI checks `process.stdin.isTTY && process.stdout.isTTY`.
 7. **The chat model has agent rights only.** Person actions requested in the chat become a card, and they run only after the person clicks it.
 8. **Automatic multiverse forecasts:**
@@ -65,7 +66,7 @@ node dist/cli.js start # dashboard, approval link opened in the browser (in a pr
 
 - **Node:** ≥ 20. Kev's Mac has Node 24.
 - **On Kev's Mac:** run the tests in two halves, because each tool call there is limited to 180 s.
-  - `node --test test/{canon,control,engine,expert,forecast,handoff,help,integrity,iso42001,office}.test.mjs`
+  - `node --test test/{auditfile,canon,control,engine,expert,forecast,handoff,help,integrity,iso42001,office}.test.mjs`
   - `node --test test/{integration,oracle,overlay,predict,project,projects,rules,safety,universal}.test.mjs`
 - Tests use a temporary `SCENARIA_HOME` (`test/helpers.mjs`), so they never touch the real `~/.config/scenaria`.
 - **Known flaky test:** `watch fingerprint writes no git objects while idle`. It is timing-sensitive, failed once on the Mac and passed on rerun.
@@ -108,6 +109,8 @@ node dist/cli.js start # dashboard, approval link opened in the browser (in a pr
 | **`oracle.ts`** | **Oracle v2** (multiverse): three roles that may only *correct* the core, with bounded and evidence-backed corrections; γ fit; `assignEntries` (safe answer-to-option matching). |
 | **`forecast.ts`** | Saved forecasts (quick and multiverse), evaluation against reality, the automatic budget. |
 | **`auditor.ts`** | **Prüf-Experte:** checklist and verdict, the skeptic `deepAudit`, `oracleBacktest` (also for single past decisions), `oracleQuality`/`oracleTrust`, `auditOverview` and `auditReportMarkdown`. |
+| **`auditfile.ts`** | **Batch C2:** `buildAuditFile(s, period)` — status per control from the project's records, integrity warnings (`INTEGRITY_RULES`), signed approvals (`carries`, `unsigned`), reseals, `parsePeriod`. Never throws on hand-edited files (`evaluation_failed`). |
+| **`auditaccess.ts`** | **Batch C2:** who may read the audit file (`person` default / `open`): the person's signed setting outside the project, keyed by bound id + real folder, with a high-water mark; fail-closed. |
 | **`iso42001.ts`** | **Batch C:** the ISO/IEC 42001 Annex A catalogue (38 controls, own short titles DE/EN, required and supporting evidence sources, coverage, the organisation's part) and the evidence sources with their assurance, hash-chain coverage, scope and limits. No imports: shared with the UI. `test/iso42001.test.mjs` pins the reviewed mapping and checks the source facts against the engine. |
 | `llm-errors.ts` | Error codes for model calls. Shared with the UI, so it must have **no imports**. |
 | `settings.ts`, `global.ts`, `projects.ts` | The person's settings (roles: chat, analysis, analyst, archivist, craftsman, oracle, auditor) and the project registry. |
@@ -205,6 +208,12 @@ S2 review (S2-1…S2-10), fixed: S2-1 (approval link: system opener by absolute 
 
 - Release notes for 0.9.4/0.9.5: in team mode without `SCENARIA_APPROVER_TOKEN`, token holders can no longer manage rules over HTTP; rules that agents added before 0.9.4 stop reaching agents until the person accepts them; since 0.9.5 every older rule reaches agents only after the person confirms it once (dashboard → Analysis → Project rules, or `scenaria rules confirm <id>`); the approval link is no longer printed in the terminal.
 
+Open after C2 (LOW, documented):
+- The audit file's read setting is written like the other files in the config folder: two processes at the same moment are not locked against each other (like S2-7).
+- A machine that first opens a project after an audit agent's reseal record was edited adopts the edited time (first-use trust, like every anchor).
+- Old projects without `meta.goalSince` take the main goal's time from the root and the event log (not in the hash chain).
+- `buildAuditFile` runs `integrity()`, the canon and gate checks more than once (about 0.5 s for 1,500 steps); computing them once is a later optimisation.
+
 Open after Batch A (from the reviews, documented limits):
 - The anchor is per machine. A project used from two computers, or from a devcontainer with another home, reports "extended" writes (medium, with the steps named). External anchoring (git remote / signed export) is on the roadmap.
 - After an update, restart agents and MCP servers. An older Scenaria version that keeps running writes without raising the mark ("extended").
@@ -231,6 +240,7 @@ Product ideas already discussed or noted (see `docs/ROADMAP.md`; the batch plan 
 | 0.9.2 | Batch A (rule 11): verdict origins; only the person or a registered audit agent can verify or reseal; signed, work-bound verdicts; anchor with high-water mark outside the project; reseal records; audit-agent registry and signed requests; dashboard reseal; two independent review rounds (K1–K11, R1–R7) |
 | 0.9.3 | Batch B (office users, two review rounds K1–K21): three views (Simple / Audit / Manage), Simple view with history in plain words, "Back to this state" + Undo, "What did the AI do?", states as folders; plain wording DE/EN incl. help and onboarding; settings with one model and "Advanced"; forecasts, relay and Prüf-Experte under "Extensions"; Claude Desktop per project; start icon; approval mode without copying a link (lock 🔒); a second start reuses the running Scenaria; macOS CI fix (real folder paths in the cross-project report, APFS clones in snapshot folders) |
 | 0.9.4 | S1 (security rule 5 for project rules): agents only propose rules; adding, accepting, rejecting and removing are the person's (approval session, or terminal with typed confirmation); decisions recorded; proposals hidden from agents; ids never reused; accepting needs the text the person saw; two review rounds (K4/K5, S1-1…S1-11) |
+| 0.9.6 | Batch C2 (two review rounds K1–K12, N1–N4): the ISO/IEC 42001 audit file computed from the records (status per control, whole project or a period, integrity warnings that lower no status, signed approvals and reseals); who may read it is the person's signed setting outside the project (default: only the person); steps deleted outside Scenaria are detected (`step_missing`); an audit agent's reseal time must match the anchor; the main goal's first time is kept on the root |
 | 0.9.5 | S2: project rules signed like canon (revision, anchor outside the project; tampered, rolled-back and deleted rules detected; older rules need one confirmation); only signed rules reach agents; the approval link is never printed (`--print-approval-link` for a machine without a browser); agents run in a sandbox (documented) |
 
 ## 11. Product decisions (2026-10-14) and the batch plan
@@ -301,7 +311,7 @@ Product ideas already discussed or noted (see `docs/ROADMAP.md`; the batch plan 
 ### Batch C: audit file (ISO/IEC 42001) — IN PROGRESS (Kev's go 2026-10-15)
 - **Steps (one commit each, an independent review each):**
   - **C1, catalogue (built 2026-10-15, three review rounds K1–K17, R1–R10; DONE — Kev accepted the mapping on 2026-10-16 for now; controls Scenaria does not carry yet are added later, once everything runs):** the 38 Annex A controls as a data module (`src/core/iso42001.ts`, no imports, shared with the UI): own short titles in DE/EN, the area, the evidence sources in Scenaria, the best coverage Scenaria can reach (evidenced / partly / organisational) and what the organisation must document. Kev checks the mapping (`docs/intern/batch-c/`) before C2.
-  - **C2, evaluation:** compute each control's status from the project's real data, with a period filter, the integrity status and the list of approvals and reseals.
+  - **C2, evaluation (built 2026-10-16, 0.9.6; two review rounds K1–K12, N1–N4, all fixed with a regression test each in `test/auditfile.test.mjs`; waiting for Kev's acceptance):** compute each control's status from the project's real data, with a period filter, the integrity status and the list of approvals and reseals. Kev's decisions (2026-10-16): the whole project unless a period is chosen; a damaged tamper evidence warns clearly at the top and at every affected control but lowers no status; who may read the audit file is set only by the person (default: only the person). Built: `core/auditfile.ts`, `core/auditaccess.ts`, `GET /api/audit-file`, `GET|POST /api/audit-file/access`, `scenaria audit-file [access]`. No dashboard view yet (C4). Review decisions: reseals and the read setting are listed but carry no control (they approve no work); fields a signature does not cover are marked `unsigned`.
   - **C3, organisational evidence:** document reference, owner and date per control; person-only and signed; an edited file shows as unverified.
   - **C4, export and view:** signed export (PDF, Markdown, JSON) and a read-only view for auditors; the current "Prüfung" area (forecast audits) moves to the extensions. Kev decides beforehand how the PDF is made and how an auditor gets access.
 - **Scope, stated honestly in the product:** Scenaria evidences how AI agents worked in projects (decisions, changes, checks, approvals, attribution). It does not evidence how AI models are developed or trained, nor the organisation's policies and impact assessments.
