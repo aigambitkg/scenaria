@@ -48,6 +48,9 @@ tr.area td{background:#fff;font-weight:600;color:var(--accent);padding-top:12px;
 .stat{border:1px solid var(--line);border-radius:6px;padding:8px 10px}
 .stat b{display:block;font-size:20px}
 .stat span{color:var(--muted);font-size:11.5px}
+.why-notes{font-size:10.5px;color:var(--ink);margin:4px 0 10px 18px;padding:0}
+.why-notes li{margin:2px 0;overflow-wrap:anywhere}
+
 .badge{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;white-space:nowrap;border:1px solid transparent}
 .b-partly{background:#eef2f8;color:var(--accent);border-color:#c9d3e3}
 .b-not_covered{background:var(--warnbg);color:var(--warn)}
@@ -115,13 +118,34 @@ export function renderAuditHtml(x: AuditExport, lang: "de" | "en" = "de"): strin
   h.push(`<p class="muted">${esc(L(f.integrity.note))}</p>`);
 
   h.push(`<h2>${T("Übersicht", "Summary")}</h2><div class="stats">`);
-  const stat = (n: number, label: string) => `<div class="stat"><b>${n}</b><span>${label}</span></div>`;
-  h.push(stat(f.summary.partly, T("teilweise belegt", "partly evidenced")));
-  h.push(stat(f.summary.not_covered, T("nicht abgedeckt", "not covered")));
-  h.push(stat(f.summary.organisational, T("Nachweis durch die Organisation", "evidence by the organisation")));
-  h.push(stat(f.summary.orgDocumented, T("Dokumente der Organisation eingetragen", "organisation's documents recorded")));
+  // E1b: every number carries a footnote with its derivation (from the signed file; older files have none).
+  const ders = f.derivations ?? {};
+  const notes: string[] = [];
+  // The marker follows the label in brackets: a superscript after a number reads like a power (review E1b K9).
+  const mark = (key: string) => {
+    const d = ders[key];
+    if (!d) return "";
+    notes.push(key);
+    return ` [${notes.length}]`;
+  };
+  const stat = (n: number, label: string, key: string) => `<div class="stat"><b>${n}</b><span>${label}${mark(key)}</span></div>`;
+  h.push(stat(f.summary.partly, T("teilweise belegt", "partly evidenced"), "summary.partly"));
+  h.push(stat(f.summary.not_covered, T("nicht abgedeckt", "not covered"), "summary.not_covered"));
+  h.push(stat(f.summary.organisational, T("Nachweis durch die Organisation", "evidence by the organisation"), "summary.organisational"));
+  h.push(stat(f.summary.orgDocumented, T("Dokumente der Organisation eingetragen", "organisation's documents recorded"), "summary.orgDocumented"));
   h.push(`</div>`);
-  if (f.summary.withAlarm) h.push(`<p><span class="badge b-alarm">${f.summary.withAlarm} ${T("Kontrollen mit Alarm", "controls with an alarm")}</span></p>`);
+  if (f.summary.withAlarm) h.push(`<p><span class="badge b-alarm">${f.summary.withAlarm} ${T("Kontrollen mit Alarm", "controls with an alarm")}${mark("summary.withAlarm")}</span></p>`);
+  if (notes.length) {
+    h.push(`<ol class="why-notes">`);
+    for (const k of notes) {
+      const d = ders[k];
+      // Every counted item, so an auditor can recount (review E1b K3).
+      const items = d.inputs.find((i) => i.name === "items")?.value;
+      const counted = Array.isArray(items) ? `<br>${T("Gezählt", "Counted")} (${items.length}): ${items.length ? esc(items.join(", ")) : "—"}` : "";
+      h.push(`<li>${esc(L(d.sentence))} <span class="muted">${T("Formel", "Formula")} ${esc(d.formula)}: ${esc(L(d.expression))}</span>${counted}</li>`);
+    }
+    h.push(`</ol>`);
+  }
 
   h.push(`<h2>${T("Kontrollen", "Controls")}</h2>`);
   h.push(`<table class="data"><colgroup><col style="width:9%"><col style="width:29%"><col style="width:22%"><col style="width:16%"><col style="width:24%"></colgroup><thead><tr><th>${T("Kontrolle", "Control")}</th><th>${T("Titel", "Title")}</th><th>${T("Status aus den Aufzeichnungen", "Status from the records")}</th><th>${T("Dokument der Organisation", "Organisation's document")}</th><th>${T("Hinweise", "Notes")}</th></tr></thead><tbody>`);

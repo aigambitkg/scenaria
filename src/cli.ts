@@ -1408,6 +1408,7 @@ async function main() {
             `  fingerprint sha256:${safe(r.digest)}`,
             `  key ${safe(r.keyId)}${r.keyTrustedHere ? " (trusted on this machine)" : " — confirm this key id with the person over a second channel"}`,
             `  project ${safe(r.projectId)} · generated ${safe(r.generatedAt).replace("T", " ").slice(0, 16)} UTC · ${r.names === "roles-only" ? "roles only" : "with names"}`,
+            ...((r as { derivations?: number }).derivations !== undefined ? [`  numbers: all ${(r as { derivations?: number }).derivations} derivations recomputed and match`] : []),
             r.integrity === "ok"
               ? "  tamper evidence: intact"
               : `${r.integrity === "alarm" ? C.red : C.yellow}  Note: the signed file itself reports ${r.integrity === "alarm" ? "a DAMAGED tamper evidence (alarm)" : "notes on the tamper evidence"} — read its integrity section.${C.reset}`,

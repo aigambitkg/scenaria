@@ -31,24 +31,26 @@ export function tokenize(text: string): string[] {
 }
 
 export function nodeText(n: ScenariaNode): string {
+  // Hand-edited step files can hold a field of the wrong type: never throw on it (E1a review K1).
+  const arr = <T>(x: T[] | undefined): T[] => (Array.isArray(x) ? x : []);
   return [
     n.title,
     n.goal,
     n.summary,
     n.question,
-    ...(n.options ?? []).map((o) => `${o.label} ${o.description ?? ""}`),
+    ...arr(n.options).map((o) => (o && typeof o === "object" ? `${o.label ?? ""} ${o.description ?? ""}` : String(o ?? ""))),
     n.rationale,
     n.context,
     n.servesGoal,
     n.expectedOutcome,
-    ...(n.assumptions ?? []),
-    ...(n.facts ?? []),
-    ...(n.outputs ?? []),
-    ...(n.openQuestions ?? []),
-    ...(n.lessons ?? []),
-    ...(n.irreversible ?? []),
-    ...(n.changedFiles ?? []),
-    n.verification?.notes,
+    ...arr(n.assumptions),
+    ...arr(n.facts),
+    ...arr(n.outputs),
+    ...arr(n.openQuestions),
+    ...arr(n.lessons),
+    ...arr(n.irreversible),
+    ...arr(n.changedFiles),
+    n.verification && typeof n.verification === "object" ? n.verification.notes : undefined,
   ]
     .filter(Boolean)
     .join(" \n ");

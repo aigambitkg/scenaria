@@ -444,7 +444,8 @@ export const TOOLS: ToolDef[] = [
     annotations: { readOnlyHint: true },
     run(s) {
       const m = projectMetrics(s);
-      return { text: renderMetrics(m), data: { ...m, decisions: undefined } };
+      // The counts' id lists stay out of an agent's context; the health derivation is short and goes along.
+      return { text: renderMetrics(m), data: { ...m, decisions: undefined, why: { health: m.why.health } } };
     },
   },
   {

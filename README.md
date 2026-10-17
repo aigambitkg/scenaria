@@ -170,6 +170,10 @@ An auditor finds every one of the 38 Annex A controls in one place: what this pr
 - **Auditor mode on site**: hand a browser to an auditor; it reads everything and changes nothing until you end the mode. A protection against mistakes, not a lock on your own computer.
 - **Honest scope**: Scenaria evidences how AI agents worked in your projects. It does not evidence how AI models are developed or trained, nor your policies and impact assessments — those are the organisation's documents. Who may read the audit file is your signed setting (default: only you).
 
+## Every number with its derivation (v0.9.14)
+
+Next to context fidelity, the project check and the audit file's counts there is **ⓘ How computed?**: the formula with its version, the inputs (for counts every counted item) and one sentence in plain words. Hovering shows the sentence; a tap or Enter shows everything. Scenaria recomputes the number from the inputs and says whether it matches. In the audit package the derivations are footnotes, and `scenaria audit-file verify` recomputes them. A model never supplies one of these numbers.
+
 ## Help and introduction
 
 **?** (top right) explains every function in plain words, and every dialog has its own **?**. On the first visit a short introduction (goal → your AI → history → views) gets you going. You can skip it, and restart it from **More → Introduction**.

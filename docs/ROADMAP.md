@@ -95,7 +95,7 @@ The core stays as it is. New features come only through these batches, in this o
 - [x] **B, easy to use for office users (0.9.3):** three views (Simple / Audit / Manage), plain wording, one model by default, forecasts and relay moved to "Extensions", Claude Desktop per project, start icon, approval mode without copying a link
 - [x] **S1, project rules only by the person (0.9.4):** agents only propose rules; the person adds, accepts, rejects and removes them (approval mode or terminal with confirmation)
 - [x] **S2, signed project rules (0.9.5):** rules signed like canon; only signed rules reach agents; the approval link is never printed; agents run in a sandbox
-- [ ] **C, audit file for ISO/IEC 42001 (in progress since 2026-10-15):** every Annex A control with evidence from Scenaria, status and fields for organisational evidence; period filter; signed PDF/Markdown/JSON export; read-only access for auditors
+- [x] **C, audit file for ISO/IEC 42001 (0.9.6–0.9.13, accepted by Kev 2026-10-17):** every Annex A control with evidence from Scenaria, status and fields for organisational evidence; period filter; signed PDF/Markdown/JSON export; read-only access for auditors
   - [x] C1 catalogue (accepted 2026-10-16)
   - [x] C2 evaluation from the project's records (0.9.6): status per control, period, integrity warnings, approvals and reseals, read setting only by the person
   - [x] C2.1 corrections (0.9.7): no crash on damaged verdicts, a verdict counts once, verdict history per step, file states checked on every audit file
@@ -105,8 +105,10 @@ The core stays as it is. New features come only through these batches, in this o
   - [x] C4c-1 audit file in the dashboard (0.9.11): read-only view, audit package from the dashboard (Downloads), auditor mode on site (read only), "Prüfung" for forecasts renamed "Prognose-Prüfung"
   - [x] C4c-2 form for the organisation's evidence in the dashboard (0.9.12): record (SHA-256 in the browser), remove/discard, confirm, take over from another project — each step shows what will be signed
   - [x] C5 closing review (0.9.13): two independent whole-batch reviews and a review of the fixes, every finding fixed with a test; done criteria checked on the demo project; Kev decided the LOW points
-  - [ ] C5 Kev's practical test on a real project and acceptance of Batch C
-- [ ] **E, progress, context window and the derivation of every number** (Kev 2026-10-17, after C and before D): every number with its derivation on hover and tap; progress from evidence-bound criteria levels capped by gates; a fixed, versioned context-window rule with sealed checkpoints; progress per window and a deterministic handover check. Kev's answers (2026-10-17): criteria and weights proposed by the agent, approved by the person; start values v1.0 from the concept, adjustable only by the person (signed, logged); a stop after two windows without progress is enforced where the provider allows it
+  - [x] C5 acceptance of Batch C by Kev (2026-10-17)
+- [ ] **E, progress, context window and the derivation of every number** (Kev 2026-10-17, after C and before D; in progress since Kev's go on 2026-10-17):
+  - [x] E1 derivation of every number (0.9.14): one format from the core, versioned formulas, recompute; context fidelity, health score, counts, audit file; "How computed?" in the dashboard (hover, tap, keyboard); footnotes in the exports; `verify` recomputes them
+  - [ ] E2 progress · [ ] E3 context-window rule · [ ] E4 progress per window and handover check · [ ] E5 closing every number with its derivation on hover and tap; progress from evidence-bound criteria levels capped by gates; a fixed, versioned context-window rule with sealed checkpoints; progress per window and a deterministic handover check. Kev's answers (2026-10-17): criteria and weights proposed by the agent, approved by the person; start values v1.0 from the concept, adjustable only by the person (signed, logged); a stop after two windows without progress is enforced where the provider allows it
 - [ ] **D, the AI manager's view:** cross-project overview, agents and models over time (with E's progress and handover numbers), token use, rules and policies for all projects
 - [ ] **F, agent modules** (later, optional): forecasts and other model-based helpers as ready-made agents that only need a model
 

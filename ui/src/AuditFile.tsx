@@ -10,6 +10,7 @@ import { EvidenceActions, EvidenceAdd, EvidenceCopy, normalLink } from "./OrgEvi
 import { Modal } from "./Dialogs";
 import { HelpButton } from "./HelpButton";
 import { LockedNote } from "./Approval";
+import { WhyList } from "./Why";
 import { ANNEX_A_AREAS, ANNEX_A_GROUPS, COVERAGE_LABEL, EVIDENCE_SOURCES, type ControlStatus, type EvidenceSource } from "../../src/core/iso42001";
 import type { Dict } from "./i18n";
 
@@ -245,6 +246,7 @@ export function AuditFileDialog(props: {
                 <span>{t.afOrgDocumented}</span>
               </div>
             </div>
+            {file.derivations && <WhyList items={(["controls", "partly", "organisational", "not_covered", "withAlarm", "orgDocumented"] as const).map((k) => [file.derivations[`summary.${k}`], file.summary[k]])} t={t} lang={lang} title={t.whyAuditCounts} />}
 
             {ANNEX_A_AREAS.map((area) => {
               const cs = rows.filter((c) => c.area === area.id);

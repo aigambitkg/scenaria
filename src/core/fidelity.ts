@@ -17,6 +17,7 @@ import type { ScenariaNode } from "./types.js";
 import type { IntegrityState } from "./ledger.js";
 import { nodeText, tokenize } from "./recall.js";
 import { effectiveStatus } from "./verdict.js";
+import { compact, derive, fidelityCombine, FIDELITY_WEIGHTS, type CompactDerivation } from "./derivation.js";
 
 export type FidelityFlag = "break" | "drift" | "goalChanged" | "branch" | "tampered" | "builtOnTampered" | "lowSignal" | "noGoal" | "task" | "failed" | "canonBroken" | "canonRespected";
 
@@ -32,9 +33,11 @@ export interface FidelityPoint {
   integrity: IntegrityState | "inherited";
   epistemic: number;
   flags: FidelityFlag[];
+  /** How the score was computed (E1), in the short form (`expand()` adds texts): `score` is its value. */
+  why: CompactDerivation;
 }
 
-const W = { anchor: 0.35, continuity: 0.35, integrity: 0.15, epistemic: 0.15 };
+const W = FIDELITY_WEIGHTS;
 
 /** Word stems: compounds split at - _ . / ("Launch-Marketing" → launch, market), 6-char prefix (Spiele ~ Spiel). */
 export function stems(text: string): Set<string> {
@@ -115,13 +118,9 @@ export function stepComponents(i: StepInput): { anchor: number | null; continuit
 
 /** The weighted fidelity score 0..100 (without a goal the anchor weight is spread over the rest). */
 export function combine(anchor: number | null, continuity: number, integScore: number, epistemic: number): number {
-  const s =
-    anchor === null
-      ? (continuity * W.continuity + integScore * W.integrity + epistemic * W.epistemic) / (W.continuity + W.integrity + W.epistemic)
-      : anchor * W.anchor + continuity * W.continuity + integScore * W.integrity + epistemic * W.epistemic;
-  return Math.round(s * 100);
+  return fidelityCombine(anchor, continuity, integScore, epistemic);
 }
-export const FIDELITY_WEIGHTS = W;
+export { FIDELITY_WEIGHTS };
 
 /** The break rule (shared): neither connected to the path nor to the goal, or a sharp fall. */
 export function isBreak(anchor: number | null, continuity: number, score: number, parentScore: number | null): boolean {
@@ -199,17 +198,24 @@ export function fidelityAll(nodes: ScenariaNode[], opts: { integrity?: Map<strin
     }
     const epistemic = epistemicOf(n, opts.confirmed);
     const integScore = integrity === "tampered" ? 0 : integrity === "inherited" ? 0.5 : 1;
-    let score = combine(anchor, continuity, integScore, epistemic);
-    if (integrity === "tampered") score = Math.min(score, 25);
-    if (n.breaksCanon?.length) {
-      flags.push("canonBroken");
-      score = Math.min(score, 40);
-    } else if (n.respectsCanon?.length) flags.push("canonRespected");
-    if (!n.parentId) score = integrity === "tampered" ? 25 : 100;
+    if (n.breaksCanon?.length) flags.push("canonBroken");
+    else if (n.respectsCanon?.length) flags.push("canonRespected");
+    // The score IS the derivation's value (E1): one formula, the exact inputs kept for recomputing.
+    const why = derive("fidelity.score", "fidelity/1", {
+      anchor,
+      continuity,
+      integrity: integScore,
+      epistemic,
+      tampered: integrity === "tampered",
+      canonBroken: Boolean(n.breaksCanon?.length),
+      root: !n.parentId,
+    });
+    const score = why.value;
+    const whyShort = compact(why);
     // A break: the step neither connects to its path nor to the goal, or fidelity falls sharply.
     if (n.type !== "goal" && n.parentId && signal && isBreak(anchor, continuity, score, f.parent ? f.parent.score : null)) flags.push("break");
     if (isDrift(anchor, n.type)) flags.push("drift");
-    const point: FidelityPoint = { id: n.id, type: n.type, title: n.type === "decision" ? n.question ?? n.title : n.title, score, anchor: anchor === null ? null : Math.round(anchor * 100) / 100, continuity: Math.round(continuity * 100) / 100, integrity, epistemic: Math.round(epistemic * 100) / 100, flags };
+    const point: FidelityPoint = { id: n.id, type: n.type, title: n.type === "decision" ? n.question ?? n.title : n.title, score, anchor: anchor === null ? null : Math.round(anchor * 100) / 100, continuity: Math.round(continuity * 100) / 100, integrity, epistemic: Math.round(epistemic * 100) / 100, flags, why: whyShort };
     out.set(n.id, point);
     const nextTask = n.type === "goal" ? stems(`${n.title} ${n.goal ?? ""}`) : f.taskGoal;
     const nextMain = n.type === "mission" ? stems(n.goal ?? "") : f.mainGoal;

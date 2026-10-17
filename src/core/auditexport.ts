@@ -21,6 +21,7 @@ import { buildAuditFile, type AuditFile, type Period } from "./auditfile.js";
 import { projectIdentity, publicKeyId, signRecord, trustedApproverIdSet } from "./canon.js";
 import { readLedgerAnchor } from "./seal.js";
 import { COVERAGE_LABEL, EVIDENCE_SOURCES, type Lang2 } from "./iso42001.js";
+import { recompute, type Derivation } from "./derivation.js";
 
 export const AUDIT_EXPORT_KIND = "scenaria/iso42001-audit-export";
 export const AUDIT_EXPORT_VERSION = 1;
@@ -341,6 +342,8 @@ export interface ExportCheck {
   integrity?: string;
   /** The key is one this machine trusts (own or a teammate's). For an auditor: usually false — confirm the id with the person. */
   keyTrustedHere?: boolean;
+  /** How many derivations of numbers were recomputed and matched (E1); absent for files from before E1. */
+  derivations?: number;
 }
 
 /** Check a signed audit file (parsed JSON or its text). Needs nothing but the file. Never throws. */
@@ -392,7 +395,22 @@ export function verifyAuditExport(input: unknown): ExportCheck {
       trusted = trustedApproverIdSet().has(keyId);
     } catch {}
     const at = typeof body.context?.generatedAt === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(body.context.generatedAt) ? body.context.generatedAt : "unknown";
-    return { valid: true, digest, keyId, projectId, generatedAt: at, names: body.names, integrity, keyTrustedHere: trusted };
+    // E1: every number with a derivation is recomputed and compared with the number in the file. A signed file
+    // whose numbers contradict their own derivation was not written by Scenaria: not valid.
+    const ders = (body as any).file?.derivations;
+    let derivations: number | undefined;
+    if (ders !== undefined) {
+      if (!ders || typeof ders !== "object" || Array.isArray(ders)) return { valid: false, problem: "the derivations are not readable", digest, keyId };
+      derivations = 0;
+      const summary = (body as any).file?.summary ?? {};
+      for (const [k, d] of Object.entries(ders as Record<string, unknown>)) {
+        const again = recompute(d as Derivation);
+        const shown = k.startsWith("summary.") ? summary[k.slice(8)] : undefined;
+        if (again === null || again !== (d as Derivation).value || (shown !== undefined && shown !== again)) return { valid: false, problem: `the number ${k.replace(/[^\w.]/g, "?").slice(0, 40)} does not match its derivation`, digest, keyId };
+        derivations++;
+      }
+    }
+    return { valid: true, digest, keyId, projectId, generatedAt: at, names: body.names, integrity, keyTrustedHere: trusted, ...(derivations !== undefined ? { derivations } : {}) };
   } catch (err: any) {
     return { valid: false, problem: `cannot be read (${String(err?.message ?? err).slice(0, 80)})` };
   }
@@ -451,12 +469,31 @@ export function renderAuditMarkdown(x: AuditExport, lang: "de" | "en" = "de"): s
   out.push("");
   out.push(`## ${T("Übersicht", "Summary")}`);
   out.push("");
-  out.push(`- ${T("teilweise belegt", "partly evidenced")}: ${f.summary.partly}`);
-  out.push(`- ${T("nicht abgedeckt", "not covered")}: ${f.summary.not_covered}`);
-  out.push(`- ${T("Nachweis durch die Organisation", "evidence by the organisation")}: ${f.summary.organisational}`);
-  out.push(`- ${T("Dokumente der Organisation eingetragen (von der Person signiert)", "organisation's documents recorded (signed by the person)")}: ${f.summary.orgDocumented} / ${f.summary.controls}`);
-  if (f.summary.withAlarm) out.push(`- ⚠ ${T("Kontrollen mit Alarm", "controls with an alarm")}: ${f.summary.withAlarm}`);
+  // E1b: a footnote per number with its derivation (from the signed file; older files have none).
+  const ders = f.derivations ?? {};
+  const notes: string[] = [];
+  // The marker follows the label (a marker after a number reads like a power, review E1b K9).
+  const mark = (key: string) => {
+    if (!ders[key]) return "";
+    notes.push(key);
+    return ` [^${notes.length}]`;
+  };
+  out.push(`- ${T("teilweise belegt", "partly evidenced")}${mark("summary.partly")}: ${f.summary.partly}`);
+  out.push(`- ${T("nicht abgedeckt", "not covered")}${mark("summary.not_covered")}: ${f.summary.not_covered}`);
+  out.push(`- ${T("Nachweis durch die Organisation", "evidence by the organisation")}${mark("summary.organisational")}: ${f.summary.organisational}`);
+  out.push(`- ${T("Dokumente der Organisation eingetragen (von der Person signiert)", "organisation's documents recorded (signed by the person)")}${mark("summary.orgDocumented")}: ${f.summary.orgDocumented} / ${f.summary.controls}`);
+  if (f.summary.withAlarm) out.push(`- ⚠ ${T("Kontrollen mit Alarm", "controls with an alarm")}${mark("summary.withAlarm")}: ${f.summary.withAlarm}`);
   out.push("");
+  if (notes.length) {
+    notes.forEach((k, i) => {
+      const d = ders[k];
+      // Every counted item, so an auditor can recount (review E1b K3); every field escaped.
+      const items = d.inputs.find((x) => x.name === "items")?.value;
+      const counted = Array.isArray(items) ? ` ${T("Gezählt", "Counted")} (${items.length}): ${items.length ? cell(items.join(", ")) : "—"}` : "";
+      out.push(`[^${i + 1}]: ${cell(L(d.sentence))} ${T("Formel", "Formula")} ${cell(d.formula)}: ${cell(L(d.expression))}.${counted}`);
+    });
+    out.push("");
+  }
   out.push(`## ${T("Kontrollen", "Controls")}`);
   out.push("");
   out.push(`| ${T("Kontrolle", "Control")} | ${T("Titel", "Title")} | ${T("Status aus den Aufzeichnungen", "Status from the records")} | ${T("Dokument der Organisation", "Organisation's document")} | ${T("Hinweise", "Notes")} |`);

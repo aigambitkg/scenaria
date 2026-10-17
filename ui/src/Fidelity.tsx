@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from "react";
+import { Why } from "./Why";
 import type { Dict } from "./i18n";
 import type { FidelityPoint } from "./api";
 import { NodeId } from "./Map";
@@ -60,6 +61,7 @@ export function FidelityChart(props: { path: FidelityPoint[]; selectedId: string
       <h3>{t.fidelity}</h3>
       <div className="fid-head">
         <span className={`fid-num ${scoreTone(cur.score)}`}>{cur.score} %</span>
+        <Why d={cur.why} shown={cur.score} t={t} label={`${t.fidelity} ${cur.score} %`} />
         <span className="fid-sub">
           {t.fidelityAt} <NodeId id={cur.id} />
           <br />

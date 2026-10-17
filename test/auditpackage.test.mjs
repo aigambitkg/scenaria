@@ -106,7 +106,7 @@ test("C4b-1: a reading copy is rendered again from the evidence and compared —
   const x = exportAuditFile(s, { from: null, to: null }, { version: VERSION });
   const folder = writeAuditPackage(mkdtempSync(join(tmpdir(), "pkg-c1-")), x, "de");
   const page = readFileSync(join(folder, "audit-file.html"), "utf8");
-  writeFileSync(join(folder, "audit-file.html"), page.replace("nicht abgedeckt</span></div>", "nicht abgedeckt (bereinigt)</span></div>"));
+  writeFileSync(join(folder, "audit-file.html"), page.replace("nicht abgedeckt", "nicht abgedeckt (bereinigt)"));
   writeFileSync(join(folder, "audit-file.md"), `> Fingerabdruck: \`sha256:${x.signature.digest}\`\n# Alles belegt\n`);
   let r = checkExportPath(folder, VERSION);
   assert.equal(r.valid, true, "the evidence itself is fine");

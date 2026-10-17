@@ -24,6 +24,7 @@ import { projectIdChanged } from "./canon.js";
 import { gateResults } from "./gate.js";
 import { effectiveStatus, isConfirmedPass, isUnconfirmedPass } from "./verdict.js";
 import { archivedVerdictTrust } from "./trust.js";
+import { countOf, derive, type Derivation } from "./derivation.js";
 
 export type Severity = "high" | "medium" | "low";
 
@@ -72,6 +73,8 @@ export interface Metrics {
   tasks: { id: string; title: string; status?: string; steps: number; decisions: number; failed: number; branches: number; summary: string }[];
   byAgent: Record<string, AgentStat>;
   byModel: Record<string, AgentStat>;
+  /** How the health score and every count were computed (E1): each value is its derivation's value. */
+  why: { health: Derivation; counts: Record<string, Derivation> };
 }
 
 const FIELDS: { key: string; ok: (d: ScenariaNode) => boolean }[] = [
@@ -142,10 +145,14 @@ function emptyStat(): AgentStat {
   return { decisions: 0, avgQuality: 0, avgConfidence: null, failed: 0, revised: 0, withoutRationale: 0 };
 }
 
+/** Project-check codes that the health score counts as tamper findings, and as serious fixed-point/rule findings. */
+export const HEALTH_TAMPER_CODES = ["tampered", "ledger_broken", "ledger_missing", "ledger_replaced", "ledger_diverged", "reseal_unproven", "verdict_untrusted", "verdict_removed", "step_missing", "step_cycle", "verdict_forged", "snapshot_missing"];
+export const HEALTH_CANON_CODES = ["canon_broken", "canon_check_failed", "canon_tampered", "canon_untrusted", "canon_missing", "canon_check_tampered", "canon_gate_tampered", "canon_unreadable", "rule_tampered", "rule_missing", "project_id_changed"];
+
 export function metrics(
   nodes: ScenariaNode[],
   head: string | null,
-  opts: { rewinds?: number; integrity?: Map<string, "ok" | "tampered" | "unsealed">; stepsMissing?: string[]; ledgerBrokenAt?: number | null; ledgerMissing?: boolean; ledgerReplaced?: boolean; ledgerDiverged?: { expected: { lines: number }; found: { lines: number }; kind: "extended" | "rewritten"; since: string[] } | null; resealsUnproven?: string[]; reseals?: { id: string; at: string; kind: string; by: string }[]; restarted?: { at: string; since: string } | null; confirmed?: Set<string>; verdictsUntrusted?: string[]; verdictsRevoked?: string[]; verdictsSuperseded?: string[]; verdictsRemoved?: string[]; canon?: CanonEvent[]; canonError?: string | null; canonMissing?: string[]; verdictsForged?: string[]; snapshotsMissing?: string[]; verdictArchiveInvalid?: string[]; gateTampered?: string[]; rules?: { unconfirmed: { id: string; text: string }[]; tampered: { id: string; text: string }[]; missing: string[]; proposals: number }; projectIdChanged?: { bound: string; inConfig: string } | null } = {},
+  opts: { rewinds?: number; rewindsAt?: string[]; integrity?: Map<string, "ok" | "tampered" | "unsealed">; stepsMissing?: string[]; ledgerBrokenAt?: number | null; ledgerMissing?: boolean; ledgerReplaced?: boolean; ledgerDiverged?: { expected: { lines: number }; found: { lines: number }; kind: "extended" | "rewritten"; since: string[] } | null; resealsUnproven?: string[]; reseals?: { id: string; at: string; kind: string; by: string }[]; restarted?: { at: string; since: string } | null; confirmed?: Set<string>; verdictsUntrusted?: string[]; verdictsRevoked?: string[]; verdictsSuperseded?: string[]; verdictsRemoved?: string[]; canon?: CanonEvent[]; canonError?: string | null; canonMissing?: string[]; verdictsForged?: string[]; snapshotsMissing?: string[]; verdictArchiveInvalid?: string[]; gateTampered?: string[]; rules?: { unconfirmed: { id: string; text: string }[]; tampered: { id: string; text: string }[]; missing: string[]; proposals: number }; projectIdChanged?: { bound: string; inConfig: string } | null } = {},
 ): Metrics {
   const issues: Issue[] = [];
   // Canon: fixed points broken, checks failed, deadlines passed, proposals waiting.
@@ -319,36 +326,42 @@ export function metrics(
       ]),
     );
 
-  const irreversible = nodes.reduce((s, n) => s + (n.irreversible?.length ?? 0), 0);
-  const counts = {
-    nodes: nodes.length,
-    tasks: tasks.length,
-    decisions: decisions.length,
-    checkpoints: nodes.filter((n) => n.type === "checkpoint").length,
-    branches: nodes.filter((n) => n.type === "branch").length,
-    rewinds: opts.rewinds ?? 0,
-    failed: nodes.filter(failedNow).length,
-    passed: nodes.filter(confirmedPass).length,
-    selfReported: nodes.filter((n) => isUnconfirmedPass(n.verification) && n.verification?.origin !== "auto").length,
-    openDecisions: decisions.filter((d) => d.outcome === "open").length,
-    irreversible,
+  // Every count is the length of a list of ids (E1): the derivation keeps the list, so it can be recounted.
+  const ids = (xs: { id: string }[]) => xs.map((x) => x.id);
+  const countWhy: Record<string, Derivation> = {
+    nodes: countOf("count.nodes", ids(nodes), { de: "alle Schritte", en: "all steps" }),
+    tasks: countOf("count.tasks", tasks.map((x) => x.id), { de: "Aufgaben (Teilziele)", en: "tasks (sub-goals)" }),
+    decisions: countOf("count.decisions", decisions.map((d) => d.id), { de: "Entscheidungen", en: "decisions" }),
+    checkpoints: countOf("count.checkpoints", ids(nodes.filter((n) => n.type === "checkpoint")), { de: "Checkpoints", en: "checkpoints" }),
+    branches: countOf("count.branches", ids(nodes.filter((n) => n.type === "branch")), { de: "Verzweigungen", en: "branches" }),
+    rewinds: countOf("count.rewinds", opts.rewindsAt ?? Array.from({ length: opts.rewinds ?? 0 }, (_, i) => `rewind ${i + 1}`), { de: "Rücksprünge im Protokoll", en: "rewinds in the event log" }),
+    failed: countOf("count.failed", ids(nodes.filter(failedNow)), { de: "Schritte mit fehlgeschlagener Prüfung", en: "steps with a failed check" }),
+    passed: countOf("count.passed", ids(nodes.filter(confirmedPass)), { de: "Schritte, die die Person oder ein Prüf-Agent bestätigt hat (echt signiert)", en: "steps confirmed by the person or an audit agent (authentically signed)" }),
+    selfReported: countOf("count.selfReported", ids(nodes.filter((n) => isUnconfirmedPass(n.verification) && n.verification?.origin !== "auto")), { de: "nur vom Agenten als bestanden gemeldet (zählt nicht als geprüft)", en: "reported as passed only by an agent (does not count as checked)" }),
+    openDecisions: countOf("count.openDecisions", decisions.filter((d) => d.outcome === "open").map((d) => d.id), { de: "offene Entscheidungen", en: "open decisions" }),
+    irreversible: countOf("count.irreversible", nodes.flatMap((n) => (Array.isArray(n.irreversible) ? n.irreversible : []).map((_, i) => `${n.id}#${i + 1}`)), { de: "festgehaltene Wirkungen nach außen (Schritt#Nr.)", en: "recorded external effects (step#no.)" }),
   };
+  const counts = Object.fromEntries(Object.entries(countWhy).map(([k, d]) => [k, d.value])) as Metrics["counts"];
   const decisionQualityAvg = decisions.length ? decisions.reduce((s, d) => s + d.quality, 0) / decisions.length : 1;
 
-  let health = 100;
-  if (!root?.goal) health -= 20;
-  health -= Math.min(40, issues.filter((i) => ["tampered", "ledger_broken", "ledger_missing", "ledger_replaced", "ledger_diverged", "reseal_unproven", "verdict_untrusted", "verdict_removed", "step_missing", "step_cycle", "verdict_forged", "snapshot_missing"].includes(i.code)).length * 20);
-  health -= Math.min(30, issues.filter((i) => ["canon_broken", "canon_check_failed", "canon_tampered", "canon_untrusted", "canon_missing", "canon_check_tampered", "canon_gate_tampered", "canon_unreadable", "rule_tampered", "rule_missing", "project_id_changed"].includes(i.code) && i.severity === "high").length * 15);
-  health -= Math.min(25, Math.round((1 - decisionQualityAvg) * 40));
-  health -= Math.min(30, issues.filter((i) => i.code === "built_on_failure").length * 15);
-  health -= Math.min(10, counts.openDecisions * 2);
-  health -= Math.min(10, issues.filter((i) => i.code === "low_confidence_unverified").length * 3);
-  health -= Math.min(5, issues.filter((i) => i.code === "many_branches").length * 2);
+  // The health score IS its derivation's value (E1, formula health/1).
+  // Each input is the list of findings it counts ("code: step"), so the reader can recount it (E1a review).
+  const named = (pred: (i: Issue) => boolean) => issues.filter(pred).map((i) => `${i.code}: ${i.nodeId ?? i.subject ?? "–"}`);
+  const healthWhy = derive("health", "health/1", {
+    goalMissing: !root?.goal,
+    tamper: named((i) => HEALTH_TAMPER_CODES.includes(i.code)),
+    canon: named((i) => HEALTH_CANON_CODES.includes(i.code) && i.severity === "high"),
+    quality: decisionQualityAvg,
+    builtOnFailure: named((i) => i.code === "built_on_failure"),
+    openDecisions: decisions.filter((d) => d.outcome === "open").map((d) => d.id),
+    lowConfidence: named((i) => i.code === "low_confidence_unverified"),
+    manyBranches: named((i) => i.code === "many_branches"),
+  });
 
   const sevRank: Record<Severity, number> = { high: 0, medium: 1, low: 2 };
   issues.sort((a, b) => sevRank[a.severity] - sevRank[b.severity]);
   return {
-    health: Math.max(0, Math.min(100, health)),
+    health: healthWhy.value,
     goalSet: Boolean(root?.goal),
     counts,
     decisionQuality: Math.round(decisionQualityAvg * 100) / 100,
@@ -357,6 +370,7 @@ export function metrics(
     tasks,
     byAgent: finish(agentAcc),
     byModel: finish(modelAcc),
+    why: { health: healthWhy, counts: countWhy },
   };
 }
 
@@ -366,7 +380,10 @@ function short(s: string | undefined, max = 90): string {
 }
 
 export function projectMetrics(s: Scenaria): Metrics {
-  const rewinds = s.store.readEvents().filter((e) => e.type === "rewind").length;
+  const rewindEvents = s.store.readEvents().filter((e) => e.type === "rewind");
+  const rewinds = rewindEvents.length;
+  // Readable and still unique: "#1 2026-10-17 16:04 UTC".
+  const rewindsAt = rewindEvents.map((e, i) => `#${i + 1} ${String(e.ts ?? "").slice(0, 16).replace("T", " ")} UTC`);
   const integ = s.integrity();
   const nodes = s.store.listNodes();
   // The stored file states (one git call) and the earlier verdicts' signatures: the audit file's own alarms (C5).
@@ -388,7 +405,7 @@ export function projectMetrics(s: Scenaria): Metrics {
       return [];
     }
   })();
-  return metrics(nodes, s.store.readState().head, { rewinds, verdictsForged: integ.verdictsForged ?? [], snapshotsMissing, verdictArchiveInvalid, integrity: integ.state, stepsMissing: integ.stepsMissing, ledgerBrokenAt: integ.ledgerBrokenAt, ledgerMissing: integ.ledgerMissing, ledgerReplaced: integ.ledgerReplaced, ledgerDiverged: integ.ledgerDiverged, resealsUnproven: integ.resealsUnproven, reseals: integ.reseals, restarted: integ.restarted, confirmed: integ.confirmed, verdictsUntrusted: integ.verdictsUntrusted, verdictsRevoked: integ.verdictsRevoked, verdictsSuperseded: integ.verdictsSuperseded, verdictsRemoved: integ.verdictsRemoved, ...(() => {
+  return metrics(nodes, s.store.readState().head, { rewinds, rewindsAt, verdictsForged: integ.verdictsForged ?? [], snapshotsMissing, verdictArchiveInvalid, integrity: integ.state, stepsMissing: integ.stepsMissing, ledgerBrokenAt: integ.ledgerBrokenAt, ledgerMissing: integ.ledgerMissing, ledgerReplaced: integ.ledgerReplaced, ledgerDiverged: integ.ledgerDiverged, resealsUnproven: integ.resealsUnproven, reseals: integ.reseals, restarted: integ.restarted, confirmed: integ.confirmed, verdictsUntrusted: integ.verdictsUntrusted, verdictsRevoked: integ.verdictsRevoked, verdictsSuperseded: integ.verdictsSuperseded, verdictsRemoved: integ.verdictsRemoved, ...(() => {
     const cs = s.canonState();
     const ri = s.ruleIssues();
     return { canon: cs.events, canonError: cs.error, canonMissing: cs.missing, gateTampered: gateResults(s).tampered, rules: { unconfirmed: ri.unconfirmed, tampered: ri.tampered, missing: ri.missing, proposals: s.ruleProposals().length }, projectIdChanged: projectIdChanged(s.store) };
@@ -732,6 +749,7 @@ export function importAnalysis(s: Scenaria, text: string, meta: { provider?: str
 export function renderMetrics(m: Metrics, limit = 12): string {
   const lines = [
     `Health ${m.health}/100 · main goal ${m.goalSet ? "set" : "MISSING"} · decision quality ${Math.round(m.decisionQuality * 100)} %`,
+    `  how: ${m.why.health.sentence.en} (formula ${m.why.health.formula})`,
     `${m.counts.tasks} tasks · ${m.counts.decisions} decisions (${m.counts.openDecisions} open) · ${m.counts.checkpoints} checkpoints · ${m.counts.branches} branches · ${m.counts.rewinds} rewinds · checks ${m.counts.passed} passed / ${m.counts.failed} failed`,
   ];
   if (m.issues.length) {

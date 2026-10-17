@@ -149,6 +149,10 @@ Ein Prüfer findet jede der 38 Kontrollen aus Anhang A an einem Ort: was die Auf
 - **Prüfermodus vor Ort**: Du übergibst einen Browser an einen Prüfer; er liest alles und ändert nichts, bis du den Modus beendest. Ein Schutz vor Versehen, keine Sperre an deinem eigenen Rechner.
 - **Ehrlicher Umfang**: Scenaria belegt, wie KI-Agenten in euren Projekten gearbeitet haben. Es belegt nicht, wie KI-Modelle entwickelt oder trainiert werden, und ersetzt keine Richtlinien oder Folgenabschätzungen – das sind Dokumente der Organisation. Wer die Prüfakte lesen darf, ist deine signierte Einstellung (Standard: nur du).
 
+## Jede Zahl mit Herleitung (v0.9.14)
+
+Neben der Kontext-Treue, dem Projekt-Check und den Zählern der Prüfakte steht **ⓘ Wie berechnet?**: die Formel mit Version, die Eingänge (bei Zählern jeder gezählte Eintrag) und ein Satz in einfachen Worten. Darüberfahren zeigt den Satz, Antippen oder Enter zeigt alles. Scenaria rechnet die Zahl aus den Eingängen nach und sagt, ob sie stimmt. Im Prüfpaket stehen die Herleitungen als Fußnoten, und `scenaria audit-file verify` rechnet sie nach. Ein Modell liefert nie eine dieser Zahlen.
+
 ## Hilfe und Einführung
 
 **?** oben rechts erklärt jede Funktion in einfachen Worten, und jeder Dialog hat sein eigenes **?**. Beim ersten Besuch führt eine kurze Einführung durch die ersten Schritte: Ziel, deine KI, Verlauf, Ansichten. Du kannst sie überspringen und über **Mehr → Einführung** jederzeit neu starten.

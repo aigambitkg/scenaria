@@ -1,5 +1,6 @@
 import { LockedNote, ReadOnlyContext, useApprovalSignal } from "./Approval";
 import { HelpButton } from "./HelpButton";
+import { Why, WhyList } from "./Why";
 import { ExpertPanel } from "./Expert";
 import type { SessionKeys } from "./Control";
 import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
@@ -443,6 +444,7 @@ export function AnalysisDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessio
               <span className="hnum">{m.health}</span>
               <span className="hlabel">{t.health}</span>
             </div>
+            <Why d={m.why?.health} shown={m.health} t={t} lang={props.lang} label={`${t.health} ${m.health}`} />
             <div className="hfacts">
               <p>
                 {t.goal}:{" "}
@@ -459,6 +461,7 @@ export function AnalysisDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessio
               <p className="muted">
                 {m.counts.tasks} {t.statusTasks} · {m.counts.decisions} {t.decisionsShort} · {m.counts.branches} {t.statusBranches} · {m.counts.rewinds} {t.rewinds} · {m.counts.passed}✓ / {m.counts.failed}✘
               </p>
+              {m.why && <WhyList items={(["tasks", "decisions", "branches", "rewinds", "passed", "failed", "openDecisions", "selfReported", "irreversible"] as const).map((k) => [m.why.counts[k], m.counts[k]])} t={t} lang={props.lang} title={t.whyCounts} />}
             </div>
           </section>
         )}

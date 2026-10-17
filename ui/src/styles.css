@@ -987,3 +987,32 @@ table.gate tr.current td:first-child { box-shadow: inset 4px 0 0 var(--marker-so
 
 /* C5: in the Simple view a notice sits in the flow, never over the top bar (view switch, lock). */
 .simple-main > .banner { position: static; margin: 12px 12px 0; }
+
+/* E1b: "How computed?" — opens in the flow (no overlay that could run off a phone screen). */
+.why { display: inline; }
+.why.open { display: block; flex-basis: 100%; width: 100%; }
+.why-btn { font-size: 12px; padding: 0 2px; vertical-align: baseline; }
+.why-pop { display: block; margin: 6px 0; padding: 8px 10px; border: 1px solid var(--rule); border-left: 3px solid var(--lesson); background: var(--surface); color: var(--ink); max-width: 100%; overflow-wrap: anywhere; }
+.why-body p { margin: 0 0 6px; }
+.why-body code { font-family: var(--mono); font-size: 12px; }
+.why-inputs { border-collapse: collapse; font-size: 12px; margin: 4px 0 6px; width: 100%; }
+.why-inputs th { text-align: left; font-weight: 400; color: var(--ink-2); padding: 2px 8px 2px 0; vertical-align: top; }
+.why-inputs td { padding: 2px 0; overflow-wrap: anywhere; }
+.why-inputs td.why-num { white-space: nowrap; overflow-wrap: normal; text-align: right; padding-left: 8px; }
+.why-bad { color: var(--fail); font-weight: 600; }
+.why-list { margin: 4px 0 10px; font-size: 13px; }
+.why-list > summary { cursor: pointer; color: var(--ink-2); }
+.why-list .why-item { margin: 6px 0; padding: 6px 10px; border-left: 3px solid var(--lesson); background: var(--surface); }
+.fidelity .fid-head, .health { flex-wrap: wrap; }
+@media (max-width: 480px) { .why-word { display: none; } }
+/* E1b review: labels never break letter by letter (K4); a tap target of at least 24 px (K5); long lists scroll (K6);
+   the check line readable in dark mode (K10). */
+.why-inputs th { overflow-wrap: normal; word-break: normal; hyphens: auto; min-width: 9em; }
+.why-items { display: block; max-height: 9em; overflow: auto; overflow-wrap: anywhere; }
+.why-btn { min-width: 24px; min-height: 24px; padding: 2px 6px; }
+.why-label { color: var(--ink-2); }
+.why-ok { color: var(--ink-2); }
+@media (max-width: 480px) {
+  .why-inputs tr { display: block; padding: 3px 0; border-bottom: 1px solid var(--rule); }
+  .why-inputs th, .why-inputs td, .why-inputs td.why-num { display: block; min-width: 0; text-align: left; padding: 0; white-space: normal; }
+}

@@ -35,6 +35,7 @@ import { archivedVerdictTrust, verdictTrustAll, type ArchivedTrust } from "./tru
 import { listAuditors } from "./auditors.js";
 import { projectIdentity, publicKeyId } from "./canon.js";
 import { verdictOrigin } from "./verdict.js";
+import { countOf, type Derivation } from "./derivation.js";
 import { readAuditAccess, type AuditAccess } from "./auditaccess.js";
 import { catalogueFingerprint, counts as orgCounts, orgEvidenceStates, type OrgEvidenceState, type OrgEvidenceTrust } from "./orgevidence.js";
 import {
@@ -578,6 +579,8 @@ export interface AuditFile {
   /** Authentic reseals (record valid AND as this machine anchored them); unproven ones only by id. */
   reseals: { authentic: ResealEntry[]; unproven: string[] };
   access: AuditAccess;
+  /** How every number of the summary was computed (E1): `count/1` over the control ids; each value equals `summary`. */
+  derivations: Record<string, Derivation>;
 }
 
 const t = (de: string, en: string): Lang2 => ({ de, en });
@@ -1004,6 +1007,18 @@ export function buildAuditFile(s: Scenaria, period: Period = { from: null, to: n
     withNotes: controls.filter((c) => !c.alarm && c.warnings.length > 0).length,
     orgDocumented: controls.filter((c) => c.orgEvidence.state === "documented").length,
   };
+  // The summary's derivations (E1): each count is the list of controls it counts, so an auditor can recount.
+  const idsWhere = (pred: (c: (typeof controls)[number]) => boolean) => controls.filter(pred).map((c) => c.id);
+  const derivations: Record<string, Derivation> = {
+    "summary.controls": countOf("auditfile.controls", controls.map((c) => c.id), { de: "Kontrollen aus Anhang A im Katalog", en: "Annex A controls in the catalogue" }),
+    "summary.partly": countOf("auditfile.partly", idsWhere((c) => c.status === "partly"), { de: "Kontrollen mit Status „teilweise belegt“ (jede Pflichtquelle hat Daten im Zeitraum)", en: "controls with status “partly evidenced” (every required source has data in the period)" }),
+    "summary.organisational": countOf("auditfile.organisational", idsWhere((c) => c.status === "organisational"), { de: "Kontrollen, die laut Katalog die Organisation nachweist", en: "controls the organisation evidences according to the catalogue" }),
+    "summary.not_covered": countOf("auditfile.not_covered", idsWhere((c) => c.status === "not_covered"), { de: "Kontrollen „nicht abgedeckt“ (eine Pflichtquelle ohne Daten im Zeitraum)", en: "controls “not covered” (a required source without data in the period)" }),
+    "summary.evidenced": countOf("auditfile.evidenced", idsWhere((c) => c.status === "evidenced"), { de: "Kontrollen „belegt“ (erreicht heute keine)", en: "controls “evidenced” (none reaches this today)" }),
+    "summary.withAlarm": countOf("auditfile.withAlarm", idsWhere((c) => c.alarm), { de: "Kontrollen mit einem Alarm zum Fälschungsschutz", en: "controls with a tamper-protection alarm" }),
+    "summary.withNotes": countOf("auditfile.withNotes", idsWhere((c) => !c.alarm && c.warnings.length > 0), { de: "Kontrollen nur mit Hinweisen", en: "controls with notes only" }),
+    "summary.orgDocumented": countOf("auditfile.orgDocumented", idsWhere((c) => c.orgEvidence.state === "documented"), { de: "Kontrollen mit mindestens einem gültigen, von der Person signierten Dokument der Organisation", en: "controls with at least one valid document of the organisation signed by the person" }),
+  };
 
   const state: AuditFile["integrity"]["state"] = alarmCodes.size ? "alarm" : warnings.length ? "notes" : "ok";
   // Scoped to what is checked (K12): steps, signed records and reseals — not conversations or the event log.
@@ -1057,5 +1072,6 @@ export function buildAuditFile(s: Scenaria, period: Period = { from: null, to: n
     verdictHistory,
     reseals: { authentic: reseals, unproven: integ.resealsUnproven },
     access,
+    derivations,
   };
 }
