@@ -1,8 +1,8 @@
-import { LockedNote, useApprovalSignal } from "./Approval";
+import { LockedNote, ReadOnlyContext, useApprovalSignal } from "./Approval";
 import { HelpButton } from "./HelpButton";
 import { ExpertPanel } from "./Expert";
 import type { SessionKeys } from "./Control";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { api, type AnalysisRecord, type CanonEvent, type CanonSuggestion, type ConversationMessage, type ConversationSession, type Metrics, type ProjectRule, type ScenariaEvent, type StringPayload } from "./api";
 import { MessageList } from "./NodePanel";
 import type { Dict } from "./i18n";
@@ -880,6 +880,7 @@ function Evidence({ ids, onSelect }: { ids?: string[]; onSelect: (id: string) =>
 
 /** Canon events: the project's fixed points. Agents and the archivist propose — the person decides here. */
 export function CanonDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: string) => void; onClose: () => void; onSelectNode: (id: string) => void; onChanged: () => void }) {
+  const readOnly = useContext(ReadOnlyContext);
   const { t } = props;
   const [events, setEvents] = useState<CanonEvent[]>([]);
   const [sugs, setSugs] = useState<CanonSuggestion[]>([]);
@@ -1081,6 +1082,7 @@ export function CanonDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: stri
           ) : (
             <p className="muted">{t.canonNoSuggestions}</p>
           )}
+          {!readOnly && (
           <button
             className="btn"
             disabled={Boolean(busy)}
@@ -1093,7 +1095,9 @@ export function CanonDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: stri
           >
             {busy === "llm" ? t.running : t.canonAskLlm}
           </button>
+          )}
         </section>
+        {!readOnly && (
         <section className="a-sec">
           <h3>{t.canonNew}</h3>
           <form
@@ -1126,6 +1130,7 @@ export function CanonDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: stri
             </button>
           </form>
         </section>
+        )}
         {closed.length > 0 && (
           <details className="a-sec">
             <summary>

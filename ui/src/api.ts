@@ -9,6 +9,8 @@ import type { AgentStatus } from "../../src/setup";
 import type { ChatMessage, ChatResponse, ChatToolCall } from "../../src/chat";
 import type { RelayReport } from "../../src/core/relay";
 import type { gateMatrix } from "../../src/core/gate";
+import type { AuditFile } from "../../src/core/auditfile";
+import type { AuditAccess } from "../../src/core/auditaccess";
 import type { Forecast, ForecastOption, QuickForecast } from "../../src/core/forecast";
 export type { Forecast, ForecastOption, QuickForecast };
 import type { ExpertReport, FactSheet, Finding, Recommendation } from "../../src/core/expert";
@@ -114,8 +116,28 @@ async function req<T>(path: string, body?: unknown): Promise<T> {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((data as any)?.error ?? `HTTP ${res.status}`);
+  const code = typeof (data as any)?.code === "string" ? (data as any).code : undefined;
+  if (!res.ok) throw new ApiError((code && errorTexts[code]) || ((data as any)?.error ?? `HTTP ${res.status}`), res.status, code);
   return data as T;
+}
+
+/** Texts in the person's language for some of Scenaria's error codes (set by the app when the language changes). */
+export const errorTexts: Record<string, string> = {};
+
+/** An error answer of Scenaria: the message, the HTTP status and Scenaria's code (e.g. "approval_required"). */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number, readonly code?: string) {
+    super(message);
+  }
+}
+export type { AuditFile, AuditAccess };
+export interface AuditPackageResult {
+  /** The package folder's name (never a machine path). */
+  folder: string;
+  where: "downloads" | "home";
+  digest: string;
+  keyId: string;
+  names: "with-names" | "roles-only";
 }
 
 export const api = {
@@ -150,7 +172,21 @@ export const api = {
   analysis: () => req<Metrics>("/api/analysis"),
   fidelity: () => req<Fidelity>("/api/fidelity"),
   canon: () => req<{ events: CanonEvent[]; suggestions: CanonSuggestion[]; error: string | null; missing?: string[]; approval: boolean }>("/api/canon"),
-  approval: () => req<{ granted: boolean; mode: "local" | "team" | "disabled" }>("/api/approval"),
+  approval: () => req<{ granted: boolean; mode: "local" | "team" | "disabled"; auditView?: boolean | "stale" }>("/api/approval"),
+  /** The ISO/IEC 42001 audit file (C2): the person's (or the auditor mode's), unless the person opened it. */
+  auditFile: (from?: string, to?: string) => {
+    const q = new URLSearchParams();
+    if (from) q.set("from", from);
+    if (to) q.set("to", to);
+    const qs = q.toString();
+    return req<AuditFile>(`/api/audit-file${qs ? `?${qs}` : ""}`);
+  },
+  auditAccess: () => req<AuditAccess & { approval: boolean }>("/api/audit-file/access"),
+  /** The person's: write the signed audit package to Downloads and open its print page (local mode). */
+  auditPackage: (b: { from?: string; to?: string; names: "with-names" | "roles-only"; lang: string }) => req<AuditPackageResult>("/api/audit-file/package", b),
+  /** The person's: this browser becomes read-only for the auditor (8 h); the approval is removed here. */
+  auditorModeStart: () => req<{ ok: boolean; hours: number }>("/api/audit-file/auditor-mode", {}),
+  auditorModeEnd: () => req<{ ok: boolean }>("/api/audit-file/auditor-mode/end", {}),
   addCanon: (c: { kind: string; text: string; hard: boolean; check?: string; due?: string; evidence?: string[] }) => req<CanonEvent>("/api/canon", c),
   decideCanon: (id: string, action: "approve" | "reject" | "retire" | "confirm", opts: { reason?: string; adoptCheck?: boolean | string } = {}) => req<CanonEvent>("/api/canon/decide", { id, action, ...opts }),
   checkCanon: () => req<{ id: string; status: string; detail: string }[]>("/api/canon/check", {}),

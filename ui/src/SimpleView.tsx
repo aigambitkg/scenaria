@@ -6,7 +6,8 @@
  * answers two questions: "What did the AI do?" and "Can I go back to this?". Nothing here needs the words
  * node, branch, capsule or canon.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useContext, useEffect, useMemo, useState } from "react";
+import { ReadOnlyContext } from "./Approval";
 import { api, type ConversationMessage, type Fidelity, type ScenariaNode } from "./api";
 import type { Dict, Lang } from "./i18n";
 import { verdictView } from "../../src/core/verdict";
@@ -130,6 +131,7 @@ export function SimpleView(props: {
   onConnect: () => void;
   toast: Toast;
 }) {
+  const readOnly = useContext(ReadOnlyContext);
   const { t, lang, nodes, headId } = props;
   const [limit, setLimit] = useState(40);
   const [showOther, setShowOther] = useState(false);
@@ -195,11 +197,13 @@ export function SimpleView(props: {
     <div className="simple">
       <section className="sv-head">
         <h1 className="sv-goal">
-          {props.goal ? (
+          {props.goal && readOnly ? (
+            <span className="sv-goal-text">{props.goal}</span>
+          ) : props.goal ? (
             <button className="sv-goal-text" onClick={props.onEditGoal} title={t.editGoal}>
               {props.goal}
             </button>
-          ) : (
+          ) : readOnly ? null : (
             <button className="btn primary" onClick={props.onEditGoal}>
               {t.svSetGoal}
             </button>
@@ -233,7 +237,7 @@ export function SimpleView(props: {
               <li key={d.key} className="sv-day">
                 <div className="sv-day-head">
                   <h2>{d.label}</h2>
-                  {endOfDay && endOfDay.id !== headId && (
+                  {endOfDay && endOfDay.id !== headId && !readOnly && (
                     <button className="btn" onClick={() => setConfirm(endOfDay)}>
                       {t.svBackToDay(d.label)}
                     </button>
@@ -325,6 +329,7 @@ function Step(props: {
   onDiff: (from: string, to: string) => void;
   toast: Toast;
 }) {
+  const readOnly = useContext(ReadOnlyContext);
   const { n, t, lang } = props;
   const s = sentenceFor(n, props.nodes, t);
   const view = verdictView(n.verification, props.confirmed);
@@ -362,7 +367,7 @@ function Step(props: {
           <button className="btn link" aria-expanded={open} onClick={() => setOpen(!open)}>
             {open ? t.svHide : t.svWhatDidAi}
           </button>
-          {!props.isNow && n.snapshot && (
+          {!props.isNow && n.snapshot && !readOnly && (
             <button className="btn" onClick={props.onBack}>
               {t.svBack}
             </button>
@@ -405,7 +410,7 @@ function Step(props: {
                   {t.svShowChanges}
                 </button>
               )}
-              {n.snapshot && (
+              {n.snapshot && !readOnly && (
                 <button
                   className="btn"
                   onClick={async () => {

@@ -1,6 +1,6 @@
-import { LockedNote } from "./Approval";
+import { LockedNote, ReadOnlyContext } from "./Approval";
 import { DecisionForecast } from "./Forecasts";
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import { api, type ConversationMessage, type Fidelity, type ScenariaNode } from "./api";
 import { FidelityChart } from "./Fidelity";
 import type { Dict } from "./i18n";
@@ -139,6 +139,7 @@ export function NodePanel(props: {
   onChoose?: (id: string, option: string, rationale: string) => Promise<void>;
   onForecast?: (id: string) => void;
 }) {
+  const readOnly = useContext(ReadOnlyContext);
   const { placed, allNodes, t } = props;
   const [choosing, setChoosing] = useState<{ id: string; why: string } | null>(null);
   const [ctx, setCtx] = useState<{ tokens: number; markdown: string; historyTokens?: number } | null>(null);
@@ -188,9 +189,11 @@ export function NodePanel(props: {
           <p className="muted">{g.chosen ? t.ghostChosenHint : t.ghostHint}</p>
         </section>
         <div className="p-actions">
-          <button className="btn primary" onClick={() => props.onFork(g.decision, g.optionId, g.label)}>
-            {t.exploreOption}
-          </button>
+          {!readOnly && (
+            <button className="btn primary" onClick={() => props.onFork(g.decision, g.optionId, g.label)}>
+              {t.exploreOption}
+            </button>
+          )}
         </div>
       </aside>
     );
@@ -275,9 +278,11 @@ export function NodePanel(props: {
           <section className={`p-sec goal ${n.goal ? "" : "missing"}`}>
             <h3>{t.goal}</h3>
             <p>{n.goal ?? t.goalMissingLong}</p>
-            <button className="btn link" onClick={props.onEditGoal}>
-              {n.goal ? t.editGoal : t.setGoal}
-            </button>
+            {!readOnly && (
+              <button className="btn link" onClick={props.onEditGoal}>
+                {n.goal ? t.editGoal : t.setGoal}
+              </button>
+            )}
           </section>
         )}
         {n.type === "goal" && (
@@ -301,7 +306,7 @@ export function NodePanel(props: {
               <button className="btn" onClick={() => props.onToggleFold(n.id)}>
                 {props.folded.has(n.id) ? t.expand : t.collapse}
               </button>
-              {n.status !== "done" && (
+              {n.status !== "done" && !readOnly && (
                 <button className="btn" onClick={() => props.onUpdate(n.id, { status: "done" })}>
                   {t.markDone}
                 </button>
@@ -338,7 +343,7 @@ export function NodePanel(props: {
                       {!isChosen && explored && <span className="tag">{t.explored}</span>}
                     </div>
                     {o.description && <p className="opt-desc">{o.description}</p>}
-                    {!n.chosen && props.onChoose && (
+                    {!n.chosen && props.onChoose && !readOnly && (
                       choosing?.id === o.id ? (
                         <form
                           className="choose-form"
@@ -360,7 +365,7 @@ export function NodePanel(props: {
                         </button>
                       )
                     )}
-                    {n.chosen && !isChosen && !explored && (
+                    {n.chosen && !isChosen && !explored && !readOnly && (
                       <button className="btn link" onClick={() => props.onFork(n, o.id, o.label)}>
                         {t.exploreOption}
                       </button>
@@ -467,7 +472,7 @@ export function NodePanel(props: {
               </>
             )}
           </dl>
-          {n.snapshot && (
+          {n.snapshot && !readOnly && (
             <div className="row">
               <button
                 className="btn"
@@ -564,6 +569,8 @@ export function NodePanel(props: {
             </p>
           )}
           {!props.approved && <LockedNote t={t} text={t.verdictNeedsApproval} small />}
+          {!readOnly && (
+          <>
           <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={t.notesPlaceholder} rows={2} disabled={!props.approved} />
           <div className="row">
             <button className="btn" disabled={busy} onClick={() => verify({ auto: true })}>
@@ -576,13 +583,17 @@ export function NodePanel(props: {
               {t.problem}
             </button>
           </div>
+          </>
+          )}
         </section>
       </div>
 
       <div className="p-actions">
-        <button className="btn primary" onClick={() => props.onRewind(n)} disabled={n.id === props.headId && !n.snapshot}>
-          {t.rewind}
-        </button>
+        {!readOnly && (
+          <button className="btn primary" onClick={() => props.onRewind(n)} disabled={n.id === props.headId && !n.snapshot}>
+            {t.rewind}
+          </button>
+        )}
         <button
           className="btn"
           onClick={async () => {

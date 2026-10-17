@@ -1,7 +1,7 @@
-import { requestApproval, useApprovalSignal } from "./Approval";
+import { ReadOnlyContext, requestApproval, useApprovalSignal } from "./Approval";
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
-import { api, type Fidelity, type Graph, type ScenariaEvent, type ScenariaNode } from "./api";
+import { api, errorTexts, type Fidelity, type Graph, type ScenariaEvent, type ScenariaNode } from "./api";
 import { dict, initialLang, saveLang, type Lang } from "./i18n";
 import { ProjectSwitcher } from "./Projects";
 import { HelpDialog, Onboarding, onboardingDone, restartOnboarding } from "./Help";
@@ -16,6 +16,7 @@ import { ChatPanel, RelayDialog, SettingsDialog, type SessionKeys } from "./Cont
 import { ErrorBoundary } from "./ErrorBoundary";
 import { ForecastsDialog } from "./Forecasts";
 import { AuditDialog } from "./AuditArea";
+import { AuditFileDialog } from "./AuditFile";
 import { SimpleView, type Toast } from "./SimpleView";
 
 /** The three views on the same data (Batch B): one per persona. */
@@ -58,6 +59,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
   const [fidelityError, setFidelityError] = useState(false);
   const [canonOpen, setCanonOpen] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
+  const [auditFileOpen, setAuditFileOpen] = useState(false);
   const [canonInfo, setCanonInfo] = useState<{ active: number; proposed: number } | null>(null);
   const [pending, setPending] = useState<Pending>(null);
   const [diff, setDiff] = useState<{ from: string; to: string; stat: string; patch: string } | null>(null);
@@ -219,15 +221,49 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
   // Once at start: align the saved language with this browser's (if this window may change settings).
   const [approved, setApproved] = useState(false);
   const [teamMode, setTeamMode] = useState(true); // until known: no lock button
+  // Auditor mode (C4c): the person handed this browser to an auditor; it only reads (the server refuses writes).
+  // true: auditor mode; "stale": this browser still carries an expired or unknown auditor mode (it neither reads
+  // the audit file nor writes anything until the mode is ended here).
+  const [auditView, setAuditView] = useState<boolean | "stale">(false);
+  // An approval link opened in an auditor-mode browser ends the mode there and gives no approval (review C4c-1 K1).
+  const [auditorLinkNote, setAuditorLinkNote] = useState(() => new URLSearchParams(location.search).get("approval") === "auditor");
   const checkApproval = useCallback(
     () =>
       api.settings().then((st) => {
         setApproved(st.approval);
         setTeamMode(st.teamMode);
+        api
+          .approval()
+          .then((a) => setAuditView(a.auditView === true ? true : a.auditView === "stale" ? "stale" : false))
+          .catch(() => {});
         return st;
       }),
     [],
   );
+  // Scenaria's own error codes in the person's language (the server answers in English).
+  errorTexts.auditor_mode = t.afAuditorRefused;
+  errorTexts.auditor_mode_active = t.afAuditorActive;
+  // In auditor mode the dashboard checks in every 2 minutes: while it does, nobody can open an approval link
+  // that could land in this browser (review C4c-1 S1).
+  useEffect(() => {
+    if (auditView !== true) return;
+    const id = setInterval(() => {
+      api
+        .approval()
+        .then((a) => setAuditView(a.auditView === true ? true : a.auditView === "stale" ? "stale" : false))
+        .catch(() => {});
+    }, 120_000);
+    return () => clearInterval(id);
+  }, [auditView]);
+  const endAuditorMode = async () => {
+    try {
+      await api.auditorModeEnd();
+      setAuditView(false);
+      toast(t.afAuditorEnded);
+    } catch (e: any) {
+      toast(String(e?.message ?? e));
+    }
+  };
   useEffect(() => {
     checkApproval()
       .then((st) => {
@@ -284,13 +320,17 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
     setExtOpen(false);
     switch (a) {
       case "goal":
-        setEditGoal(root?.goal ?? "");
+        if (!auditView) setEditGoal(root?.goal ?? "");
         break;
       case "forecasts":
         setForecastFocus(null);
         break;
       case "audit":
         setAuditOpen(true);
+        break;
+      case "auditfile":
+        setView("audit");
+        setAuditFileOpen(true);
         break;
       case "analysis":
       case "expert":
@@ -301,6 +341,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
         setCanonOpen(true);
         break;
       case "chat":
+        if (auditView) break;
         if (view === "simple") setView("manage");
         setSide("chat");
         break;
@@ -346,6 +387,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
 
   return (
     <HelpContext.Provider value={helpCtx}>
+    <ReadOnlyContext.Provider value={auditView !== false}>
     <div className="app">
       <header className="topbar">
         <div className="brand">
@@ -368,7 +410,9 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
         {graph && view !== "simple" && (
           <div className={`goalbar ${root?.goal ? "" : "missing"}`}>
             <span className="goalbar-label">{t.goal}</span>
-            {editGoal !== null ? (
+            {auditView ? (
+              <span className="goalbar-text">{root?.goal ?? "–"}</span>
+            ) : editGoal !== null ? (
               <form
                 className="goalbar-edit"
                 onSubmit={(e) => {
@@ -390,7 +434,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
         )}
         <div className="top-actions">
           {view !== "audit" && <span className={`live ${live ? "on" : ""}`}>{live ? t.live : t.offline}</span>}
-          {view !== "audit" && (
+          {view !== "audit" && !auditView && (
             <button
               className="btn"
               onClick={async () => {
@@ -402,7 +446,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
               {t.saveNow}
             </button>
           )}
-          {view === "manage" && (
+          {view === "manage" && !auditView && (
             <button className={`btn ${side === "chat" ? "primary" : ""}`} onClick={() => setSide(side === "chat" ? "node" : "chat")} title={t.chatHint}>
               {t.chat}
             </button>
@@ -428,6 +472,9 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
           )}
           {view === "audit" && (
             <>
+              <button className="btn primary-soft" onClick={() => act("auditfile")} title={t.afButtonHint}>
+                {t.afButton}
+              </button>
               <button className="btn" onClick={() => act("protocol")}>
                 {t.protocol}
               </button>
@@ -436,7 +483,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
               </button>
             </>
           )}
-          {view === "manage" && (
+          {view === "manage" && !auditView && (
             <div className="more">
               <button className="btn" aria-haspopup="menu" aria-expanded={extOpen} title={t.extensionsHint} onClick={() => setExtOpen(!extOpen)}>
                 {t.extensions}
@@ -480,7 +527,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
               )}
             </div>
           )}
-          {!approved && !teamMode && (
+          {!approved && !teamMode && !auditView && (
             <button className="btn icon lock" onClick={openApproval} title={t.approvalOpenHint} aria-label={t.approvalOpen}>
               🔒
             </button>
@@ -488,9 +535,11 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
           <button className="btn icon help-top" onClick={() => setHelp(view === "simple" ? "simple" : "start")} title={t.helpTitle} aria-label={t.helpTitle}>
             ?
           </button>
+          {!auditView && (
           <button className="btn icon gear" onClick={() => setSettingsOpen(true)} title={t.settings} aria-label={t.settings}>
             ⚙
           </button>
+          )}
           <div className="lang" role="group" aria-label="Language">
             <button className={lang === "de" ? "on" : ""} onClick={() => switchLang("de")}>
               DE
@@ -501,6 +550,25 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
           </div>
         </div>
       </header>
+      {auditorLinkNote && !auditView && (
+        <div className="auditor-band" role="status">
+          <span>{t.afAuditorLinkEnded}</span>
+          <button className="btn" onClick={() => setAuditorLinkNote(false)}>
+            OK
+          </button>
+        </div>
+      )}
+      {auditView && (
+        <div className="auditor-band" role="status">
+          <span>🔍 {auditView === "stale" ? t.afAuditorStale : t.afAuditorBanner}</span>
+          <button className="btn" onClick={() => act("auditfile")}>
+            {t.afButton}
+          </button>
+          <button className="btn" onClick={endAuditorMode}>
+            {t.afAuditorEnd}
+          </button>
+        </div>
+      )}
 
       {view === "simple" ? (
         <main className="main simple-main">
@@ -778,6 +846,22 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
           }}
         />
       )}
+      {auditFileOpen && (
+        <AuditFileDialog
+          t={t}
+          lang={lang}
+          approved={approved}
+          teamMode={teamMode}
+          auditView={auditView}
+          onClose={() => setAuditFileOpen(false)}
+          onAuditorMode={() => {
+            setApproved(false);
+            setAuditView(true);
+            setView("audit");
+            toast(t.afAuditorOn);
+          }}
+        />
+      )}
       {auditOpen && (
         <AuditDialog
           t={t}
@@ -865,6 +949,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
         ))}
       </div>
     </div>
+    </ReadOnlyContext.Provider>
     </HelpContext.Provider>
   );
 }

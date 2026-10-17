@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { dirname, extname, join, normalize } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { userInfo } from "node:os";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { homedir, userInfo } from "node:os";
+import { globalConfigPath } from "./core/global.js";
 
 function defaultUserName() {
   try {
@@ -25,7 +26,9 @@ import { archivistProposals } from "./core/canon-llm.js";
 import { addAuditor, listAuditors, removeAuditor } from "./core/auditors.js";
 import { buildAuditFile, parsePeriod } from "./core/auditfile.js";
 import { exportAuditFile, renderAuditMarkdown } from "./core/auditexport.js";
+import { signRecord } from "./core/canon.js";
 import { renderAuditHtml } from "./core/audithtml.js";
+import { writeAuditPackage } from "./core/auditpackage.js";
 import { addOrgEvidence, catalogueFingerprint, confirmOrgEvidence, copyOrgEvidence, OrgEvidenceError, orgEvidenceStates, planCopy, removeOrgEvidence } from "./core/orgevidence.js";
 import { AUDIT_ACCESS_MODES, readAuditAccess, setAuditAccess, type AuditAccessMode } from "./core/auditaccess.js";
 import { gateMatrix, runGate } from "./core/gate.js";
@@ -41,7 +44,7 @@ import { adoptRecommendation, expertAnalysis, factSheet, getReport, listPersonal
 import { forgetProject, listProjects, registerProject } from "./core/projects.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
-export const VERSION = "0.9.10";
+export const VERSION = "0.9.11";
 
 const KEY_ENVS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "AZURE_OPENAI_API_KEY"];
 
@@ -176,6 +179,13 @@ export interface AppOptions {
   autoForecast?: boolean;
   /** Shared between the apps of one server when the person switches projects (single-use link state). */
   linkState?: { secret?: string; extra?: Map<string, number> };
+  /**
+   * Auditor-mode browsers (C4c): sha256 of each read cookie → valid until. Shared by every app of one server
+   * (project switches), kept only in the process (a restart ends every auditor mode).
+   */
+  auditViews?: Map<string, { until: number; seen: number }>;
+  /** Least time between two auditor-mode starts (default 10 s; tests use 0). */
+  auditViewEveryMs?: number;
   /** The server can switch the dashboard to another of the person's projects (local mode only). */
   onSwitch?: (root: string) => Promise<{ name: string; root: string }>;
   /** The project agents' HTTP/proxy endpoints of this server stay on (the one it was started with). */
@@ -235,6 +245,54 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
   // your own click fails visibly. Team mode: the configured approver token.
   const link = opts.linkState ?? { secret: opts.token ? opts.approverToken : opts.approvalCode };
   const isApprover = (req: IncomingMessage) => tokenMatches(approvalCookie(req), approvalSecret);
+  // Auditor mode on site (C4c, Kev 2026-10-16): the person hands this browser to an auditor. It gets a separate,
+  // read-only cookie for the audit file (8 h, kept only in this process) and loses the approval cookie, so the
+  // server refuses every person action from it. Ending the mode drops the read cookie; acting again needs the
+  // person's approval (the lock).
+  // The list is shared by every app of one server (review C4c-1 K2) and capped (K8); keys are sha256 of the cookie.
+  const auditViews = opts.auditViews ?? new Map<string, { until: number; seen: number }>();
+  const AUDIT_VIEW_MS = 8 * 3600_000;
+  const AUDIT_VIEW_MAX = 5;
+  const AUDIT_VIEW_IDLE_MS = 10 * 60_000;
+  const viewKey = (v: string) => createHash("sha256").update(v).digest("hex");
+  // Only cookies Scenaria issued count (review C4c-1 R1): "<random>.<valid until, ms>.<HMAC>", the HMAC key kept in
+  // the person's config folder (mode 600; agents run without access to it, HANDOFF §2 rule 6). A cookie planted by
+  // another page on 127.0.0.1 (cookies do not separate ports) is ignored: it neither locks nor reads anything.
+  const viewSign = (body: string) => createHmac("sha256", auditViewKey()).update(`scenaria-auditview/v1|${body}`).digest("hex").slice(0, 32);
+  const viewValue = (rand: string, until: number) => `${rand}.${until.toString(36)}.${viewSign(`${rand}.${until.toString(36)}`)}`;
+  const ours = (v: string) => {
+    const m = /^([0-9a-f]{48})\.([0-9a-z]{1,12})\.([0-9a-f]{32})$/.exec(v);
+    if (!m) return false;
+    try {
+      return tokenMatches(m[3], viewSign(`${m[1]}.${m[2]}`));
+    } catch {
+      return false;
+    }
+  };
+  const pruneViews = () => {
+    const now = Date.now();
+    for (const [k, e] of auditViews) if (e.until < now) auditViews.delete(k);
+  };
+  /** Every non-empty value of the auditor-mode cookie this request carries (valid or not). */
+  const viewCookies = (req: IncomingMessage) => (opts.token ? [] : [...(req.headers.cookie ?? "").matchAll(/(?:^|;)\s*scenaria_auditview=([^;]*)/g)].map((m) => m[1].trim()).filter((v) => v !== "" && ours(v)));
+  /** A valid, unexpired auditor mode: the browser may read the audit file. */
+  const isAuditView = (req: IncomingMessage) => {
+    const vs = viewCookies(req);
+    if (!vs.length) return false;
+    pruneViews();
+    const e = vs.map((v) => auditViews.get(viewKey(v))).find(Boolean);
+    if (e) e.seen = Date.now(); // the auditor's dashboard checks in every 2 min (review C4c-1 S1)
+    return Boolean(e);
+  };
+  /** Any auditor-mode cookie Scenaria issued (also an expired one, or one from before a restart): this browser never writes (fail closed). Local mode only (R3). */
+  const hasViewCookie = (req: IncomingMessage) => viewCookies(req).length > 0;
+  const endViews = (req: IncomingMessage) => {
+    let ended = false;
+    for (const v of viewCookies(req)) if (auditViews.delete(viewKey(v))) ended = true;
+    return ended;
+  };
+  const CLEAR_VIEW = "scenaria_auditview=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0";
+  let lastViewStart = 0;
   let lastVersion = s.store.version();
   // Automatic multiverse forecasts for open decisions on the current line — only when the person
   // switched it on in Settings, only with the model the PERSON chose (never the project file), with a
@@ -317,6 +375,13 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
     const p = url.pathname;
     const token = opts.token;
 
+    // Auditor mode (C4c): a browser the person handed to an auditor only reads. Every write is refused — also the
+    // ones agents may do (save now, goal, go back, tools, the LLM proxy) and the lock — except ending the mode.
+    // Fail closed (review C4c-1 K2, K6): any auditor-mode cookie counts, also an expired or unknown one.
+    if (req.method !== "GET" && req.method !== "HEAD" && p !== "/api/audit-file/auditor-mode/end" && hasViewCookie(req)) {
+      return send(res, 403, { error: "This browser is in auditor mode (read only): nothing can be changed here.", code: "auditor_mode" });
+    }
+
     // ---------- LLM proxy (conversation overlay for any provider) ----------
     if (p.startsWith("/proxy/")) {
       if (!token) {
@@ -381,6 +446,13 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
             redeemed = true;
           }
         }
+      }
+      if (redeemed && hasViewCookie(req)) {
+        // A browser in auditor mode never becomes approved by a link (review C4c-1 K1: an agent could have the link
+        // opened in exactly that browser). The link is used up, the auditor mode ends here; the person unlocks again.
+        if (endViews(req)) s.store.appendEvent({ type: "update", data: { message: "auditor mode ended in a browser (an approval link was opened there; no approval given)" } });
+        res.writeHead(302, { location: "/?approval=auditor", "set-cookie": CLEAR_VIEW });
+        return res.end();
       }
       if (redeemed) {
         res.writeHead(302, { location: "/", "set-cookie": `scenaria_approval=${encodeURIComponent(approvalSecret)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000` });
@@ -500,7 +572,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         }
 
         // ---------- canon events (fixed points) ----------
-        if (req.method === "GET" && p === "/api/approval") return send(res, 200, { granted: isApprover(req), mode: token ? (opts.approverToken ? "team" : "disabled") : "local" });
+        if (req.method === "GET" && p === "/api/approval") return send(res, 200, { granted: isApprover(req), mode: token ? (opts.approverToken ? "team" : "disabled") : "local", auditView: isAuditView(req) ? true : hasViewCookie(req) ? "stale" : false });
         if (req.method === "GET" && p === "/api/canon") {
           const st = s.canonState();
           return send(res, 200, { events: st.events, error: st.error, missing: st.missing, suggestions: st.error ? [] : s.suggestCanon(), approval: isApprover(req) });
@@ -514,6 +586,16 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         if (req.method === "POST" && p === "/api/approval/open") {
           if (token) return send(res, 400, { error: "Team mode: open the dashboard with the approver link (SCENARIA_APPROVER_TOKEN).", code: "team_mode" });
           if (isApprover(req)) return send(res, 200, { ok: true, already: true });
+          // While a browser is handed to an auditor, nobody opens an approval link: it would land in the default
+          // browser — maybe the auditor's (review C4c-1 K1, S1; the dashboard mark is only a claim). An auditor
+          // browser counts while its dashboard checked in during the last 10 minutes (it does so every 2 minutes),
+          // so a browser that lost its cookie does not lock the person out for long (R2). A link redeemed in a
+          // browser in auditor mode never approves it (see the approval link above).
+          pruneViews();
+          const recent = Date.now() - AUDIT_VIEW_IDLE_MS;
+          if ([...auditViews.values()].some((e) => e.seen >= recent)) {
+            return send(res, 409, { error: "A browser is in auditor mode: end the auditor mode there first, then unlock. (If that window was closed, the lock works again 10 minutes later, or after restarting Scenaria.)", code: "auditor_mode_active" });
+          }
           if (!opts.openApproval) return send(res, 409, { error: "This Scenaria cannot open your browser. Start it with scenaria start (or the start icon).", code: "no_browser" });
           const fromDashboard = req.headers["x-scenaria-view"] === "dashboard";
           const r = await opts.openApproval(fromDashboard);
@@ -522,6 +604,13 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           // The dashboard mark is only a claim (any local client can send it): logged as such, with the client's name.
           s.store.appendEvent({ type: "update", data: { message: `approval link opened in the default browser (asked by ${fromDashboard ? "a client marked as the dashboard" : `${ctx.agent}, not marked as the dashboard`}; user agent: ${String(req.headers["user-agent"] ?? "-").slice(0, 80)})` } });
           return send(res, 200, { ok: true, opened: true });
+        }
+        // Ending the auditor mode only drops a read cookie: anyone in that browser may do it.
+        if (req.method === "POST" && p === "/api/audit-file/auditor-mode/end") {
+          // Logged only when this browser really was in auditor mode (anyone may call this route).
+          if (endViews(req)) s.store.appendEvent({ type: "update", data: { message: "auditor mode ended in a browser" } });
+          res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "set-cookie": CLEAR_VIEW });
+          return res.end(JSON.stringify({ ok: true }));
         }
         if (personOnly && req.method === "POST" && !isApprover(req)) {
           return send(res, 403, { error: "This is the person's action (approvals, settings, chat, relay, analysis with your keys): click the lock (Open approval mode) in the dashboard (or open the approval link from the terminal running Scenaria). Agents can only propose.", code: "approval_required" });
@@ -543,8 +632,8 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           return send(res, 200, { ...a, modes: AUDIT_ACCESS_MODES, approval: true });
         }
         if (req.method === "GET" && p === "/api/audit-file") {
-          // Default "person": only the approval session reads the audit file (fail-closed on anything unverified).
-          if (readAuditAccess(s.store).mode !== "open" && !isApprover(req)) {
+          // Default "person": only the approval session (or the auditor mode the person opened) reads the audit file.
+          if (readAuditAccess(s.store).mode !== "open" && !isApprover(req) && !isAuditView(req)) {
             // The setting protects the audit file itself; the raw records stay readable as before (rule 10).
             const how = token ? "open the dashboard with the approver link (SCENARIA_APPROVER_TOKEN)" : "click the lock (Open approval mode) in the dashboard";
             return send(res, 403, { error: `Only the person reads the audit file (their setting): ${how}. The person can open it to everyone: scenaria audit-file access open.`, code: "approval_required" });
@@ -556,6 +645,75 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
             return send(res, 400, { error: err?.message ?? String(err) });
           }
           return send(res, 200, buildAuditFile(s, period));
+        }
+        // Auditor mode on site (C4c): the person starts it; this browser becomes read-only.
+        if (req.method === "POST" && p === "/api/audit-file/auditor-mode") {
+          if (token) return send(res, 400, { error: "Team mode: give the auditor the audit package instead.", code: "team_mode" });
+          if (Date.now() - lastViewStart < (opts.auditViewEveryMs ?? 10_000)) return send(res, 429, { error: "Just started — try again in a few seconds.", code: "busy" });
+          lastViewStart = Date.now();
+          const until = Date.now() + AUDIT_VIEW_MS;
+          const secret = viewValue(randomBytes(24).toString("hex"), until);
+          pruneViews();
+          while (auditViews.size >= AUDIT_VIEW_MAX) auditViews.delete(auditViews.keys().next().value!);
+          auditViews.set(viewKey(secret), { until, seen: Date.now() });
+          s.store.appendEvent({ type: "update", data: { message: "auditor mode started in a browser (read-only, 8 h)", by: approver } });
+          res.writeHead(200, {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-store",
+            "set-cookie": [`scenaria_auditview=${secret}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${AUDIT_VIEW_MS / 1000}`, "scenaria_approval=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"],
+          });
+          return res.end(JSON.stringify({ ok: true, hours: 8 }));
+        }
+        // The audit package from the dashboard (C4c): local mode only; written to the person's Downloads folder.
+        if (req.method === "POST" && p === "/api/audit-file/package") {
+          if (token) return send(res, 400, { error: "Team mode: create the audit package with the CLI on the project's machine (scenaria audit-file export).", code: "team_mode" });
+          const b = await readBody(req);
+          let period;
+          try {
+            period = parsePeriod(typeof b?.from === "string" ? b.from : null, typeof b?.to === "string" ? b.to : null);
+          } catch (err: any) {
+            return send(res, 400, { error: err?.message ?? String(err) });
+          }
+          const lang = b?.lang === "en" ? "en" : "de";
+          // The folder is checked BEFORE signing (review C4c-1 K3, K4): an absolute home, a real folder, writable,
+          // and never inside a project (a Downloads link into the project would put the package there).
+          const home = homedir();
+          if (!home || !isAbsolute(home)) return send(res, 400, { error: "Your home folder is not known: create the audit package with the CLI (scenaria audit-file export --out-dir <folder>).", code: "no_home" });
+          const realDir = (d: string) => {
+            try {
+              return statSync(d).isDirectory() ? realpathSync.native(d) : null;
+            } catch {
+              return null;
+            }
+          };
+          // macOS and Windows compare folder names without case (review C4c-1 R5).
+          const fold = (x: string) => (process.platform === "darwin" || process.platform === "win32" ? x.toLowerCase() : x);
+          const downloads = realDir(join(home, "Downloads"));
+          const parent = downloads ?? realDir(home);
+          const inside = (d: string, root: string) => {
+            const a = fold(d);
+            const b = fold(realDir(root) ?? realRoot(root));
+            return a === b || a.startsWith(b.endsWith(sep) ? b : b + sep);
+          };
+          if (!parent) return send(res, 400, { error: "No folder to write the audit package to (Downloads or your home folder).", code: "no_folder" });
+          if ([s.root, opts.viewRoot?.() ?? s.root].some((r) => inside(parent, r))) {
+            return send(res, 400, { error: "The Downloads folder points into a project: create the audit package with the CLI (scenaria audit-file export --out-dir <folder>).", code: "inside_project" });
+          }
+          try {
+            accessSync(parent, fsConstants.W_OK);
+          } catch {
+            return send(res, 400, { error: "Scenaria cannot write to your Downloads folder.", code: "not_writable" });
+          }
+          const x = exportAuditFile(s, period, { names: b?.names === "roles-only" ? "roles-only" : "with-names", version: VERSION, by: approver, via: "dashboard" });
+          let folder: string;
+          try {
+            folder = writeAuditPackage(parent, x, lang, (parts) => signRecord(s.store, parts));
+          } catch (err: any) {
+            // Never a machine path in an answer.
+            return send(res, 400, { error: `The audit package could not be written${typeof err?.code === "string" ? ` (${err.code})` : ""}.`, code: "package_failed" });
+          }
+          if (b?.open !== false) void openLocalFile(join(folder, "audit-file.html"));
+          return send(res, 200, { folder: basename(folder), where: downloads ? "downloads" : "home", digest: x.signature.digest, keyId: x.signature.keyId, names: x.names });
         }
         // Signed export (C4a): signing with the approver key is the person's (POST under the personOnly prefix).
         if (req.method === "POST" && p === "/api/audit-file/export") {
@@ -573,7 +731,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         // The organisation's evidence per control (C3): read like the audit file; every change is the person's
         // (all POST /api/audit-file* are under the personOnly prefix above).
         if (req.method === "GET" && p === "/api/audit-file/evidence") {
-          if (readAuditAccess(s.store).mode !== "open" && !isApprover(req)) {
+          if (readAuditAccess(s.store).mode !== "open" && !isApprover(req) && !isAuditView(req)) {
             const how = token ? "open the dashboard with the approver link (SCENARIA_APPROVER_TOKEN)" : "click the lock (Open approval mode) in the dashboard";
             return send(res, 403, { error: `Only the person reads the audit file (their setting): ${how}.`, code: "approval_required" });
           }
@@ -1120,6 +1278,45 @@ function openBrowser(url: string): Promise<boolean> {
   return launch(cmd, args, openerEnv());
 }
 
+/** Open a local file with the system's own program (absolute paths only; tests: recorded in browserLog). */
+function openLocalFile(path: string): Promise<boolean> {
+  if (process.env.SCENARIA_NO_BROWSER) {
+    browserLog.push(path);
+    return Promise.resolve(true);
+  }
+  if (process.platform === "darwin") return launch("/usr/bin/open", [path], openerEnv());
+  if (process.platform === "win32") return launch(join(process.env.SystemRoot || "C:\\Windows", "System32", "rundll32.exe"), ["url.dll,FileProtocolHandler", path], openerEnv());
+  const x = ["/usr/bin/xdg-open", "/usr/local/bin/xdg-open", "/bin/xdg-open"].find((f) => existsSync(f));
+  return x ? launch(x, [path], openerEnv()) : Promise.resolve(false);
+}
+
+/**
+ * The key that signs auditor-mode cookies (C4c, review R1): 32 random bytes in the person's config folder (mode 600),
+ * created on first use. Agents run without access to that folder (HANDOFF §2 rule 6), so they cannot make a cookie
+ * Scenaria would count. Kept across restarts, so a browser handed to an auditor stays read-only after a restart.
+ */
+let auditViewKeyCache: Buffer | null = null;
+function auditViewKey(): Buffer {
+  if (auditViewKeyCache) return auditViewKeyCache;
+  const f = join(dirname(globalConfigPath()), "auditview.key");
+  try {
+    const k = readFileSync(f);
+    if (k.length >= 32) return (auditViewKeyCache = k);
+  } catch {}
+  const k = randomBytes(32);
+  try {
+    mkdirSync(dirname(f), { recursive: true, mode: 0o700 });
+    writeFileSync(f, k, { mode: 0o600, flag: "wx" });
+  } catch {
+    // Another process created it at the same moment: use that one.
+    try {
+      const other = readFileSync(f);
+      if (other.length >= 32) return (auditViewKeyCache = other);
+    } catch {}
+  }
+  return (auditViewKeyCache = k);
+}
+
 function realRoot(p: string) {
   try {
     return realpathSync(p);
@@ -1156,6 +1353,8 @@ export async function startServer(
   // Every app keeps its own project: requests already running finish in the project they started in.
   const approvalSecret = randomBytes(24).toString("hex");
   const linkState: { secret?: string; extra?: Map<string, number> } = { secret: opts.token ? approverToken : approvalCode, extra: new Map() };
+  // One list of auditor-mode browsers for every app of this server (a project switch keeps the mode; C4c-1 K2).
+  const auditViews = new Map<string, { until: number; seen: number }>();
   let current = s;
   const agentsProject = { name: s.config().projectName, root: s.root };
   let baseUrl = "";
@@ -1184,6 +1383,7 @@ export async function startServer(
       approverToken,
       approvalSecret,
       linkState,
+      auditViews,
       agentsProject,
       openApproval,
       viewRoot: () => current.root,

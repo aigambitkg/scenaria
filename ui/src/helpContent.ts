@@ -2,7 +2,7 @@
  * The help area: every function in plain words — what it is, when it helps, how to use it, one example.
  * Kept as data (DE/EN) so the help dialog, the onboarding and the "?" buttons share one source.
  */
-export type HelpAction = "goal" | "forecasts" | "audit" | "analysis" | "expert" | "canon" | "chat" | "relay" | "settings" | "prompt" | "conversations" | "protocol" | "projects" | "onboarding";
+export type HelpAction = "goal" | "forecasts" | "audit" | "auditfile" | "analysis" | "expert" | "canon" | "chat" | "relay" | "settings" | "prompt" | "conversations" | "protocol" | "projects" | "onboarding";
 
 export interface HelpTopic {
   id: string;
@@ -155,7 +155,7 @@ const de: HelpTopic[] = [
     when: "Bevor du nach einer Prognose wählst – vor allem, wenn das Orakel den Kern stark korrigiert hat.",
     example: "Die Passkey-Option: Der Kern hatte gewarnt (eigene Worte ohne Bezug), das Orakel korrigiert mit Beleg n7. Prüf-Experte: „mit Vorsicht“ – erst nach der KI-Prüfung. Der Skeptiker liest n7, bestätigt den Bezug → „belastbar“. Hätte er widersprochen, fiele die Korrektur in der geprüften Prognose weg.",
     how: [
-      "Oben „Prüfung“ öffnen: alle Prognosen mit Ampel (belastbar / mit Vorsicht / nicht belastbar), Kennzahlen und den Prüfbericht zum Herunterladen (Markdown oder JSON).",
+      "In „Steuerung“ → „Erweiterungen“ die „Prognose-Prüfung“ öffnen: alle Prognosen mit Ampel (belastbar / mit Vorsicht / nicht belastbar), Kennzahlen und den Prüfbericht zum Herunterladen (Markdown oder JSON).",
       "Unter jeder gespeicherten Prognose: „Prüfpunkte zeigen“ – die Checkliste läuft sofort und ohne KI.",
       "„KI-Prüfung der Orakel-Aussagen“: Ein skeptisches Modell prüft jede Aussage NUR gegen die zitierten Belege (so, wie sie bei der Prognose waren). Nicht belegte Korrekturen fallen in der „geprüften Prognose“ weg.",
       "Im Tab „Güte“: Rückblick (jede vergangene Entscheidung aus ihrer Zeit heraus prognostiziert), Orakel vs. Kern, Prüfstand.",
@@ -173,7 +173,34 @@ const de: HelpTopic[] = [
       "Prüfungen und Backtests werden signiert gespeichert; außerhalb geänderte Dateien werden erkannt und ignoriert.",
       "KI-Prüfung und Orakel-Backtest nutzen dein Modell und brauchen den Freigabe-Modus (im Terminal: scenaria forecast --audit f3 --deep).",
     ],
-    open: { action: "audit", label: "Prüf-Bereich öffnen" },
+    open: { action: "audit", label: "Prognose-Prüfung öffnen" },
+  },
+  {
+    id: "audit-file",
+    title: "Prüfakte – ISO/IEC 42001",
+    what: "Die Prüfakte zeigt für jede der 38 Kontrollen aus Anhang A der ISO/IEC 42001, was die Aufzeichnungen dieses Projekts belegen, was nur teilweise abgedeckt ist und was eure Organisation selbst nachweisen muss.",
+    when: "Vor einem Audit, oder wenn du wissen willst, wo eure Nachweise noch Lücken haben.",
+    how: [
+      "In der Ansicht „Prüfung“ oben „Prüfakte“ öffnen. Ohne Zeitraum gilt das ganze Projekt; mit „von“ und „bis“ nur dieser Zeitraum.",
+      "Oben steht der Fälschungsschutz. Ein Alarm senkt keinen Status, steht aber an jeder betroffenen Kontrolle.",
+      "Mit ▾ siehst du je Kontrolle, was Scenaria zeigt, welche Quellen Daten haben, was fehlt und welche Dokumente der Organisation erfasst sind.",
+      "„Prüfpaket erstellen“: Scenaria signiert die Prüfakte mit deinem Schlüssel und legt einen Ordner in „Downloads“ an. Die Druckseite öffnet sich; „Drucken → Als PDF sichern“ macht das PDF.",
+      "„An Prüfer übergeben“: Dieser Browser kann danach nur noch lesen. Der Prüfer sieht alles, kann aber nichts ändern. Zum Weiterarbeiten den Prüfermodus beenden und wieder entsperren (🔒).",
+    ],
+    terms: [
+      ["teilweise belegt", "Jede nötige Quelle hat Daten im Zeitraum. Mehr kann Scenaria allein nie belegen, denn ein Audit prüft auch, was außerhalb der Aufzeichnungen passiert."],
+      ["Nachweis durch die Organisation", "Richtlinien, Rollen, Folgenabschätzungen: Das weist eure Organisation mit eigenen Dokumenten nach (Link, Hash, verantwortliche Rolle und Name, Datum)."],
+      ["nicht abgedeckt", "Eine nötige Quelle hat keine Daten im Zeitraum. Die Prüfakte nennt, welche."],
+      ["Fingerabdruck", "Die SHA-256-Prüfsumme des signierten Nachweises. Die Druckseite und Markdown tragen denselben; jeder kann ihn mit scenaria audit-file verify prüfen."],
+    ],
+    notes: [
+      "Nur du liest die Prüfakte, außer du stellst sie auf „offen“ (im Terminal: scenaria audit-file access).",
+      "Die Signatur heißt: auf diesem Rechner zu dieser Zeit aus diesen Aufzeichnungen berechnet und von dir freigegeben. Sie beweist nicht jede Tatsache.",
+      "Der Prüfermodus schützt vor Versehen, er ist keine Sperre: An deinem Rechner könnte jemand einen anderen Browser oder ein Terminal öffnen.",
+      "Solange der Prüfermodus läuft, lässt sich in keinem Browser entsperren. Beende ihn zuerst im Browser des Prüfers; ein geschlossenes Prüfer-Fenster sperrt nach 10 Minuten nicht mehr.",
+      "Die Dokumente der Organisation erfasst du vorerst im Terminal (scenaria audit-file evidence add). Das Formular im Dashboard folgt.",
+    ],
+    open: { action: "auditfile", label: "Prüfakte öffnen" },
   },
 
   {
@@ -438,7 +465,7 @@ const en: HelpTopic[] = [
     when: "Before you choose based on a forecast — especially when the oracle corrected the core a lot.",
     example: "The passkey option: the core had warned (own words without connection), the oracle corrects with evidence n7. Auditor: \"with caution\" — until the AI check. The skeptic reads n7 and confirms the link → \"reliable\". Had it disagreed, the correction would be removed in the audited forecast.",
     how: [
-      "Open \"Audit\" at the top: every forecast with a traffic light (reliable / with caution / not reliable), key figures and the audit report to download (Markdown or JSON).",
+      "Open \"Forecast audit\" under Manage → Extensions: every forecast with a traffic light (reliable / with caution / not reliable), key figures and the audit report to download (Markdown or JSON).",
       "Below every saved forecast: \"Show checks\" — the checklist runs at once, without AI.",
       "\"AI check of the oracle's claims\": a skeptical model checks each claim ONLY against the cited evidence (as it was when the forecast was made). Unsupported corrections are removed in the \"audited forecast\".",
       "In the \"Quality\" tab: backtest (every past decision forecast as of its own time), oracle vs. core, test bench.",
@@ -456,7 +483,34 @@ const en: HelpTopic[] = [
       "Audits and backtests are stored signed; files changed outside are detected and ignored.",
       "The AI check and the oracle backtest use your model and need the approval mode (terminal: scenaria forecast --audit f3 --deep).",
     ],
-    open: { action: "audit", label: "Open the audit area" },
+    open: { action: "audit", label: "Open the forecast audit" },
+  },
+  {
+    id: "audit-file",
+    title: "Audit file — ISO/IEC 42001",
+    what: "The audit file shows, for each of the 38 controls of Annex A of ISO/IEC 42001, what this project's records evidence, what is only partly covered and what your organisation must document itself.",
+    when: "Before an audit, or when you want to know where your evidence still has gaps.",
+    how: [
+      "In the \"Audit\" view, open \"Audit file\" at the top. Without a period it covers the whole project; with \"from\" and \"to\" only that period.",
+      "The tamper protection comes first. An alarm lowers no status, but it is shown at every control it affects.",
+      "With ▾ you see per control what Scenaria shows, which sources hold data, what is missing and which documents of the organisation are recorded.",
+      "\"Create audit package\": Scenaria signs the audit file with your key and puts a folder in Downloads. The print page opens; \"Print → Save as PDF\" makes the PDF.",
+      "\"Hand over to an auditor\": this browser then only reads. The auditor sees everything but cannot change anything. To work again, end the auditor mode and unlock (🔒).",
+    ],
+    terms: [
+      ["partly evidenced", "Every needed source holds data in the period. Scenaria alone can never evidence more, because an audit also checks what happens outside the records."],
+      ["evidence by the organisation", "Policies, roles, impact assessments: your organisation evidences these with its own documents (link, hash, responsible role and name, date)."],
+      ["not covered", "A needed source holds no data in the period. The audit file names which."],
+      ["Fingerprint", "The SHA-256 checksum of the signed evidence. The print page and the Markdown carry the same one; anyone can check it with scenaria audit-file verify."],
+    ],
+    notes: [
+      "Only you read the audit file, unless you set it to \"open\" (terminal: scenaria audit-file access).",
+      "The signature means: computed on this machine at that time from these records and released by you. It does not prove every fact.",
+      "The auditor mode protects against mistakes; it is not a lock: at your computer someone could open another browser or a terminal.",
+      "While the auditor mode runs, no browser can unlock. End it in the auditor's browser first; a closed auditor window stops blocking after 10 minutes.",
+      "For now you record the organisation's documents in the terminal (scenaria audit-file evidence add). The form in the dashboard follows.",
+    ],
+    open: { action: "auditfile", label: "Open the audit file" },
   },
 
   {

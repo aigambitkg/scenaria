@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import type { Dict } from "./i18n";
 
@@ -61,12 +61,20 @@ export async function requestApproval(t: Dict): Promise<{ kind: "already" | "ope
   }
 }
 
-/** A locked notice with the one button that unlocks it. */
+/**
+ * Auditor mode (C4c): this browser only reads. Components hide every action that would change something
+ * (the server refuses them anyway, review C4c-1 K7).
+ */
+export const ReadOnlyContext = createContext(false);
+
+/** A locked notice with the one button that unlocks it (in auditor mode: only the read-only note). */
 export function LockedNote(props: { t: Dict; text: string; small?: boolean }) {
   const { t } = props;
+  const readOnly = useContext(ReadOnlyContext);
   const [state, setState] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   useApprovalSignal(() => setState(t.approvalOn));
+  if (readOnly) return <div className={`qnote q-info locked${props.small ? " small" : ""}`}>🔍 {t.afReadOnlyHere}</div>;
   return (
     <div className={`qnote q-warn locked${props.small ? " small" : ""}`} role="status">
       <span>🔒 {props.text}</span>{" "}

@@ -901,3 +901,62 @@ table.gate tr.current td:first-child { box-shadow: inset 4px 0 0 var(--marker-so
 .settings .launcher { margin-top: 10px; align-items: center; gap: 10px; flex-wrap: wrap; }
 /* Agents write long paths and URLs: never let them push the Simple view sideways. */
 .sv-text, .sv-meta, .sv-goal-text, .sv-detail, .sv-detail li, .modal-body li { overflow-wrap: anywhere; }
+
+/* ---------- audit file (C4c) ---------- */
+.btn.primary-soft { border-color: var(--ink); box-shadow: inset 0 -3px 0 var(--marker-solid); }
+.auditor-band { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 16px; background: color-mix(in srgb, var(--lesson) 12%, var(--surface)); border-bottom: 2px solid var(--lesson); color: var(--ink); font-weight: 600; font-size: 13px; }
+.auditor-band span { margin-right: auto; }
+.audit-file .af-scope { max-width: 80ch; }
+.af-period { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 10px 0 14px; }
+.af-period .af-label { font-weight: 600; }
+.af-period label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-2); }
+.af-period input[type="date"] { padding: 4px 6px; border: 1px solid var(--rule); border-radius: 3px; background: var(--surface); color: var(--ink); font: inherit; }
+.af-period .af-utc { flex-basis: 100%; }
+.af-integrity { border: 1px solid var(--rule); border-left: 4px solid var(--pass); padding: 10px 12px; margin-bottom: 14px; background: var(--surface); }
+.af-integrity.af-notes { border-left-color: var(--warn); }
+.af-integrity.af-alarm { border-left-color: var(--fail); background: color-mix(in srgb, var(--fail) 6%, var(--surface)); }
+.af-integrity ul { margin: 8px 0 0; padding-left: 18px; }
+.af-integrity li { margin-bottom: 6px; overflow-wrap: anywhere; }
+.af-integrity p { margin: 8px 0 0; }
+.af-filter { margin-bottom: 8px; }
+.ad-light.static { cursor: default; }
+.chip.st-org { border-color: var(--lesson); color: var(--lesson); }
+.chip.st-partly { border-color: var(--ink-2); color: var(--ink); }
+.af-area h4 { margin: 18px 0 6px; }
+.af-table { table-layout: fixed; }
+.af-table col.af-c-id { width: 76px; }
+.af-table col.af-c-st { width: 190px; }
+.af-table col.af-c-org { width: 150px; }
+.af-table col.af-c-more { width: 40px; }
+.af-table td { overflow-wrap: anywhere; }
+.af-table td .chip { display: inline-block; margin: 0 4px 3px 0; }
+.af-detail h5 { margin: 10px 0 4px; font-size: 12.5px; }
+.af-detail p { margin: 0 0 6px; }
+.af-two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.af-table td.af-detail-cell, .af-list td:first-child { white-space: normal; }
+.af-detail { min-width: 0; }
+.af-src, .af-docs, .af-history { margin: 4px 0; padding-left: 18px; }
+.af-src li, .af-docs li, .af-history li { margin-bottom: 6px; overflow-wrap: anywhere; }
+.af-url, .af-hash { overflow-wrap: anywhere; word-break: break-all; }
+.af-more { margin-top: 12px; }
+.af-more summary { cursor: pointer; font-weight: 600; }
+.af-list td { overflow-wrap: anywhere; }
+.af-actions { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--rule); }
+.af-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 8px 0; }
+.af-row .check { margin: 0; }
+.af-done { border: 1px solid var(--pass); padding: 8px 10px; font-weight: 400; overflow-wrap: anywhere; }
+.af-done p { margin: 0 0 4px; }
+.af-handover { border: 1px solid var(--lesson); padding: 10px 12px; margin-top: 6px; }
+.af-handover p { margin: 0 0 6px; max-width: 70ch; }
+@media (max-width: 700px) {
+  .af-two { grid-template-columns: minmax(0, 1fr); }
+  .af-table, .af-table tbody, .af-table tr.ad-detail, .af-table td.af-detail-cell { display: block; width: 100%; }
+  .af-table colgroup { display: none; }
+  .af-table tr.af-row-c { display: grid; grid-template-columns: 56px minmax(0, 1fr) 36px; grid-template-areas: "id ti mo" "id st st" "id org org"; border-bottom: 1px solid var(--rule); padding: 4px 0; }
+  .af-table tr.af-row-c td { border: 0; padding: 2px 6px; }
+  .af-table td.af-id { grid-area: id; }
+  .af-table td.af-ti { grid-area: ti; }
+  .af-table td.af-st { grid-area: st; }
+  .af-table td.af-org { grid-area: org; }
+  .af-table td.af-mo { grid-area: mo; }
+}

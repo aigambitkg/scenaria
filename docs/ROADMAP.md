@@ -102,7 +102,8 @@ The core stays as it is. New features come only through these batches, in this o
   - [x] C3 organisational evidence per control (0.9.8): link + hash, owner role + name, date; signed by the person; never raises a status; take over from another project
   - [x] C4a signed audit file (0.9.9): canonical JSON signed by the person, `verify` without a project, Markdown reading copy, names or roles only
   - [x] C4b audit package (0.9.10): evidence, print-ready page (PDF via the browser), Markdown, note; `verify` finds the newest export
-  - [ ] C4c dashboard view, form for the organisation's evidence, auditor mode on site
+  - [x] C4c-1 audit file in the dashboard (0.9.11): read-only view, audit package from the dashboard (Downloads), auditor mode on site (read only), "Prüfung" for forecasts renamed "Prognose-Prüfung"
+  - [ ] C4c-2 form for the organisation's evidence in the dashboard
 - [ ] **D, the AI manager's view:** cross-project overview, agents and models over time, token use, rules and policies for all projects
 - [ ] **E, course corridor and drift guard** (parked until A–D are done)
 - [ ] **F, agent modules** (later, optional): forecasts and other model-based helpers as ready-made agents that only need a model
