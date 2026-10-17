@@ -140,7 +140,7 @@ Every open decision gets a **forecast before anyone chooses**: how faithful the 
 - **Oracle** (multiverse, your model): archivist (past), craftsman (present) and oracle (future) may only **correct** the core, by at most ±20 points per part, each correction with a reason and existing evidence. Corrections without evidence count 0; how much the oracle is trusted (γ) is learned from how its corrections really went.
 - **Auditor (Prüf-Experte)**: a checklist on every forecast (fair timing, signature, data basis, options distinguishable, track record, evidence) → reliable / with caution / not reliable. On request a skeptical model checks each oracle claim against the evidence as it was cited and removes unsupported corrections.
 - **Simple to use**: the Forecasts dialog starts with a ready check (model, approval, main goal) and three paths: forecast a decision (or write one down), check a prompt, or check a past decision against what really happened. You see which role is working and get the result in plain words.
-- **Audit area** (top bar → **Audit**): every forecast with a traffic light, key figures and an audit report to download (Markdown/JSON) — read-only.
+- **Forecast audit** (Manage → Extensions → **Forecast audit**): every forecast with a traffic light, key figures and an audit report to download (Markdown/JSON) — read-only.
 - **Quality**: a backtest of every past decision as of its own time, oracle vs. core, and a test bench. Honest: meaningful from 10 decisions, shown as a tendency before.
 
 Prompts and plans can be checked the same way, with variants side by side. Automatic forecasts are opt-in, use only your model and have a daily limit across all projects. Dashboard → **Forecasts**, CLI `scenaria forecast n12` / `--quality` / `--audit f3 [--deep]`, chat, or the `scenaria_forecast` tool for agents.
@@ -157,8 +157,18 @@ Click the project name at the top to see your Scenaria projects on this computer
 
 The dashboard has three views on the same data:
 - **Simple** (the default): your history in plain words, by day. *Back to this state* returns your files to any saved state (with *Undo*), *What did the AI do?* shows the request, the result and the changed files, and any state opens as a folder.
-- **Audit**: the scenario map with rules and milestones, the project check and the protocol.
-- **Manage**: chat, analysis and **Extensions** (forecasts, Prüf-Experte, relay).
+- **Audit**: the scenario map with rules and milestones, the project check, the protocol and the **audit file** (ISO/IEC 42001).
+- **Manage**: chat, analysis and **Extensions** (forecasts, forecast audit, relay).
+
+## ISO/IEC 42001 audit file (v0.9.6–0.9.12)
+
+An auditor finds every one of the 38 Annex A controls in one place: what this project's records evidence, what is only partly covered and what your organisation must document itself. Dashboard → **Audit** → **Audit file**, CLI `scenaria audit-file`.
+
+- **Computed from the records**, for the whole project or a period: status per control (partly evidenced / evidence by the organisation / not covered, with the missing sources named), the tamper protection with every warning, signed approvals, the verdict history and reseals. Only independent, signed verdicts count; a damaged tamper evidence warns at every affected control but lowers no status.
+- **The organisation's documents** per control: link and SHA-256 of the document (computed in your browser; the file is never uploaded), owner with role and name, date. Recorded only by you at the control in the dashboard (or `scenaria audit-file evidence`), you see exactly what you sign, and it is committed with the project. They never raise a status; an edited entry shows as changed.
+- **Signed audit package**: the evidence as canonical JSON signed with your key, a print-ready page (Print → Save as PDF, the fingerprint on every page), Markdown and a note on checking. Names by default, roles only on request. Anyone checks it without a project: `scenaria audit-file verify`.
+- **Auditor mode on site**: hand a browser to an auditor; it reads everything and changes nothing until you end the mode. A protection against mistakes, not a lock on your own computer.
+- **Honest scope**: Scenaria evidences how AI agents worked in your projects. It does not evidence how AI models are developed or trained, nor your policies and impact assessments — those are the organisation's documents. Who may read the audit file is your signed setting (default: only you).
 
 ## Help and introduction
 
@@ -279,7 +289,7 @@ All paths use **one tool registry**: the same 18 tools with the same validation 
 - **Local-first, no telemetry.** Everything lives in `.scenaria/` inside the project. Nothing leaves the machine unless you run a team server. This keeps it GDPR-friendly and safe for client code.
 - **Mixed models, one audit trail.** Every node records `agent`, `model` and `user`. Compare vendors on the same task, or let one model build and another verify.
 - **Team server.** `scenaria serve --host 0.0.0.0 --token <secret>` gives the dashboard and API to a team (Bearer token or browser cookie). Locally it only answers on 127.0.0.1 and is protected against DNS rebinding and cross-site requests.
-- **Audit and governance.** `scenaria export` produces a machine-readable JSON (nodes and events) for BI or governance tools, and `scenaria protocol` writes a human-readable protocol. Decisions, verdicts, irreversible actions, who and when are all included, which supports ISO/IEC 42001 and AI Act documentation.
+- **Audit and governance.** The **ISO/IEC 42001 audit file** (see above) gives auditors every Annex A control with the evidence, signed. `scenaria export` produces a machine-readable JSON (nodes and events) for BI or governance tools, and `scenaria protocol` writes a human-readable protocol. Decisions, verdicts, irreversible actions, who and when are all included, which supports ISO/IEC 42001 and AI Act documentation.
 - **Rules for every agent.** `AGENTS.md`, `CLAUDE.md` and `GEMINI.md` blocks tell agents when to record decisions. A ready-made [verifier prompt](templates/rules/verifier-prompt.md) works with any LLM.
 - **Open source (MIT).** Self-host it, audit it and extend it.
 
@@ -349,6 +359,8 @@ scenaria rewind <id> [--lesson ..]       scenaria fork <decisionId> <option>    
 scenaria versions | open <id> [--copy-to dir] | mirror [--enable]
 scenaria conversations | conversation <id> | import <file> | log-message --role .. --text ..
 scenaria verify <id> | last-good | export [--format json|md] | protocol
+scenaria audit-file [--from --to] [--json] | access [person|open] | evidence [add|rm <id>|confirm <id>|copy --from <project>]
+scenaria audit-file export [--from --to] [--roles-only] [--lang de|en] [--out-dir ..] | verify [<file.json> | <package folder>]
 scenaria tools [--format openai|anthropic|gemini|json] | call <tool> '<json>'
 ```
 

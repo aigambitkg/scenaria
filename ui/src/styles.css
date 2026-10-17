@@ -960,3 +960,27 @@ table.gate tr.current td:first-child { box-shadow: inset 4px 0 0 var(--marker-so
   .af-table td.af-org { grid-area: org; }
   .af-table td.af-mo { grid-area: mo; }
 }
+
+/* ---------- the organisation's evidence (C4c-2) ---------- */
+.ev-box { border: 1px solid var(--rule); border-left: 3px solid var(--lesson); padding: 10px 12px; margin: 8px 0; background: var(--surface); }
+.ev-box h5 { margin: 0 0 6px; }
+.ev-box p { margin: 0 0 6px; }
+.ev-form .field { display: flex; flex-direction: column; gap: 3px; margin: 0 0 8px; font-size: 12.5px; }
+.ev-form .field input, .ev-inline select { padding: 5px 7px; border: 1px solid var(--rule); border-radius: 3px; background: var(--surface); color: var(--ink); font: inherit; min-width: 0; }
+.ev-two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; align-items: end; }
+.ev-hash { border: 1px solid var(--rule); border-radius: 3px; padding: 8px 10px; margin: 0 0 8px; min-width: 0; }
+.ev-hash legend { font-size: 12.5px; padding: 0 4px; }
+.ev-hash .seg { margin-bottom: 6px; }
+.ev-hash input[type="file"] { max-width: 100%; }
+.ev-hash input:not([type="file"]) { width: 100%; padding: 5px 7px; border: 1px solid var(--rule); border-radius: 3px; background: var(--surface); color: var(--ink); font: inherit; box-sizing: border-box; }
+.ev-fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 12px; margin: 6px 0 8px; font-size: 12.5px; }
+.ev-fields dt { color: var(--ink-2); }
+.ev-fields dd { margin: 0; overflow-wrap: anywhere; }
+.ev-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.ev-actions .btn, .af-docs + .btn { font-size: 12px; }
+.ev-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+@media (max-width: 700px) {
+  .ev-two { grid-template-columns: minmax(0, 1fr); }
+  .ev-fields { grid-template-columns: minmax(0, 1fr); }
+  .ev-fields dt { margin-top: 4px; }
+}

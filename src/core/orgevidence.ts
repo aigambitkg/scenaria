@@ -85,6 +85,11 @@ export interface OrgEvidenceState {
   catalogueChanged: boolean;
   /** Digest of exactly what is stored; confirming needs it (what the person saw is what gets signed). */
   digest: string;
+  /**
+   * The stored values are in their checked, normal form (C4c-2 review R1). An entry that is not (a look-alike link,
+   * an upper-case hash, a value that fails the checks) can never be confirmed: discard it and record it again.
+   */
+  normal: boolean;
 }
 
 export interface OrgEvidenceInput {
@@ -135,7 +140,8 @@ export function catalogueFingerprint(): { standard: string; controls: number; ha
 /** Control and bidirectional characters could make a terminal or page show something else than is signed. */
 const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
 const UNSAFE_ONE = new RegExp(UNSAFE.source);
-const clean = (x: unknown, max: number): string => (typeof x === "string" ? x.replace(UNSAFE, " ").replace(/\s+/g, " ").trim().slice(0, max) : "");
+// Cut, then trim again: normalising twice gives the same text (review C4c-2 K4: a cut right after a space).
+const clean = (x: unknown, max: number): string => (typeof x === "string" ? x.replace(UNSAFE, " ").replace(/\s+/g, " ").trim().slice(0, max).trim() : "");
 const isDay = (d: string) => {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d);
   if (!m) return false;
@@ -371,7 +377,7 @@ function statesOf(store: Store, read: Pick<OrgEvidenceRead, "entries" | "error">
     const a = anchors[`ev:${entry.id}`];
     const trust = trustOf(entry, pid, trusted, a, (count.get(entry.id) ?? 0) > 1);
     if (trust === "verified" && (!a || entry.rev > a.rev)) raise[`ev:${entry.id}`] = { rev: entry.rev, status: entry.status, sig: entry.sig! };
-    return { entry, trust, catalogueChanged: entry.status === "active" && !entry.discarded && fp.get(entry.control) !== entry.catalogue, digest: entryDigest(entry) };
+    return { entry, trust, catalogueChanged: entry.status === "active" && !entry.discarded && fp.get(entry.control) !== entry.catalogue, digest: entryDigest(entry), normal: entry.discarded ? true : isNormal(entry) };
   });
   if (Object.keys(raise).length) evidenceAnchors(store).raise(raise);
   const present = new Set(entries.map((e) => e.id));
@@ -480,12 +486,20 @@ export function planRemove(store: Store, id: string, opts: { discard?: boolean }
   return decideRemove(store, r.entries, id, Boolean(opts.discard)).plan;
 }
 
-export function removeOrgEvidence(store: Store, id: string, who: Who, opts: { discard?: boolean } = {}): { entry: OrgEvidence; discarded: boolean; dropped: number } {
+/**
+ * Remove or discard an entry. `expect` (C4c-2, the dashboard): the outcome and the digest of the entry the person
+ * was shown (`planRemove`); decided again under the lock on one reading of the file — anything else is refused
+ * ("changed"), so the person never signs a decision on an entry they did not see.
+ */
+export function removeOrgEvidence(store: Store, id: string, who: Who, opts: { discard?: boolean; expect?: { outcome: string; digest: string } } = {}): { entry: OrgEvidence; discarded: boolean; dropped: number } {
   return store.withLock(() => {
     const read = fresh(store);
     const { entries, nextId, digest } = read;
     const copies = entries.filter((x) => x.id === id);
     const { plan, genuine, anchorRev } = decideRemove(store, entries, id, Boolean(opts.discard));
+    if (opts.expect && (opts.expect.outcome !== plan.outcome || opts.expect.digest !== entryDigest(plan.entry))) {
+      throw new OrgEvidenceError("changed", `${id} is not what was shown: look at it again.`);
+    }
     const a = anchorRev ? { rev: anchorRev } : undefined;
     const now = new Date().toISOString();
     const p = person(who);
@@ -558,8 +572,11 @@ export function confirmOrgEvidence(store: Store, id: string, seenDigest: string,
     if (typeof seenDigest !== "string" || seenDigest !== st.digest) throw new OrgEvidenceError("changed", `${id} is not what was shown: look at it again.`);
     const control = ANNEX_A_CONTROLS.find((c) => c.id === st.entry.control);
     if (!control) throw new OrgEvidenceError("bad_control", `"${st.entry.control}" is not an Annex A control.`);
-    // The stored values must still pass the same checks as the person's own input.
+    // The stored values must still pass the same checks as the person's own input, and must not change by it:
+    // otherwise the person would sign something else than was shown, e.g. a look-alike link as punycode (review
+    // C4c-2 K2). Such an entry is discarded and the document recorded again.
     const x = validateInput({ control: st.entry.control, url: st.entry.url, hash: st.entry.hash, title: st.entry.title, role: st.entry.owner.role, name: st.entry.owner.name, date: st.entry.date, note: st.entry.note });
+    if (!isNormal(st.entry)) throw new OrgEvidenceError("not_normal", `${id} would change when signed (for example a look-alike link that is stored as punycode): discard it and record the document again.`);
     const e = st.entry; // the very object that was judged (one snapshot)
     const now = new Date().toISOString();
     const p = person(who);
@@ -588,7 +605,7 @@ export interface CopyPlan {
   /** Other existing project folders on this machine bound to the same project id (a copy or a second checkout). */
   sameIdElsewhere: number;
   /** What would be copied (the person sees this before confirming). */
-  take: { id: string; control: string; url: string; hash: string; title?: string; note?: string; owner: { role: string; name: string }; date: string }[];
+  take: { id: string; control: string; url: string; hash: string; title?: string; note?: string; owner: { role: string; name: string }; date: string; digest: string }[];
   skipped: { id: string; reason: string }[];
 }
 
@@ -619,9 +636,35 @@ export function planCopy(store: Store, fromRoot: string, controls?: string[]): C
     if (trust !== "verified") skipped.push({ id: e.id, reason: trust });
     else if (catalogueChanged) skipped.push({ id: e.id, reason: "catalogue_changed" });
     else if (mine.some((h) => h.control === e.control && h.url === e.url && h.hash === e.hash)) skipped.push({ id: e.id, reason: "already_here" });
-    else take.push({ id: e.id, control: e.control, url: e.url, hash: e.hash, ...(e.title ? { title: e.title } : {}), ...(e.note ? { note: e.note } : {}), owner: e.owner, date: e.date });
+    else {
+      const t = { id: e.id, control: e.control, url: e.url, hash: e.hash, ...(e.title ? { title: e.title } : {}), ...(e.note ? { note: e.note } : {}), owner: { role: e.owner.role, name: e.owner.name }, date: e.date };
+      take.push({ ...t, digest: takeDigest(t) });
+    }
   }
   return { from: { name, id: otherPid }, sameIdElsewhere, take, skipped };
+}
+
+/** The entry's values are exactly what `validateInput` makes of them (nothing would change when signed). */
+function isNormal(e: OrgEvidence): boolean {
+  try {
+    const x = validateInput({ control: e.control, url: e.url, hash: e.hash, title: e.title, role: e.owner?.role, name: e.owner?.name, date: e.date, note: e.note });
+    return x.url === e.url && x.hash === e.hash && (x.title ?? "") === (e.title ?? "") && (x.note ?? "") === (e.note ?? "") && x.role === e.owner.role && x.name === e.owner.name && x.date === e.date;
+  } catch {
+    return false;
+  }
+}
+
+/** Digest of every value of a planned copy that gets signed (review C4c-2 K1). */
+export function takeDigest(t: { id: string; control: string; url: string; hash: string; title?: string; note?: string; owner: { role: string; name: string }; date: string }): string {
+  return createHash("sha256")
+    .update(JSON.stringify(["orgevidence-take/v1", t.id, t.control, t.url, t.hash, t.title ?? "", t.note ?? "", t.owner.role, t.owner.name, t.date]))
+    .digest("hex");
+}
+
+/** What the person saw of a copy plan: the project name that gets recorded and every entry's digest. */
+export interface CopyExpect {
+  name: string;
+  entries: { id: string; digest: string }[];
 }
 
 /**
@@ -630,11 +673,14 @@ export function planCopy(store: Store, fromRoot: string, controls?: string[]): C
  * here yet. Each copy is recorded and signed anew for this project, in force from now, naming the project it
  * came from. Callers show `planCopy` first and pass `expect` (the ids the person saw); anything else is refused.
  */
-export function copyOrgEvidence(store: Store, fromRoot: string, who: Who, controls?: string[], expect?: string[]): { copied: OrgEvidence[]; skipped: { id: string; reason: string }[]; from: string } {
+export function copyOrgEvidence(store: Store, fromRoot: string, who: Who, controls: string[] | undefined, expect: CopyExpect): { copied: OrgEvidence[]; skipped: { id: string; reason: string }[]; from: string } {
   const plan = planCopy(store, fromRoot, controls);
-  if (expect && (expect.length !== plan.take.length || plan.take.some((t) => !expect.includes(t.id)))) {
-    throw new OrgEvidenceError("changed", "The other project's documents changed since they were shown: look at them again.");
-  }
+  const changed = () => new OrgEvidenceError("changed", "The other project's documents changed since they were shown: look at them again.");
+  // Every signed value the person saw, and the project name recorded as the origin (review C4c-2 K1); required
+  // for every caller (R2).
+  if (!expect || typeof expect.name !== "string" || !Array.isArray(expect.entries)) throw changed();
+  if (expect.name !== plan.from.name || expect.entries.length !== plan.take.length) throw changed();
+  if (plan.take.some((t) => !expect.entries.some((x) => x.id === t.id && x.digest === t.digest))) throw changed();
   const copied: OrgEvidence[] = [];
   const skipped = [...plan.skipped];
   for (const t of plan.take) {

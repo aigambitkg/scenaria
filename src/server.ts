@@ -29,7 +29,7 @@ import { exportAuditFile, renderAuditMarkdown } from "./core/auditexport.js";
 import { signRecord } from "./core/canon.js";
 import { renderAuditHtml } from "./core/audithtml.js";
 import { writeAuditPackage } from "./core/auditpackage.js";
-import { addOrgEvidence, catalogueFingerprint, confirmOrgEvidence, copyOrgEvidence, OrgEvidenceError, orgEvidenceStates, planCopy, removeOrgEvidence } from "./core/orgevidence.js";
+import { addOrgEvidence, catalogueFingerprint, confirmOrgEvidence, copyOrgEvidence, entryDigest, OrgEvidenceError, orgEvidenceStates, planCopy, planRemove, removeOrgEvidence, validateInput } from "./core/orgevidence.js";
 import { AUDIT_ACCESS_MODES, readAuditAccess, setAuditAccess, type AuditAccessMode } from "./core/auditaccess.js";
 import { gateMatrix, runGate } from "./core/gate.js";
 import { effectiveLlm, listModels, readSettings, upstreams, writeSettings } from "./core/settings.js";
@@ -44,7 +44,7 @@ import { adoptRecommendation, expertAnalysis, factSheet, getReport, listPersonal
 import { forgetProject, listProjects, registerProject } from "./core/projects.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
-export const VERSION = "0.9.11";
+export const VERSION = "0.9.12";
 
 const KEY_ENVS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "AZURE_OPENAI_API_KEY"];
 
@@ -742,8 +742,25 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           const b = await readBody(req);
           const who = { by: approver, via: "dashboard" as const };
           try {
+            // C4c-2: the dashboard first shows exactly what would be signed (dryRun: the values checked and normalised,
+            // nothing written), then sends those values; normalising is idempotent, so the signed entry is the one shown.
+            if (p === "/api/audit-file/evidence" && b?.dryRun === true) return send(res, 200, { input: validateInput(b ?? {}) });
             if (p === "/api/audit-file/evidence") return send(res, 200, { entry: addOrgEvidence(s.store, b ?? {}, who) });
-            if (p === "/api/audit-file/evidence/remove") return send(res, 200, removeOrgEvidence(s.store, String(b?.id ?? ""), who, { discard: b?.discard === true }));
+            if (p === "/api/audit-file/evidence/remove") {
+              const id = String(b?.id ?? "");
+              const discard = b?.discard === true;
+              // dryRun: what removing would do and the digest of the entry concerned (the person sees it first).
+              if (b?.dryRun === true) {
+                const plan = planRemove(s.store, id, { discard });
+                return send(res, 200, { ...plan, digest: entryDigest(plan.entry) });
+              }
+              // The plan comes first: the outcome and the digest the person saw are required (review C4c-2 K3).
+              const ex = b?.expect;
+              if (!ex || typeof ex !== "object" || typeof ex.outcome !== "string" || typeof ex.digest !== "string") {
+                return send(res, 400, { error: "Show the plan first (dryRun: true), then remove with expect: {outcome, digest} as shown.", code: "plan_first" });
+              }
+              return send(res, 200, removeOrgEvidence(s.store, id, who, { discard, expect: { outcome: ex.outcome, digest: ex.digest } }));
+            }
             // The digest of exactly what the person was shown (GET …/evidence lists it per entry).
             if (p === "/api/audit-file/evidence/confirm") return send(res, 200, { entry: confirmOrgEvidence(s.store, String(b?.id ?? ""), String(b?.digest ?? ""), who) });
             if (p === "/api/audit-file/evidence/copy") {
@@ -753,9 +770,13 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
               const controls = Array.isArray(b?.controls) ? b.controls.filter((x: unknown): x is string => typeof x === "string") : undefined;
               // First the plan (what would be taken over), then the copy of exactly the ids the person saw.
               if (b?.dryRun === true) return send(res, 200, planCopy(s.store, from.root, controls));
-              if (!Array.isArray(b?.expect)) return send(res, 400, { error: "Show the plan first (dryRun: true), then copy with expect: the ids the person saw.", code: "plan_first" });
-              const expect = b.expect.filter((x: unknown): x is string => typeof x === "string");
-              return send(res, 200, copyOrgEvidence(s.store, from.root, who, controls, expect));
+              // What the person saw: the project name that gets recorded and every entry's digest (review C4c-2 K1).
+              const ex = b?.expect;
+              if (!ex || typeof ex !== "object" || Array.isArray(ex) || typeof ex.name !== "string" || !Array.isArray(ex.entries)) {
+                return send(res, 400, { error: "Show the plan first (dryRun: true), then copy with expect: {name, entries: [{id, digest}]} as shown.", code: "plan_first" });
+              }
+              const entries = ex.entries.filter((x: any) => x && typeof x.id === "string" && typeof x.digest === "string").map((x: any) => ({ id: x.id, digest: x.digest }));
+              return send(res, 200, copyOrgEvidence(s.store, from.root, who, controls, { name: ex.name, entries }));
             }
           } catch (err: any) {
             if (err instanceof OrgEvidenceError) return send(res, 400, { error: err.message, code: err.code });

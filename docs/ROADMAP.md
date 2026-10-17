@@ -103,9 +103,10 @@ The core stays as it is. New features come only through these batches, in this o
   - [x] C4a signed audit file (0.9.9): canonical JSON signed by the person, `verify` without a project, Markdown reading copy, names or roles only
   - [x] C4b audit package (0.9.10): evidence, print-ready page (PDF via the browser), Markdown, note; `verify` finds the newest export
   - [x] C4c-1 audit file in the dashboard (0.9.11): read-only view, audit package from the dashboard (Downloads), auditor mode on site (read only), "Prüfung" for forecasts renamed "Prognose-Prüfung"
-  - [ ] C4c-2 form for the organisation's evidence in the dashboard
-- [ ] **D, the AI manager's view:** cross-project overview, agents and models over time, token use, rules and policies for all projects
-- [ ] **E, course corridor and drift guard** (parked until A–D are done)
+  - [x] C4c-2 form for the organisation's evidence in the dashboard (0.9.12): record (SHA-256 in the browser), remove/discard, confirm, take over from another project — each step shows what will be signed
+  - [ ] Closing Batch C: whole-batch review, done criteria, open LOW points, Kev's practical test and acceptance
+- [ ] **E, progress, context window and the derivation of every number** (Kev 2026-10-17, after C and before D): every number with its derivation on hover and tap; progress from evidence-bound criteria levels capped by gates; a fixed, versioned context-window rule with sealed checkpoints; progress per window and a deterministic handover check
+- [ ] **D, the AI manager's view:** cross-project overview, agents and models over time (with E's progress and handover numbers), token use, rules and policies for all projects
 - [ ] **F, agent modules** (later, optional): forecasts and other model-based helpers as ready-made agents that only need a model
 
 ## Next (after the batch plan)
@@ -128,7 +129,7 @@ The core stays as it is. New features come only through these batches, in this o
 
 - [ ] Run the verifier automatically after N checkpoints, or when the agent stops (opt-in hook)
 - [ ] Dashboard: "suggested rewind target" banner when a node fails
-- [ ] Export the audit report as Markdown/PDF (ISO/IEC 42001-friendly: decisions, verdicts, irreversible effects, who/when)
+- [x] Export the audit report as Markdown/PDF (ISO/IEC 42001-friendly: decisions, verdicts, irreversible effects, who/when) — done in Batch C: the signed audit file and the audit package (0.9.9–0.9.11)
 - [ ] Compare two branches side by side (capsule + diff)
 - [ ] `scenaria gc` / prune: drop autosaves older than N days, prune snapshot folders/blobs, `git gc` the shadow repo
 

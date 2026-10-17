@@ -443,7 +443,9 @@ async function evidenceCommand(s: Scenaria, p: string[], v: Record<string, any>,
           : `Remove ${show(plan.entry)}\n(kept as a signed record of the removal)${dropNote}`,
       notPerson,
     );
-    const r = removeOrgEvidence(s.store, id, who, { discard: Boolean(v.discard) });
+    // Exactly what was shown: decided again under the lock, refused if the file changed (review C4c-2 K3).
+    const { entryDigest } = await import("./core/orgevidence.js");
+    const r = removeOrgEvidence(s.store, id, who, { discard: Boolean(v.discard), expect: { outcome: plan.outcome, digest: entryDigest(plan.entry) } });
     return out(r.discarded ? `Discarded: ${id}` : `Removed: ${r.entry.id} (${r.entry.control})${r.dropped ? ` · ${r.dropped} copy(ies) added outside Scenaria dropped` : ""}`, r);
   }
   if (sub === "confirm") {
@@ -469,10 +471,11 @@ async function evidenceCommand(s: Scenaria, p: string[], v: Record<string, any>,
     if (!plan.take.length) return out(`Nothing to take over from “${plan.from.name}”${plan.skipped.length ? ` (skipped: ${plan.skipped.map((x) => `${x.id} ${x.reason}`).join(", ")})` : ""}.`, plan);
     await personConfirm(
       "copy",
-      `${plan.sameIdElsewhere ? `${C.yellow}Note: ${plan.sameIdElsewhere} other folder(s) on this machine claim the same project id (a second checkout or a copy). Make sure this is the project you mean.${C.reset}\n` : ""}Take over from “${plan.from.name}” into this project, each signed anew, in force from now:\n${plan.take.map((t) => `  ${t.control} ${t.title ? `“${t.title}” ` : ""}${t.url}\n     ${t.hash} · ${t.owner.role}: ${t.owner.name} · ${t.date}`).join("\n")}${plan.skipped.length ? `\nSkipped: ${plan.skipped.map((x) => `${x.id} (${x.reason})`).join(", ")}` : ""}`,
+      `${plan.sameIdElsewhere ? `${C.yellow}Note: ${plan.sameIdElsewhere} other folder(s) on this machine claim the same project id (a second checkout or a copy). Make sure this is the project you mean.${C.reset}\n` : ""}Take over from “${plan.from.name}” into this project, each signed anew, in force from now:\n${plan.take.map((t) => `  ${t.control} ${t.title ? `“${t.title}” ` : ""}${t.url}\n     ${t.hash} · ${t.owner.role}: ${t.owner.name} · ${t.date}${t.note ? `\n     note: ${t.note}` : ""}`).join("\n")}${plan.skipped.length ? `\nSkipped: ${plan.skipped.map((x) => `${x.id} (${x.reason})`).join(", ")}` : ""}`,
       notPerson,
     );
-    const r = copyOrgEvidence(s.store, cands[0].root, who, controls, plan.take.map((t) => t.id));
+    // Every signed value shown and the recorded project name (review C4c-2 K1).
+    const r = copyOrgEvidence(s.store, cands[0].root, who, controls, { name: plan.from.name, entries: plan.take.map((t) => ({ id: t.id, digest: t.digest })) });
     return out(`Taken over: ${r.copied.length}${r.skipped.length ? ` · skipped: ${r.skipped.map((x) => `${x.id} (${x.reason})`).join(", ")}` : ""}`, r);
   }
   throw new Error("Usage: scenaria audit-file evidence [add|rm <id>|confirm <id>|copy --from <project>]");

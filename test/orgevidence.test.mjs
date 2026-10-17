@@ -189,8 +189,10 @@ test("C3: take over from another project — only what this machine can vouch fo
   editEv(a.p, (r) => (r.entries.find((e) => e.id === "e2").owner.name = "Someone else")); // tampered
   const plan = planCopy(b.s.store, a.p.dir);
   assert.deepEqual(plan.take.map((t) => t.id), ["e1"]);
-  assert.throws(() => copyOrgEvidence(b.s.store, a.p.dir, who, undefined, ["e1", "e2"]), /changed since they were shown/);
-  const r = copyOrgEvidence(b.s.store, a.p.dir, who, undefined, ["e1"]);
+  const seen = { name: plan.from.name, entries: plan.take.map((t) => ({ id: t.id, digest: t.digest })) };
+  assert.throws(() => copyOrgEvidence(b.s.store, a.p.dir, who, undefined, { ...seen, entries: [...seen.entries, { id: "e2", digest: "x" }] }), /changed since they were shown/);
+  assert.throws(() => copyOrgEvidence(b.s.store, a.p.dir, who, undefined, ["e1"]), /changed since they were shown/, "a bare id list is refused (review C4c-2 R2)");
+  const r = copyOrgEvidence(b.s.store, a.p.dir, who, undefined, seen);
   assert.equal(r.copied.length, 1);
   assert.deepEqual(r.skipped, [{ id: "e2", reason: "tampered" }]);
   const c = r.copied[0];
@@ -199,9 +201,10 @@ test("C3: take over from another project — only what this machine can vouch fo
   const f = buildAuditFile(b.s);
   assert.equal(ctl(f, "A.2.2").orgEvidence.state, "documented");
   assert.equal(ctl(f, "A.2.2").orgEvidence.entries[0].copiedFrom, c.copiedFrom);
-  assert.equal(copyOrgEvidence(b.s.store, a.p.dir, who).copied.length, 0, "already here: not copied twice");
+  const again = planCopy(b.s.store, a.p.dir);
+  assert.equal(copyOrgEvidence(b.s.store, a.p.dir, who, undefined, { name: again.from.name, entries: [] }).copied.length, 0, "already here: not copied twice");
   assert.ok(planCopy(b.s.store, a.p.dir).skipped.some((x) => x.reason === "already_here"));
-  assert.throws(() => copyOrgEvidence(b.s.store, b.p.dir, who), /this project/);
+  assert.throws(() => copyOrgEvidence(b.s.store, b.p.dir, who, undefined, { name: "x", entries: [] }), /this project/);
 });
 
 test("C3 person-only: agents neither read (default) nor change anything over HTTP or the CLI", async () => {
@@ -245,11 +248,17 @@ test("C3 person-only: agents neither read (default) nor change anything over HTT
     const plan = await r.json();
     assert.deepEqual(plan.take, [], "the same document is already here");
     r = await post("/api/audit-file/evidence/copy", { from: other.p.dir, expect: [] }, person);
+    assert.equal(r.status, 400, "a bare id list is not enough any more (review C4c-2 K1)");
+    r = await post("/api/audit-file/evidence/copy", { from: other.p.dir, expect: { name: plan.from.name, entries: [] } }, person);
     assert.equal(r.status, 200);
     assert.equal((await r.json()).copied.length, 0);
     r = await post("/api/audit-file/evidence/confirm", { id: "e1", digest: 5 }, person);
     assert.equal(r.status, 400);
     r = await post("/api/audit-file/evidence/remove", { id: "e1" }, person);
+    assert.equal(r.status, 400, "the plan comes first (review C4c-2 K3)");
+    assert.equal((await r.json()).code, "plan_first");
+    const rp = await (await post("/api/audit-file/evidence/remove", { id: "e1", dryRun: true }, person)).json();
+    r = await post("/api/audit-file/evidence/remove", { id: "e1", expect: { outcome: rp.outcome, digest: rp.digest } }, person);
     assert.equal(r.status, 200);
     setAuditAccess(s.store, "open", { by: "kev", via: "terminal" });
     assert.equal((await get("/api/audit-file/evidence", agentH)).status, 200, "open: agents may read");

@@ -11,6 +11,7 @@ import type { RelayReport } from "../../src/core/relay";
 import type { gateMatrix } from "../../src/core/gate";
 import type { AuditFile } from "../../src/core/auditfile";
 import type { AuditAccess } from "../../src/core/auditaccess";
+import type { CopyPlan, OrgEvidence, OrgEvidenceInput, OrgEvidenceState, RemovePlan } from "../../src/core/orgevidence";
 import type { Forecast, ForecastOption, QuickForecast } from "../../src/core/forecast";
 export type { Forecast, ForecastOption, QuickForecast };
 import type { ExpertReport, FactSheet, Finding, Recommendation } from "../../src/core/expert";
@@ -130,7 +131,9 @@ export class ApiError extends Error {
     super(message);
   }
 }
-export type { AuditFile, AuditAccess };
+export type { AuditFile, AuditAccess, CopyPlan, OrgEvidence, OrgEvidenceInput, OrgEvidenceState };
+/** What removing would do, and the digest of the entry concerned (sent back so nothing unseen is signed). */
+export type RemovePlanView = RemovePlan & { digest: string };
 export interface AuditPackageResult {
   /** The package folder's name (never a machine path). */
   folder: string;
@@ -187,6 +190,15 @@ export const api = {
   /** The person's: this browser becomes read-only for the auditor (8 h); the approval is removed here. */
   auditorModeStart: () => req<{ ok: boolean; hours: number }>("/api/audit-file/auditor-mode", {}),
   auditorModeEnd: () => req<{ ok: boolean }>("/api/audit-file/auditor-mode/end", {}),
+  // The organisation's evidence (C3 routes; the dashboard form is C4c-2). Every POST is the person's.
+  orgEvidence: () => req<{ entries: OrgEvidenceState[]; missing: string[]; error: string | null; approval: boolean }>("/api/audit-file/evidence"),
+  orgEvidencePreview: (input: Partial<OrgEvidenceInput>) => req<{ input: OrgEvidenceInput }>("/api/audit-file/evidence", { ...input, dryRun: true }),
+  orgEvidenceAdd: (input: OrgEvidenceInput) => req<{ entry: OrgEvidence }>("/api/audit-file/evidence", input),
+  orgEvidenceRemovePlan: (id: string, discard: boolean) => req<RemovePlanView>("/api/audit-file/evidence/remove", { id, discard, dryRun: true }),
+  orgEvidenceRemove: (id: string, discard: boolean, expect: { outcome: string; digest: string }) => req<{ entry: OrgEvidence; discarded: boolean; dropped: number }>("/api/audit-file/evidence/remove", { id, discard, expect }),
+  orgEvidenceConfirm: (id: string, digest: string) => req<{ entry: OrgEvidence }>("/api/audit-file/evidence/confirm", { id, digest }),
+  orgEvidenceCopyPlan: (from: string) => req<CopyPlan>("/api/audit-file/evidence/copy", { from, dryRun: true }),
+  orgEvidenceCopy: (from: string, expect: { name: string; entries: { id: string; digest: string }[] }) => req<{ copied: OrgEvidence[]; skipped: { id: string; reason: string }[]; from: string }>("/api/audit-file/evidence/copy", { from, expect }),
   addCanon: (c: { kind: string; text: string; hard: boolean; check?: string; due?: string; evidence?: string[] }) => req<CanonEvent>("/api/canon", c),
   decideCanon: (id: string, action: "approve" | "reject" | "retire" | "confirm", opts: { reason?: string; adoptCheck?: boolean | string } = {}) => req<CanonEvent>("/api/canon/decide", { id, action, ...opts }),
   checkCanon: () => req<{ id: string; status: string; detail: string }[]>("/api/canon/check", {}),

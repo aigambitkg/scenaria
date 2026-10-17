@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Scenaria } from "../dist/core/index.js";
@@ -82,7 +82,8 @@ test("C4b: verify without a name checks the newest audit file here and says whic
   assert.deepEqual(findNewestExport(out), { path: join(newer, "audit-file.json"), others: 1 });
   r = run(["audit-file", "verify"], out);
   assert.equal(r.status, 0, r.stderr);
-  assert.ok(r.stdout.includes("Checking the newest audit file here") && r.stdout.includes(newer));
+  // The CLI names the real folder (on macOS /var/… is really /private/var/…): compare real paths (HANDOFF §3).
+  assert.ok(r.stdout.includes("Checking the newest audit file here") && r.stdout.includes(realpathSync.native(newer)), r.stdout);
   assert.match(r.stdout, /1 other audit file\(s\) here/);
   assert.match(r.stdout, /roles only/);
   assert.match(r.stdout, /reading copy audit-file\.html: same content as the evidence/);

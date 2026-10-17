@@ -119,7 +119,7 @@ Jede offene Entscheidung bekommt eine **Prognose, bevor jemand wählt**: Wie tre
 - **Orakel** (Multiversum, dein Modell): Archivar (Vergangenheit), Handwerker (Gegenwart) und Orakel (Zukunft) dürfen den Kern nur **korrigieren** – höchstens ±20 Punkte je Teil, jede Korrektur mit Grund und existierendem Beleg. Korrekturen ohne Beleg zählen 0; wie sehr dem Orakel vertraut wird (γ), lernt Scenaria daraus, wie seine Korrekturen wirklich ausgingen.
 - **Prüf-Experte**: eine Checkliste für jede Prognose (faire Reihenfolge, Signatur, Datenbasis, Unterscheidbarkeit, Bilanz, Belege) → belastbar / mit Vorsicht / nicht belastbar. Auf Wunsch prüft ein skeptisches Modell jede Aussage des Orakels gegen die Belege, so wie sie zitiert wurden, und streicht nicht belegte Korrekturen.
 - **Einfach zu bedienen**: Der Prognosen-Dialog beginnt mit einem Bereit-Check (Modell, Freigabe, Hauptziel) und drei Wegen: Entscheidung vorhersagen (oder direkt aufschreiben), Prompt prüfen oder eine vergangene Entscheidung an der Wirklichkeit nachprüfen. Du siehst, welche Rolle gerade arbeitet, und bekommst das Ergebnis in Klartext.
-- **Prüf-Bereich** (oben → **Prüfung**): jede Prognose mit Ampel, Kennzahlen und Prüfbericht zum Herunterladen (Markdown/JSON) – nur lesend.
+- **Prognose-Prüfung** (Steuerung → Erweiterungen → **Prognose-Prüfung**): jede Prognose mit Ampel, Kennzahlen und Prüfbericht zum Herunterladen (Markdown/JSON) – nur lesend.
 - **Güte**: Rückblick über jede vergangene Entscheidung aus ihrer eigenen Zeit heraus, Orakel vs. Kern und ein Prüfstand. Ehrlich: aussagekräftig ab 10 Entscheidungen, davor als Tendenz.
 
 Prompts und Pläne lassen sich genauso prüfen, Varianten im direkten Vergleich. Automatische Prognosen sind optional, nutzen nur dein Modell und haben ein Tageslimit über alle Projekte. Im Dashboard unter **Prognosen**, per CLI mit `scenaria forecast n12` / `--quality` / `--audit f3 [--deep]`, im Chat oder für Agenten mit dem Tool `scenaria_forecast`.
@@ -136,8 +136,18 @@ Ein Klick auf den Projektnamen oben zeigt deine Scenaria-Projekte auf diesem Rec
 
 Das Dashboard hat drei Ansichten auf dieselben Daten:
 - **Einfach** (Standard): dein Verlauf in Klartext, nach Tagen. *Zurück zu diesem Stand* setzt deine Dateien auf jeden gesicherten Stand (mit *Rückgängig*), *Was hat die KI gemacht?* zeigt Auftrag, Ergebnis und geänderte Dateien, und jeder Stand lässt sich als Ordner öffnen.
-- **Prüfung**: die Szenario-Karte mit Regeln und Meilensteinen, Projekt-Check und Protokoll.
-- **Steuerung**: Chat, Analyse und **Erweiterungen** (Prognosen, Prüf-Experte, Relay).
+- **Prüfung**: die Szenario-Karte mit Regeln und Meilensteinen, Projekt-Check, Protokoll und die **Prüfakte** (ISO/IEC 42001).
+- **Steuerung**: Chat, Analyse und **Erweiterungen** (Prognosen, Prognose-Prüfung, Relay).
+
+## Prüfakte nach ISO/IEC 42001 (v0.9.6–0.9.12)
+
+Ein Prüfer findet jede der 38 Kontrollen aus Anhang A an einem Ort: was die Aufzeichnungen dieses Projekts belegen, was nur teilweise abgedeckt ist und was eure Organisation selbst nachweisen muss. Dashboard → **Prüfung** → **Prüfakte**, im Terminal `scenaria audit-file`.
+
+- **Aus den Aufzeichnungen berechnet**, für das ganze Projekt oder einen Zeitraum: Status je Kontrolle (teilweise belegt / Nachweis durch die Organisation / nicht abgedeckt, mit den fehlenden Quellen), der Fälschungsschutz mit jeder Warnung, signierte Freigaben, Urteilsverlauf und Neu-Versiegelungen. Es zählen nur unabhängige, signierte Prüfurteile; ein beschädigter Fälschungsschutz warnt an jeder betroffenen Kontrolle, senkt aber keinen Status.
+- **Die Dokumente der Organisation** je Kontrolle: Link und SHA-256 des Dokuments (im Browser berechnet, die Datei wird nie hochgeladen), Verantwortliche mit Rolle und Name, Datum. Nur du erfasst sie, direkt bei der Kontrolle im Dashboard (oder mit `scenaria audit-file evidence`), du siehst genau, was du signierst, und sie werden mit dem Projekt committet. Sie heben nie einen Status; ein bearbeiteter Eintrag fällt als geändert auf.
+- **Signiertes Prüfpaket**: der Nachweis als kanonisches JSON mit deinem Schlüssel signiert, eine Druckseite (Drucken → Als PDF sichern, Fingerabdruck auf jeder Seite), Markdown und eine Anleitung zum Prüfen. Standardmäßig mit Namen, auf Wunsch nur Rollen. Jeder prüft es ohne Projekt: `scenaria audit-file verify`.
+- **Prüfermodus vor Ort**: Du übergibst einen Browser an einen Prüfer; er liest alles und ändert nichts, bis du den Modus beendest. Ein Schutz vor Versehen, keine Sperre an deinem eigenen Rechner.
+- **Ehrlicher Umfang**: Scenaria belegt, wie KI-Agenten in euren Projekten gearbeitet haben. Es belegt nicht, wie KI-Modelle entwickelt oder trainiert werden, und ersetzt keine Richtlinien oder Folgenabschätzungen – das sind Dokumente der Organisation. Wer die Prüfakte lesen darf, ist deine signierte Einstellung (Standard: nur du).
 
 ## Hilfe und Einführung
 
@@ -240,7 +250,7 @@ Claude Code (MCP + Hooks), Claude Desktop (MCP, je Projekt ein Eintrag), Cursor,
 - **Lokal, ohne Telemetrie:** Alles liegt in `.scenaria/`; Unterhaltungen bleiben lokal und sind von Git ausgeschlossen.
 - **Gemischte Modelle, ein Protokoll:** Jeder Knoten und jede Nachricht trägt Agent, Modell und Person.
 - **Team-Server:** `scenaria serve --host 0.0.0.0 --token <geheim>`; der Proxy nutzt im Team-Modus den Header `x-scenaria-token`.
-- **Audit & Governance:** `scenaria export` (JSON) und `scenaria protocol` – Entscheidungen, Prüfurteile, nicht umkehrbare Aktionen, wer und wann (ISO/IEC 42001, AI Act).
+- **Audit & Governance:** die **Prüfakte nach ISO/IEC 42001** (siehe oben) mit jeder Kontrolle aus Anhang A und signiertem Prüfpaket; dazu `scenaria export` (JSON) und `scenaria protocol` – Entscheidungen, Prüfurteile, nicht umkehrbare Aktionen, wer und wann (ISO/IEC 42001, AI Act).
 - **Open Source (MIT).**
 
 ## Grenzen

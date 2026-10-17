@@ -243,6 +243,9 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
   // Scenaria's own error codes in the person's language (the server answers in English).
   errorTexts.auditor_mode = t.afAuditorRefused;
   errorTexts.auditor_mode_active = t.afAuditorActive;
+  errorTexts.not_normal = t.evErrNotNormal;
+  errorTexts.changed = t.evErrChanged;
+  errorTexts.plan_first = t.evErrPlanFirst;
   // In auditor mode the dashboard checks in every 2 minutes: while it does, nobody can open an approval link
   // that could land in this browser (review C4c-1 S1).
   useEffect(() => {

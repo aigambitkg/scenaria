@@ -5,7 +5,8 @@
  * browser over to an auditor (auditor mode: read only). Recording the organisation's documents follows (C4c-2).
  */
 import { Fragment, useEffect, useMemo, useState } from "react";
-import { api, ApiError, type AuditFile, type AuditPackageResult } from "./api";
+import { api, ApiError, type AuditFile, type AuditPackageResult, type OrgEvidenceState } from "./api";
+import { EvidenceActions, EvidenceAdd, EvidenceCopy, normalLink } from "./OrgEvidenceForm";
 import { Modal } from "./Dialogs";
 import { HelpButton } from "./HelpButton";
 import { LockedNote } from "./Approval";
@@ -52,6 +53,12 @@ export function AuditFileDialog(props: {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<AuditPackageResult | null>(null);
   const [handOver, setHandOver] = useState(false);
+  // C4c-2: the organisation's evidence is edited here by the person (approval session, never in auditor mode).
+  const canEdit = props.approved && props.auditView === false;
+  const [evStates, setEvStates] = useState<Map<string, OrgEvidenceState>>(new Map());
+  const [adding, setAdding] = useState<string | null>(null);
+  const [evMsg, setEvMsg] = useState<string | null>(null);
+  const [copyOpen, setCopyOpen] = useState(false);
 
   const load = (f = from, tt = to) => {
     setLoading(true);
@@ -69,6 +76,18 @@ export function AuditFileDialog(props: {
         } else setErr(String(e?.message ?? e));
       })
       .finally(() => setLoading(false));
+    if (canEdit)
+      api
+        .orgEvidence()
+        .then((r) => setEvStates(new Map(r.entries.map((x) => [x.entry.id, x]))))
+        .catch(() => setEvStates(new Map()));
+  };
+  /** After a signed change: say what happened and show the new state. */
+  const evDone = (msg: string) => {
+    setEvMsg(msg);
+    setAdding(null);
+    setCopyOpen(false);
+    load();
   };
   // Reload when the approval arrives (the lock) or the auditor mode starts or ends.
   useEffect(() => {
@@ -127,6 +146,11 @@ export function AuditFileDialog(props: {
         {locked && props.auditView === true && <p className="qnote q-warn">{t.afAuditorStale}</p>}
         {locked && !props.auditView && (props.teamMode ? <p className="qnote q-warn">🔒 {t.afLocked} {t.approvalTeam}</p> : <LockedNote t={t} text={t.afLocked} />)}
         {err && <p className="error">{err}</p>}
+        {evMsg && (
+          <p className="qnote af-done" role="status">
+            ✓ {evMsg}
+          </p>
+        )}
         {!file && !err && !locked && <p className="muted">…</p>}
         {file && s && (
           <>
@@ -256,7 +280,13 @@ export function AuditFileDialog(props: {
                             {open === c.id && (
                               <tr className="ad-detail">
                                 <td colSpan={5} className="af-detail-cell">
-                                  <ControlDetail t={t} lang={lang} c={c} warning={warning} />
+                                  <ControlDetail
+                                    t={t}
+                                    lang={lang}
+                                    c={c}
+                                    warning={warning}
+                                    edit={canEdit ? { states: evStates, adding: adding === c.id, setAdding: (on) => setAdding(on ? c.id : null), onDone: evDone } : undefined}
+                                  />
                                 </td>
                               </tr>
                             )}
@@ -365,7 +395,7 @@ export function AuditFileDialog(props: {
               </div>
             </details>
 
-            <p className="small muted">{t.afEvidenceLater}</p>
+            {canEdit && <p className="small muted">{t.evWhere}</p>}
 
             {!props.auditView && (
               <section className="af-actions">
@@ -397,7 +427,11 @@ export function AuditFileDialog(props: {
                       <button className="btn" disabled={busy} aria-expanded={handOver} onClick={() => setHandOver(!handOver)}>
                         {t.afAuditorStart}
                       </button>
+                      <button className="btn" aria-expanded={copyOpen} onClick={() => setCopyOpen(!copyOpen)}>
+                        {t.evCopyTitle}
+                      </button>
                     </div>
+                    {copyOpen && <EvidenceCopy t={t} onDone={evDone} />}
                     {handOver && (
                       <div className="af-handover" role="region" aria-label={t.afAuditorStart}>
                         <p>{t.afAuditorExplain}</p>
@@ -423,7 +457,14 @@ export function AuditFileDialog(props: {
   );
 }
 
-function ControlDetail(props: { t: Dict; lang: "de" | "en"; c: AuditFile["controls"][number]; warning: (code: string) => AuditFile["integrity"]["warnings"][number] | undefined }) {
+function ControlDetail(props: {
+  t: Dict;
+  lang: "de" | "en";
+  c: AuditFile["controls"][number];
+  warning: (code: string) => AuditFile["integrity"]["warnings"][number] | undefined;
+  /** The person's editing (C4c-2); absent for readers and in auditor mode. */
+  edit?: { states: Map<string, OrgEvidenceState>; adding: boolean; setAdding: (on: boolean) => void; onDone: (msg: string) => void };
+}) {
   const { t, lang, c } = props;
   const srcName = (k: EvidenceSource) => EVIDENCE_SOURCES[k]?.label[lang] ?? k;
   return (
@@ -474,6 +515,7 @@ function ControlDetail(props: { t: Dict; lang: "de" | "en"; c: AuditFile["contro
                   <strong>{e.title || e.id}</strong>{" "}
                   <span className={`chip ${TRUST_CHIP[e.trust] ?? ""}`}>{t.afTrust[e.trust] ?? e.trust}</span> <span className={`chip ${e.counts ? "v-passed" : ""}`}>{e.counts ? t.afCounts : t.afNotCounts}</span>
                   <div className="small af-url">{safeLink(e.url) ? <a href={e.url} target="_blank" rel="noopener noreferrer">{e.url}</a> : e.url}</div>
+                  {normalLink(e.url) && <div className="qnote q-warn">{t.evLinkNormal(normalLink(e.url)!)}</div>}
                   <div className="small muted af-hash">
                     SHA-256 <code>{e.hash}</code>
                   </div>
@@ -485,10 +527,19 @@ function ControlDetail(props: { t: Dict; lang: "de" | "en"; c: AuditFile["contro
                   {e.note && <div className="small muted">{e.note}</div>}
                   {e.copiedFrom && <div className="small muted">{t.afCopied(e.copiedFrom)}</div>}
                   {e.catalogueChanged && <div className="qnote q-warn">{t.afCatalogueChanged}</div>}
+                  {props.edit && props.edit.states.get(e.id) && <EvidenceActions t={t} st={props.edit.states.get(e.id)!} onDone={props.edit.onDone} />}
                 </li>
               ))}
             </ul>
           )}
+          {props.edit &&
+            (props.edit.adding ? (
+              <EvidenceAdd t={t} control={c.id} controlTitle={c.title[lang]} onDone={props.edit.onDone} onCancel={() => props.edit!.setAdding(false)} />
+            ) : (
+              <button className="btn" onClick={() => props.edit!.setAdding(true)}>
+                + {t.evAdd}
+              </button>
+            ))}
         </div>
       </div>
       {c.warnings.length > 0 && (
