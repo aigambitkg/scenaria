@@ -96,10 +96,12 @@ function countInside(goalId: string, all: ScenariaNode[]) {
   const kids = new Map<string, ScenariaNode[]>();
   for (const x of all) if (x.parentId) kids.set(x.parentId, [...(kids.get(x.parentId) ?? []), x]);
   const out: ScenariaNode[] = [];
+  const seen = new Set<string>([goalId]);
   const stack = [...(kids.get(goalId) ?? [])];
   while (stack.length) {
     const x = stack.pop()!;
-    if (x.type === "goal") continue;
+    if (x.type === "goal" || seen.has(x.id)) continue;
+    seen.add(x.id);
     out.push(x);
     stack.push(...(kids.get(x.id) ?? []));
   }

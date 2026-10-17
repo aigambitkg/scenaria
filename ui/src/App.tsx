@@ -6,7 +6,7 @@ import { dict, initialLang, saveLang, type Lang } from "./i18n";
 import { ProjectSwitcher } from "./Projects";
 import { HelpDialog, Onboarding, onboardingDone, restartOnboarding } from "./Help";
 import { HelpContext } from "./HelpButton";
-import type { HelpAction } from "./helpContent";
+import { HELP, type HelpAction } from "./helpContent";
 import { layoutTree, taskOf } from "./layout";
 import { NodeId, ScenarioMap } from "./Map";
 import { NodePanel } from "./NodePanel";
@@ -372,7 +372,8 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
         break;
     }
   };
-  const helpCtx = useMemo(() => ({ open: (topic: string) => setHelp(topic), label: t.helpOpen }), [t]);
+  // A screen reader hears the topic's title, not its id (C5, U-K11).
+  const helpCtx = useMemo(() => ({ open: (topic: string) => setHelp(topic), label: t.helpOpen, title: (topic: string) => HELP[lang]?.find((x) => x.id === topic)?.title }), [t, lang]);
 
   const linkBanner = linkNote && !approved && (
     <div className="banner warn" role="status">

@@ -66,14 +66,36 @@ export interface AuditExport extends AuditExportBody {
 
 // ------------------------------------------------------------------ canonical form
 
+/** A lone surrogate becomes U+FFFD: records may hold one (an agent can send it), but I-JSON and `verify` refuse it (C5, S-K3). */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+const wellFormed = (t: string) => t.replace(LONE_SURROGATE, "\uFFFD");
+const LONE_SURROGATE_ONE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+/** The same data with every string and key well-formed, in its own order (what the export writes to disk). */
+function wellFormedDeep<T>(v: T): T {
+  if (typeof v === "string") return wellFormed(v) as T;
+  if (Array.isArray(v)) return v.map((x) => wellFormedDeep(x)) as T;
+  if (v && typeof v === "object") {
+    // An ordinary object (like JSON.parse makes); keys are defined, so "__proto__" stays a plain key.
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(v as object)) {
+      const w = wellFormed(k);
+      if (!Object.prototype.hasOwnProperty.call(out, w)) Object.defineProperty(out, w, { value: wellFormedDeep((v as Record<string, unknown>)[k]), enumerable: true, writable: true, configurable: true });
+    }
+    return out as T;
+  }
+  return v;
+}
+
 function stable(v: unknown): unknown {
+  if (typeof v === "string") return wellFormed(v);
   if (Array.isArray(v)) return v.map((x) => (x === undefined ? null : stable(x)));
   if (v && typeof v === "object") {
     // No prototype: a key named "__proto__" stays an ordinary key (it never silently drops out; review C4a-3).
     const out: Record<string, unknown> = Object.create(null);
-    for (const k of Object.keys(v as object).sort()) {
-      const x = (v as Record<string, unknown>)[k];
-      if (x !== undefined) out[k] = stable(x);
+    for (const k of Object.keys(v as object).map((k) => [wellFormed(k), k] as const).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))) {
+      const x = (v as Record<string, unknown>)[k[1]];
+      if (x !== undefined && !(k[0] in out)) out[k[0]] = stable(x);
     }
     return out;
   }
@@ -210,6 +232,8 @@ export function parseStrictJson(text: string): unknown {
 function strictShape(v: unknown, depth = 0): string | null {
   if (depth > 64) return "nested too deep";
   if (typeof v === "number") return Number.isFinite(v) && (!Number.isInteger(v) || Number.isSafeInteger(v)) ? null : "number out of range";
+  // Like the text check (I-JSON): a lone surrogate would hash like U+FFFD and pass as other content (C5 review R5).
+  if (typeof v === "string") return LONE_SURROGATE_ONE.test(v) ? "lone surrogate in a string" : null;
   if (Array.isArray(v)) {
     for (const x of v) {
       const r = strictShape(x, depth + 1);
@@ -220,6 +244,7 @@ function strictShape(v: unknown, depth = 0): string | null {
   if (v && typeof v === "object") {
     for (const k of Object.keys(v)) {
       if (k === "__proto__" || k === "constructor" || k === "prototype") return `forbidden key "${k}"`;
+      if (LONE_SURROGATE_ONE.test(k)) return "lone surrogate in a key";
       const r = strictShape((v as Record<string, unknown>)[k], depth + 1);
       if (r) return r;
     }
@@ -252,6 +277,9 @@ export function withoutNames(f: AuditFile): AuditFile {
   for (const r of c.reseals.authentic) r.by = r.kind === "auditor" ? "audit agent" : "person";
   const attr = c.sources.attribution?.facts as Record<string, unknown> | undefined;
   if (attr && Array.isArray(attr.users)) attr.users = [`${(attr.users as unknown[]).length} account(s)`];
+  // Registered audit agents are often named after a person (C5, S-K7): a count instead.
+  const aud = c.sources.auditors?.facts as Record<string, unknown> | undefined;
+  if (aud && Array.isArray(aud.names)) aud.names = [`${(aud.names as unknown[]).length} audit agent(s)`];
   if (c.access?.set) c.access.set.by = "person";
   return c;
 }
@@ -269,7 +297,7 @@ export const EXPORT_MEANING = {
  */
 export function exportAuditFile(s: Scenaria, period: Period, opts: { names?: NamesMode; version: string; by?: string; via?: string }): AuditExport {
   const names: NamesMode = opts.names === "roles-only" ? "roles-only" : "with-names";
-  const raw = buildAuditFile(s, period);
+  const raw = wellFormedDeep(buildAuditFile(s, period));
   const file = names === "roles-only" ? withoutNames(raw) : raw;
   const st = s.ledger.state();
   const a = readLedgerAnchor(s.root);

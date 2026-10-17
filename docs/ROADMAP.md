@@ -104,8 +104,9 @@ The core stays as it is. New features come only through these batches, in this o
   - [x] C4b audit package (0.9.10): evidence, print-ready page (PDF via the browser), Markdown, note; `verify` finds the newest export
   - [x] C4c-1 audit file in the dashboard (0.9.11): read-only view, audit package from the dashboard (Downloads), auditor mode on site (read only), "Prüfung" for forecasts renamed "Prognose-Prüfung"
   - [x] C4c-2 form for the organisation's evidence in the dashboard (0.9.12): record (SHA-256 in the browser), remove/discard, confirm, take over from another project — each step shows what will be signed
-  - [ ] Closing Batch C: whole-batch review, done criteria, open LOW points, Kev's practical test and acceptance
-- [ ] **E, progress, context window and the derivation of every number** (Kev 2026-10-17, after C and before D): every number with its derivation on hover and tap; progress from evidence-bound criteria levels capped by gates; a fixed, versioned context-window rule with sealed checkpoints; progress per window and a deterministic handover check
+  - [x] C5 closing review (0.9.13): two independent whole-batch reviews and a review of the fixes, every finding fixed with a test; done criteria checked on the demo project; Kev decided the LOW points
+  - [ ] C5 Kev's practical test on a real project and acceptance of Batch C
+- [ ] **E, progress, context window and the derivation of every number** (Kev 2026-10-17, after C and before D): every number with its derivation on hover and tap; progress from evidence-bound criteria levels capped by gates; a fixed, versioned context-window rule with sealed checkpoints; progress per window and a deterministic handover check. Kev's answers (2026-10-17): criteria and weights proposed by the agent, approved by the person; start values v1.0 from the concept, adjustable only by the person (signed, logged); a stop after two windows without progress is enforced where the provider allows it
 - [ ] **D, the AI manager's view:** cross-project overview, agents and models over time (with E's progress and handover numbers), token use, rules and policies for all projects
 - [ ] **F, agent modules** (later, optional): forecasts and other model-based helpers as ready-made agents that only need a model
 

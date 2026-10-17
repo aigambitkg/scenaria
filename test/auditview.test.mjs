@@ -165,7 +165,7 @@ test("C4c dashboard package: person-only, written to Downloads (else home), a va
     assert.equal(c.valid, true, c.problem);
     assert.equal(c.package, true);
     assert.equal(c.copiesSignature, undefined, "the copies are signed");
-    assert.deepEqual(c.copies.map((x) => x.state), ["same", "same"]);
+    assert.deepEqual(c.copies.map((x) => x.state), ["same", "same", "same"]);
     // A bad period is refused before anything is written.
     const before = readdirSync(join(home, "Downloads")).length;
     r = await post("/api/audit-file/package", { from: "yesterday" }, { cookie: "scenaria_approval=sess" });

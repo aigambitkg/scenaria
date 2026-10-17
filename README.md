@@ -160,13 +160,13 @@ The dashboard has three views on the same data:
 - **Audit**: the scenario map with rules and milestones, the project check, the protocol and the **audit file** (ISO/IEC 42001).
 - **Manage**: chat, analysis and **Extensions** (forecasts, forecast audit, relay).
 
-## ISO/IEC 42001 audit file (v0.9.6–0.9.12)
+## ISO/IEC 42001 audit file (v0.9.6–0.9.13)
 
 An auditor finds every one of the 38 Annex A controls in one place: what this project's records evidence, what is only partly covered and what your organisation must document itself. Dashboard → **Audit** → **Audit file**, CLI `scenaria audit-file`.
 
 - **Computed from the records**, for the whole project or a period: status per control (partly evidenced / evidence by the organisation / not covered, with the missing sources named), the tamper protection with every warning, signed approvals, the verdict history and reseals. Only independent, signed verdicts count; a damaged tamper evidence warns at every affected control but lowers no status.
 - **The organisation's documents** per control: link and SHA-256 of the document (computed in your browser; the file is never uploaded), owner with role and name, date. Recorded only by you at the control in the dashboard (or `scenaria audit-file evidence`), you see exactly what you sign, and it is committed with the project. They never raise a status; an edited entry shows as changed.
-- **Signed audit package**: the evidence as canonical JSON signed with your key, a print-ready page (Print → Save as PDF, the fingerprint on every page), Markdown and a note on checking. Names by default, roles only on request. Anyone checks it without a project: `scenaria audit-file verify`.
+- **Signed audit package**: the evidence as canonical JSON signed with your key, a print-ready page (Print → Save as PDF, the fingerprint on every page), Markdown and a note on checking. Names by default, roles only on request. Anyone checks it without a project: `scenaria audit-file verify` — the evidence, both reading copies and the note; the first line gives the overall result, and files the package does not contain (e.g. a PDF you saved there) are named as not checked.
 - **Auditor mode on site**: hand a browser to an auditor; it reads everything and changes nothing until you end the mode. A protection against mistakes, not a lock on your own computer.
 - **Honest scope**: Scenaria evidences how AI agents worked in your projects. It does not evidence how AI models are developed or trained, nor your policies and impact assessments — those are the organisation's documents. Who may read the audit file is your signed setting (default: only you).
 
@@ -405,6 +405,7 @@ npm link
 - In team-server mode, file snapshots cover the project folder on the machine that runs `scenaria serve`.
 - The proxy records apps whose base URL you can set. Closed web apps (ChatGPT, Claude.ai) come in via their data export (`scenaria import`); a browser extension is on the roadmap.
 - If you move this repository, run `scenaria init --for …` again in your projects, because configs point to its absolute path.
+- The audit file's signature means "computed on this machine at that time from these records and released by you", not that every fact is proven; the tamper evidence is tamper-evident, not tamper-proof. The auditor mode protects against mistakes, it is not a lock on your own computer.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/ROADMAP.md](docs/ROADMAP.md) and [examples/](examples/README.md).
 

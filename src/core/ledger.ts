@@ -192,7 +192,7 @@ export class Ledger {
   }
 
   /** Is this node's file different from what Scenaria last wrote for it (same rule as checkIntegrity)? */
-  nodeTampered(n: ScenariaNode, inflight?: { id: string; hash: string }[] | null): boolean {
+  nodeTampered(n: ScenariaNode, inflight?: { id: string; hash: string }[] | null, anchored = false): boolean {
     if (!existsSync(this.file)) return false;
     const { lines } = this.read();
     let h0: string | undefined;
@@ -200,7 +200,7 @@ export class Ledger {
     for (const l of lines) if (l.id === n.id) [h0, h1] = [l.hash, h0];
     if (!h0) return lines.length > 0;
     const c = contentHash(n);
-    return !(c === h0 || (c === h1 && (lines[lines.length - 1]?.id === n.id || Boolean(inflight?.some((x) => x.id === n.id && x.hash === h0)))));
+    return !(c === h0 || (c === h1 && ((!anchored && lines[lines.length - 1]?.id === n.id) || Boolean(inflight?.some((x) => x.id === n.id && x.hash === h0)))));
   }
 }
 
@@ -218,7 +218,7 @@ export interface LedgerState {
 }
 
 /** Compare every node with its last ledger hash. */
-export function checkIntegrity(nodes: ScenariaNode[], ledger: Ledger, opts: { expectSealed?: boolean; inflight?: { id: string; hash: string }[] | null } = {}) {
+export function checkIntegrity(nodes: ScenariaNode[], ledger: Ledger, opts: { expectSealed?: boolean; inflight?: { id: string; hash: string }[] | null; anchored?: boolean } = {}) {
   const missing = Boolean(opts.expectSealed) && !ledger.exists;
   const { lines, brokenAt, torn } = ledger.read();
   // The hash is written BEFORE the node file, so a process killed in between leaves the node
@@ -233,7 +233,9 @@ export function checkIntegrity(nodes: ScenariaNode[], ledger: Ledger, opts: { ex
     last.set(l.id, [l.hash, cur?.[0]]);
     if (l.op === "write-over-tampered") overTampered.add(l.id);
   }
-  const lastLine = lines[lines.length - 1];
+  // Without an anchor on this machine the last line stands in for an interrupted write. With one, only the
+  // anchor's in-flight record does: otherwise the newest step could be deleted or rolled back unnoticed (C5, S-K2).
+  const lastLine = opts.anchored ? undefined : lines[lines.length - 1];
   const state = new Map<string, IntegrityState>();
   for (const n of nodes) {
     const h = last.get(n.id);

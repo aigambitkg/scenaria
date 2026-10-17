@@ -45,10 +45,12 @@ export function taskNodes(goalId: string, all: ScenariaNode[]): ScenariaNode[] {
     kids.set(n.parentId, l);
   }
   const out: ScenariaNode[] = [];
+  const seen = new Set<string>([goalId]);
   const stack = [...(kids.get(goalId) ?? [])];
   while (stack.length) {
     const n = stack.pop()!;
-    if (n.type === "goal") continue;
+    if (n.type === "goal" || seen.has(n.id)) continue;
+    seen.add(n.id);
     out.push(n);
     stack.push(...(kids.get(n.id) ?? []));
   }

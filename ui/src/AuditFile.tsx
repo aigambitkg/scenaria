@@ -13,6 +13,9 @@ import { LockedNote } from "./Approval";
 import { ANNEX_A_AREAS, ANNEX_A_GROUPS, COVERAGE_LABEL, EVIDENCE_SOURCES, type ControlStatus, type EvidenceSource } from "../../src/core/iso42001";
 import type { Dict } from "./i18n";
 
+/** A plain label for a code of the audit file; unknown codes are shown as they are. */
+const L = (m: Record<string, string>, code: string) => m[code] ?? code;
+
 type Filter = "all" | ControlStatus | "alarm";
 // "partly" is neutral, never the green of "verified" (review C4c-1 K10): Scenaria alone never evidences a control fully.
 const STATUS_CHIP: Record<ControlStatus, string> = { evidenced: "v-passed", partly: "st-partly", organisational: "st-org", not_covered: "v-warning" };
@@ -47,6 +50,8 @@ export function AuditFileDialog(props: {
   const [loading, setLoading] = useState(false);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  // The dates the shown audit file was computed for: the package signs exactly these (C5, U-K2).
+  const [shown, setShown] = useState({ from: "", to: "" });
   const [filter, setFilter] = useState<Filter>("all");
   const [open, setOpen] = useState<string | null>(null);
   const [rolesOnly, setRolesOnly] = useState(false);
@@ -67,6 +72,7 @@ export function AuditFileDialog(props: {
       .auditFile(f || undefined, tt || undefined)
       .then((x) => {
         setFile(x);
+        setShown({ from: f, to: tt });
         setLocked(false);
       })
       .catch((e) => {
@@ -99,6 +105,10 @@ export function AuditFileDialog(props: {
     return cs.filter((c) => filter === "all" || (filter === "alarm" ? c.alarm : c.status === filter));
   }, [file, filter]);
   const warning = (code: string) => file?.integrity.warnings.find((w) => w.code === code);
+  /** Dates typed but not yet shown with "Show": the package would not match the fields. */
+  const periodPending = from !== shown.from || to !== shown.to;
+  const periodLabel = (f: AuditFile) => (f.period.whole ? t.afWhole : f.period.note[lang]);
+  const [donePeriod, setDonePeriod] = useState("");
 
   const makePackage = async () => {
     setBusy(true);
@@ -107,6 +117,7 @@ export function AuditFileDialog(props: {
     try {
       // Exactly the period that is shown (not what is typed but not yet shown).
       const p = file?.period;
+      setDonePeriod(file ? periodLabel(file) : "");
       setDone(await api.auditPackage({ from: p && !p.whole ? p.from ?? undefined : undefined, to: p && !p.whole ? p.to ?? undefined : undefined, names: rolesOnly ? "roles-only" : "with-names", lang }));
     } catch (e: any) {
       setErr(String(e?.message ?? e));
@@ -193,7 +204,7 @@ export function AuditFileDialog(props: {
             <section className={`af-integrity af-${file.integrity.state}`} aria-label={t.afIntegrity}>
               <strong>
                 {file.integrity.state === "alarm" ? "⚠ " : file.integrity.state === "ok" ? "✓ " : ""}
-                {t.afIntegrity}: {file.integrity.headline[lang]}
+                {file.integrity.headline[lang]}
               </strong>
               {file.integrity.warnings.length > 0 && (
                 <ul>
@@ -220,7 +231,7 @@ export function AuditFileDialog(props: {
               <p className="small muted">{file.integrity.note[lang]}</p>
             </section>
 
-            <div className="ad-verdicts af-filter" role="group" aria-label={t.afFilterAll}>
+            <div className="ad-verdicts af-filter" role="group" aria-label={t.afFilterGroup}>
               {(["all", "partly", "organisational", "not_covered", "alarm"] as const).map((k) => (
                 <button key={k} className={`ad-light ${filter === k ? "on" : ""}`} aria-pressed={filter === k} onClick={() => setFilter(k)}>
                   <span className="ad-num">{k === "all" ? s.controls : k === "alarm" ? s.withAlarm : s[k]}</span>
@@ -312,13 +323,14 @@ export function AuditFileDialog(props: {
                         <tr key={i}>
                           <td className="small">{when(a.at)}</td>
                           <td>
-                            <strong>{a.kind}</strong> {a.ref} · {a.action}
+                            <strong>{L(t.afKindL, a.kind)}</strong> {a.ref} · {L(t.afActionL, a.action)}
                             {a.text && <div className="small">{a.text}</div>}
                             <div className="small muted">
-                              {a.by} · {a.via}
+                              {a.by}
+                              {a.via ? ` · ${L(t.afViaL, a.via)}` : ""}
                               {a.keyId ? ` · ${t.afKey} ${a.keyId}` : ""}
-                              {!a.carries ? ` · ${t.afCarriesNo}` : ""}
-                              {a.unsigned.length > 0 ? ` · ${t.afUnsigned}${a.unsigned.join(", ")}` : ""}
+                              {!a.carries ? ` · ${t.afCarriesNoKind[a.kind] ?? t.afCarriesNo}` : ""}
+                              {a.unsigned.length > 0 ? ` · ${t.afUnsigned}${a.unsigned.map((f) => L(t.afFieldL, f)).join(", ")}` : ""}
                             </div>
                           </td>
                         </tr>
@@ -340,12 +352,12 @@ export function AuditFileDialog(props: {
                       {h.stepChanged && <div className="qnote q-warn">{t.afStepChanged}</div>}
                       {h.current && (
                         <div className="small">
-                          {t.afCurrent}: {h.current.status} · {h.current.origin} · {h.current.by} · {when(h.current.at)} · {h.current.counts ? t.afCounts : t.afNotCounts}
+                          {t.afCurrent}: {L(t.afActionL, h.current.status)} · {L(t.afOriginL, h.current.origin)} · {h.current.by} · {when(h.current.at)} · {h.current.counts ? t.afVerdictCounts : t.afVerdictNotCounts}
                         </div>
                       )}
                       {h.earlier.map((e, i) => (
                         <div key={i} className="small muted">
-                          {t.afEarlier}: {e.status} · {e.origin} · {e.by} · {when(e.at)} → {when(e.replacedAt)} · {e.signature}
+                          {t.afEarlier}: {L(t.afActionL, e.status)} · {L(t.afOriginL, e.origin)} · {e.by} · {when(e.at)} → {when(e.replacedAt)} · {L(t.afSigL, e.signature)}
                         </div>
                       ))}
                     </li>
@@ -359,7 +371,7 @@ export function AuditFileDialog(props: {
               <ul>
                 {file.reseals.authentic.map((r) => (
                   <li key={r.id} className="small">
-                    <strong>{r.id}</strong> {when(r.at)} · {r.kind} · {r.by} · {r.via}
+                    <strong>{r.id}</strong> {when(r.at)} · {L(t.afOriginL, r.kind)} · {r.by} · {L(t.afViaL, r.via)}
                   </li>
                 ))}
               </ul>
@@ -396,6 +408,11 @@ export function AuditFileDialog(props: {
             </details>
 
             {canEdit && <p className="small muted">{t.evWhere}</p>}
+            {/* Who may read the audit file, shown here (C5, U-K9); changing it stays in the terminal. */}
+            <p className="small muted af-access">
+              {t.afAccessNow(file.access.mode)}
+              {canEdit ? ` ${t.afAccessHow}` : ""}
+            </p>
 
             {!props.auditView && (
               <section className="af-actions">
@@ -406,17 +423,24 @@ export function AuditFileDialog(props: {
                 ) : (
                   <>
                     <div className="af-row">
-                      <button className="btn primary" disabled={busy} onClick={makePackage} title={t.afPackageHint}>
+                      <button className="btn primary" disabled={busy || periodPending} onClick={makePackage} title={t.afPackageHint}>
                         ⤓ {t.afPackage}
                       </button>
                       <label className="check">
                         <input type="checkbox" checked={rolesOnly} onChange={(e) => setRolesOnly(e.target.checked)} /> {t.afRolesOnly}
                       </label>
                     </div>
+                    {periodPending ? (
+                      <p className="qnote q-warn small" role="status">
+                        {t.afPeriodPending}
+                      </p>
+                    ) : (
+                      <p className="small muted">{t.afPackagePeriod(periodLabel(file))}</p>
+                    )}
                     <p className="small muted">{t.afPackageHint}</p>
                     {done && (
                       <div className="qnote af-done" role="status">
-                        <p>{t.afPackageDone(done.folder, done.where)}</p>
+                        <p>{t.afPackageDone(done.folder, done.where, donePeriod)}</p>
                         <p className="small">
                           {t.afFingerprint} <code>{done.digest.slice(0, 16)}</code> · {t.afKey} <code>{done.keyId}</code>
                         </p>
@@ -513,7 +537,7 @@ function ControlDetail(props: {
               {c.orgEvidence.entries.map((e) => (
                 <li key={e.id}>
                   <strong>{e.title || e.id}</strong>{" "}
-                  <span className={`chip ${TRUST_CHIP[e.trust] ?? ""}`}>{t.afTrust[e.trust] ?? e.trust}</span> <span className={`chip ${e.counts ? "v-passed" : ""}`}>{e.counts ? t.afCounts : t.afNotCounts}</span>
+                  <span className={`chip ${TRUST_CHIP[e.trust] ?? ""}`}>{e.trust === "verified" && !props.edit ? t.afTrustPerson : t.afTrust[e.trust] ?? e.trust}</span> <span className={`chip ${e.counts ? "v-passed" : ""}`}>{e.counts ? t.afCounts : t.afNotCounts}</span>
                   <div className="small af-url">{safeLink(e.url) ? <a href={e.url} target="_blank" rel="noopener noreferrer">{e.url}</a> : e.url}</div>
                   {normalLink(e.url) && <div className="qnote q-warn">{t.evLinkNormal(normalLink(e.url)!)}</div>}
                   <div className="small muted af-hash">

@@ -139,13 +139,13 @@ Das Dashboard hat drei Ansichten auf dieselben Daten:
 - **Prüfung**: die Szenario-Karte mit Regeln und Meilensteinen, Projekt-Check, Protokoll und die **Prüfakte** (ISO/IEC 42001).
 - **Steuerung**: Chat, Analyse und **Erweiterungen** (Prognosen, Prognose-Prüfung, Relay).
 
-## Prüfakte nach ISO/IEC 42001 (v0.9.6–0.9.12)
+## Prüfakte nach ISO/IEC 42001 (v0.9.6–0.9.13)
 
 Ein Prüfer findet jede der 38 Kontrollen aus Anhang A an einem Ort: was die Aufzeichnungen dieses Projekts belegen, was nur teilweise abgedeckt ist und was eure Organisation selbst nachweisen muss. Dashboard → **Prüfung** → **Prüfakte**, im Terminal `scenaria audit-file`.
 
 - **Aus den Aufzeichnungen berechnet**, für das ganze Projekt oder einen Zeitraum: Status je Kontrolle (teilweise belegt / Nachweis durch die Organisation / nicht abgedeckt, mit den fehlenden Quellen), der Fälschungsschutz mit jeder Warnung, signierte Freigaben, Urteilsverlauf und Neu-Versiegelungen. Es zählen nur unabhängige, signierte Prüfurteile; ein beschädigter Fälschungsschutz warnt an jeder betroffenen Kontrolle, senkt aber keinen Status.
 - **Die Dokumente der Organisation** je Kontrolle: Link und SHA-256 des Dokuments (im Browser berechnet, die Datei wird nie hochgeladen), Verantwortliche mit Rolle und Name, Datum. Nur du erfasst sie, direkt bei der Kontrolle im Dashboard (oder mit `scenaria audit-file evidence`), du siehst genau, was du signierst, und sie werden mit dem Projekt committet. Sie heben nie einen Status; ein bearbeiteter Eintrag fällt als geändert auf.
-- **Signiertes Prüfpaket**: der Nachweis als kanonisches JSON mit deinem Schlüssel signiert, eine Druckseite (Drucken → Als PDF sichern, Fingerabdruck auf jeder Seite), Markdown und eine Anleitung zum Prüfen. Standardmäßig mit Namen, auf Wunsch nur Rollen. Jeder prüft es ohne Projekt: `scenaria audit-file verify`.
+- **Signiertes Prüfpaket**: der Nachweis als kanonisches JSON mit deinem Schlüssel signiert, eine Druckseite (Drucken → Als PDF sichern, Fingerabdruck auf jeder Seite), Markdown und eine Anleitung zum Prüfen. Standardmäßig mit Namen, auf Wunsch nur Rollen. Jeder prüft es ohne Projekt: `scenaria audit-file verify` – den Nachweis, beide Lesekopien und die Anleitung; die erste Zeile nennt das Gesamtergebnis, und Dateien, die nicht zum Paket gehören (z. B. ein dort gesichertes PDF), werden als nicht geprüft genannt.
 - **Prüfermodus vor Ort**: Du übergibst einen Browser an einen Prüfer; er liest alles und ändert nichts, bis du den Modus beendest. Ein Schutz vor Versehen, keine Sperre an deinem eigenen Rechner.
 - **Ehrlicher Umfang**: Scenaria belegt, wie KI-Agenten in euren Projekten gearbeitet haben. Es belegt nicht, wie KI-Modelle entwickelt oder trainiert werden, und ersetzt keine Richtlinien oder Folgenabschätzungen – das sind Dokumente der Organisation. Wer die Prüfakte lesen darf, ist deine signierte Einstellung (Standard: nur du).
 
@@ -258,6 +258,7 @@ Claude Code (MCP + Hooks), Claude Desktop (MCP, je Projekt ein Eintrag), Cursor,
 - Ein Rücksprung stellt **Dateien** wieder her, keine versendeten Mails, Pushes oder Deploys – diese werden markiert, und Scenaria warnt.
 - Der Proxy erfasst Apps, deren Basis-URL sich einstellen lässt. Geschlossene Web-Apps (ChatGPT, Claude.ai) kommen über ihren Datenexport (`scenaria import`); eine Browser-Erweiterung steht auf der Roadmap.
 - Im Team-Server-Modus sichern Snapshots den Projektordner auf dem Rechner, auf dem `scenaria serve` läuft.
+- Die Signatur der Prüfakte heißt „auf diesem Rechner zu dieser Zeit aus diesen Aufzeichnungen berechnet und von dir freigegeben“, nicht, dass jede Tatsache bewiesen ist; der Fälschungsschutz macht Änderungen sichtbar, verhindert sie aber nicht. Der Prüfermodus schützt vor Versehen, er ist keine Sperre an deinem eigenen Rechner.
 
 Mehr: [README.md](README.md) (vollständige Referenz), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/ROADMAP.md](docs/ROADMAP.md), [examples/](examples/README.md).
 

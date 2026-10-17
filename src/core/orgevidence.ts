@@ -41,7 +41,7 @@ const MAX_ID = 9_999_999;
 export interface OrgEvidence {
   /** e1, e2, … — never reused. */
   id: string;
-  /** Annex A control id, e.g. "A.2.2" (empty on a discarded entry). */
+  /** Annex A control id, e.g. "A.2.2" (on a discarded entry the control it concerned, or empty when unclear). */
   control: string;
   /** Where the document is (http or https, normalised: an international domain shows as punycode). */
   url: string;
@@ -525,9 +525,13 @@ export function removeOrgEvidence(store: Store, id: string, who: Who, opts: { di
         `${id} was recorded by you but changed outside Scenaria. To keep its history, restore ${ORG_EVIDENCE_FILE} from git first; or discard it (its content and history in this file are dropped).`,
       );
     }
+    // The control stays (C5): an auditor still sees which control the discarded entry concerned. Only when every
+    // copy names the same, real Annex A control; its other content is dropped.
+    const named = [...new Set(entries.filter((x) => x.id === id).map((x) => x.control))];
+    const keepControl = named.length === 1 && ANNEX_A_CONTROLS.some((c) => c.id === named[0]) ? named[0] : "";
     const tomb: OrgEvidence = {
       id,
-      control: "",
+      control: keepControl,
       url: "",
       hash: "",
       owner: { role: "", name: "" },

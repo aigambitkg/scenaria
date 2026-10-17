@@ -135,7 +135,7 @@ export function pathIds(all: ScenariaNode[], headId: string | null): Set<string>
   const byId = new Map(all.map((n) => [n.id, n]));
   const out = new Set<string>();
   let cur = headId ? byId.get(headId) : undefined;
-  while (cur) {
+  while (cur && !out.has(cur.id)) {
     out.add(cur.id);
     cur = cur.parentId ? byId.get(cur.parentId) : undefined;
   }

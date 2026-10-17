@@ -296,9 +296,10 @@ test("C3-1: removing an entry the person did not sign discards it — its conten
   const f = buildAuditFile(s, y2021());
   assert.equal(ctl(f, "A.3.2").orgEvidence.state, "none");
   const tomb = readOrgEvidence(s.store).entries.find((x) => x.id === "e7");
-  assert.deepEqual([tomb.discarded, tomb.url, tomb.owner.name, tomb.control], [true, "", "", ""]);
+  // Since C5 (Kev 2026-10-17) the tombstone keeps the control it concerned; its other content is dropped.
+  assert.deepEqual([tomb.discarded, tomb.url, tomb.owner.name, tomb.control], [true, "", "", "A.3.2"]);
   assert.equal(orgEvidenceStates(s.store).entries.find((x) => x.entry.id === "e7").trust, "verified", "the discard itself is the person's");
-  assert.ok(buildAuditFile(s).approvals.some((a) => a.kind === "evidence" && a.action === "discarded" && a.ref === "e7"));
+  assert.ok(buildAuditFile(s).approvals.some((a) => a.kind === "evidence" && a.action === "discarded" && a.ref === "A.3.2/e7"));
   // The person's own entry: a tombstone with its content (recorded and removed both listed).
   removeOrgEvidence(s.store, "e1", who);
   const acts = buildAuditFile(s).approvals.filter((a) => a.ref === "A.2.2/e1").map((a) => a.action);

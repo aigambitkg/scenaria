@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { accessSync, constants as fsConstants, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, dirname, extname, isAbsolute, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,7 +44,7 @@ import { adoptRecommendation, expertAnalysis, factSheet, getReport, listPersonal
 import { forgetProject, listProjects, registerProject } from "./core/projects.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
-export const VERSION = "0.9.12";
+export const VERSION = "0.9.13";
 
 const KEY_ENVS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "AZURE_OPENAI_API_KEY"];
 
@@ -1320,13 +1320,25 @@ let auditViewKeyCache: Buffer | null = null;
 function auditViewKey(): Buffer {
   if (auditViewKeyCache) return auditViewKeyCache;
   const f = join(dirname(globalConfigPath()), "auditview.key");
+  let tooShort = false;
   try {
     const k = readFileSync(f);
     if (k.length >= 32) return (auditViewKeyCache = k);
+    tooShort = true;
   } catch {}
   const k = randomBytes(32);
   try {
     mkdirSync(dirname(f), { recursive: true, mode: 0o700 });
+    if (tooShort) {
+      // A damaged key is replaced on disk, never kept only in memory: otherwise an auditor's cookie would stop
+      // counting after a restart and that browser could write again (C5, fail closed).
+      const tmp = `${f}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+      writeFileSync(tmp, k, { mode: 0o600, flag: "wx" });
+      renameSync(tmp, f);
+      // Two processes replacing it at once: both use the one that ended up on disk.
+      const onDisk = readFileSync(f);
+      return (auditViewKeyCache = onDisk.length >= 32 ? onDisk : k);
+    }
     writeFileSync(f, k, { mode: 0o600, flag: "wx" });
   } catch {
     // Another process created it at the same moment: use that one.

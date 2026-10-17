@@ -2,7 +2,7 @@
 import { createContext, useContext } from "react";
 
 /** Opens the help at a topic from anywhere (dialogs need no extra props). */
-export const HelpContext = createContext<{ open: (topic: string) => void; label: string }>({ open: () => {}, label: "Help" });
+export const HelpContext = createContext<{ open: (topic: string) => void; label: string; title?: (topic: string) => string | undefined }>({ open: () => {}, label: "Help" });
 
 /** A small "?" that opens the help at a topic. */
 export function HelpButton({ topic }: { topic: string }) {
@@ -12,7 +12,7 @@ export function HelpButton({ topic }: { topic: string }) {
       type="button"
       className="btn icon help-q"
       title={h.label}
-      aria-label={`${h.label}: ${topic}`}
+      aria-label={`${h.label}: ${h.title?.(topic) ?? topic}`}
       onClick={(e) => {
         e.stopPropagation();
         h.open(topic);

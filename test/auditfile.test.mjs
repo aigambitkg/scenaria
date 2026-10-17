@@ -107,7 +107,7 @@ test("C2: an edited verdict is no evidence; a damaged tamper evidence warns clea
   const f = buildAuditFile(s);
   assert.equal(f.sources.verdicts.count, 0, "the edited verdict does not count");
   assert.equal(f.integrity.state, "alarm");
-  assert.match(f.integrity.headline.de, /^Achtung: Der Manipulationsnachweis ist beschädigt/);
+  assert.match(f.integrity.headline.de, /^Achtung: Der Fälschungsschutz ist beschädigt/);
   const w = f.integrity.warnings.find((x) => x.code === "tampered");
   assert.equal(w.level, "alarm");
   assert.deepEqual(w.items, [cp.id]);

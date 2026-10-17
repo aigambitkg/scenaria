@@ -423,7 +423,7 @@ export function ForecastsDialog(props: { t: Dict; lang: "de" | "en"; keys: Sessi
     const byId = new Map(props.nodes.map((n) => [n.id, n]));
     const out = new Set<string>();
     let cur = props.headId ? byId.get(props.headId) : undefined;
-    while (cur) {
+    while (cur && !out.has(cur.id)) {
       out.add(cur.id);
       cur = cur.parentId ? byId.get(cur.parentId) : undefined;
     }

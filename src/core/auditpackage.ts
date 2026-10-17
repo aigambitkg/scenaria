@@ -20,6 +20,12 @@ import { renderAuditHtml, renderPackageReadme } from "./audithtml.js";
 export const PACKAGE_EVIDENCE = "audit-file.json";
 export const PACKAGE_COPIES = "audit-file.copies.json";
 const COPIES_TAG = "audit-copies/v1";
+/** Since 0.9.13 (C5, S-K5): the note on checking is signed too. */
+const COPIES_TAG_V2 = "audit-copies/v2";
+/** The note on checking, by language. */
+export const PACKAGE_NOTES = { de: "PRUEFEN.txt", en: "CHECK.txt" } as const;
+/** Every file Scenaria writes into a package (plus its one note); anything else is reported as not checked. */
+const PACKAGE_FILES = new Set<string>([PACKAGE_EVIDENCE, PACKAGE_COPIES, "audit-file.html", "audit-file.md"]);
 /** Version a.b.c at least `min`. */
 function atLeast(v: unknown, min: number[]): boolean {
   const m = typeof v === "string" ? /^(\d+)\.(\d+)\.(\d+)/.exec(v) : null;
@@ -28,10 +34,14 @@ function atLeast(v: unknown, min: number[]): boolean {
   for (let i = 0; i < 3; i++) if (n[i] !== min[i]) return n[i] > min[i];
   return true;
 }
-const sha256 = (t: string) => createHash("sha256").update(t, "utf8").digest("hex");
+/** SHA-256 of the raw bytes (a file) or of the UTF-8 bytes (a text): never of a decoded file (C5, S-K6). */
+const sha256 = (t: string | Buffer) => createHash("sha256").update(typeof t === "string" ? Buffer.from(t, "utf8") : t).digest("hex");
+/** Strict UTF-8: invalid bytes are refused, never replaced by U+FFFD on reading (C5, S-K6). */
+const utf8 = (b: Buffer) => new TextDecoder("utf-8", { fatal: true }).decode(b);
 
 /** The text the person signs for the reading copies (bound to the project and the evidence's fingerprint). */
-export const copiesSignedText = (projectId: string, digest: string, lang: string, html: string, md: string) => JSON.stringify([projectId, COPIES_TAG, digest, lang, html, md]);
+export const copiesSignedText = (projectId: string, digest: string, lang: string, html: string, md: string, note?: string) =>
+  JSON.stringify(note === undefined ? [projectId, COPIES_TAG, digest, lang, html, md] : [projectId, COPIES_TAG_V2, digest, lang, html, md, note]);
 
 /**
  * Write the package into `parent` (which must exist). Returns the package folder. With `sign` (the person's
@@ -47,16 +57,18 @@ export function writeAuditPackage(parent: string, x: AuditExport, lang: "de" | "
   put(PACKAGE_EVIDENCE, JSON.stringify(x, null, 2) + "\n");
   const html = renderAuditHtml(x, lang);
   const md = renderAuditMarkdown(x, lang);
+  const note = renderPackageReadme(x, lang);
   put("audit-file.html", html);
   put("audit-file.md", md);
   if (sign) {
     const h = sha256(html);
     const m = sha256(md);
-    const s = sign([COPIES_TAG, x.signature.digest, lang, h, m]);
+    const n = sha256(note);
+    const s = sign([COPIES_TAG_V2, x.signature.digest, lang, h, m, n]);
     if (s.pub !== x.signature.pub) throw new Error("the reading copies must be signed with the evidence's key");
-    put(PACKAGE_COPIES, JSON.stringify({ kind: "scenaria/audit-copies", version: 1, digest: x.signature.digest, lang, copies: { "audit-file.html": h, "audit-file.md": m }, sig: s.sig }, null, 2) + "\n");
+    put(PACKAGE_COPIES, JSON.stringify({ kind: "scenaria/audit-copies", version: 2, digest: x.signature.digest, lang, copies: { "audit-file.html": h, "audit-file.md": m, [PACKAGE_NOTES[lang]]: n }, sig: s.sig }, null, 2) + "\n");
   }
-  put(lang === "de" ? "PRUEFEN.txt" : "CHECK.txt", renderPackageReadme(x, lang));
+  put(PACKAGE_NOTES[lang], note);
   return folder;
 }
 
@@ -117,6 +129,8 @@ export interface PackageCheck extends ExportCheck {
    * small file); "missing" = absent although the exporting version always writes it. Either fails the check.
    */
   copiesSignature?: "invalid" | "missing";
+  /** Files in the package folder that Scenaria did not write (e.g. a PDF saved there): never checked (C5, S-K5). */
+  extra?: string[];
 }
 
 /** Check a signed export (a .json file, or a package folder). `version` is this Scenaria's version. Never throws. */
@@ -134,9 +148,15 @@ export function checkExportPath(path: string, version: string): PackageCheck {
   if (!isFile(file)) return fail("not a plain file (or no audit-file.json in the folder)");
   try {
     if (statSync(file).size > MAX_EXPORT_BYTES) return fail("too large");
-    const text = readFileSync(file, "utf8");
+    let text: string;
+    try {
+      text = utf8(readFileSync(file));
+    } catch {
+      return fail("not valid UTF-8 (I-JSON requires it)");
+    }
     const r = verifyAuditExport(text);
     const isPackage = basename(file) === PACKAGE_EVIDENCE;
+    let noteName: string | null = null;
     let copiesProblem = false;
     let copiesMissing = false;
     // Reading copies of a package: rendered again from the verified evidence and compared byte for byte (C4b-1).
@@ -145,6 +165,7 @@ export function checkExportPath(path: string, version: string): PackageCheck {
       const sameVersion = x.context?.scenariaVersion === version;
       // The person's signature over the copies' hashes (same key as the evidence) decides, whatever the version.
       let signedCopies: Record<string, string> | null = null;
+      let signedLang: "de" | "en" | undefined;
       const cp = join(dirname(file), PACKAGE_COPIES);
       let cpPresent = false;
       try {
@@ -159,11 +180,21 @@ export function checkExportPath(path: string, version: string): PackageCheck {
           const c = parseStrictJson(readFileSync(cp, "utf8")) as any;
           const h = c?.copies?.["audit-file.html"];
           const m = c?.copies?.["audit-file.md"];
-          const okShape = c?.kind === "scenaria/audit-copies" && c.version === 1 && c.digest === x.signature.digest && (c.lang === "de" || c.lang === "en") && /^[0-9a-f]{64}$/.test(h) && /^[0-9a-f]{64}$/.test(m) && typeof c.sig === "string";
+          const sigNote = c?.lang === "de" || c?.lang === "en" ? PACKAGE_NOTES[c.lang as "de" | "en"] : "";
+          const n = c?.version === 2 ? c?.copies?.[sigNote] : undefined;
+          const okShape =
+            c?.kind === "scenaria/audit-copies" &&
+            (c.version === 1 || (c.version === 2 && /^[0-9a-f]{64}$/.test(n))) &&
+            c.digest === x.signature.digest &&
+            (c.lang === "de" || c.lang === "en") &&
+            /^[0-9a-f]{64}$/.test(h) &&
+            /^[0-9a-f]{64}$/.test(m) &&
+            typeof c.sig === "string";
           const ok =
             okShape &&
-            edVerify(null, Buffer.from(copiesSignedText(x.signature.projectId, x.signature.digest, c.lang, h, m)), createPublicKey({ key: Buffer.from(x.signature.pub, "base64"), format: "der", type: "spki" }), Buffer.from(c.sig, "base64"));
-          signedCopies = ok ? { "audit-file.html": h, "audit-file.md": m } : null;
+            edVerify(null, Buffer.from(copiesSignedText(x.signature.projectId, x.signature.digest, c.lang, h, m, n)), createPublicKey({ key: Buffer.from(x.signature.pub, "base64"), format: "der", type: "spki" }), Buffer.from(c.sig, "base64"));
+          signedCopies = ok ? { "audit-file.html": h, "audit-file.md": m, ...(n ? { [sigNote]: n } : {}) } : null;
+          if (ok) signedLang = c.lang;
           if (!ok) copiesProblem = true;
         } catch {
           copiesProblem = true;
@@ -173,6 +204,18 @@ export function checkExportPath(path: string, version: string): PackageCheck {
         "audit-file.html": [renderAuditHtml(x, "de"), renderAuditHtml(x, "en")],
         "audit-file.md": [renderAuditMarkdown(x, "de"), renderAuditMarkdown(x, "en")],
       } as Record<string, string[]>;
+      // The note on checking (C5, S-K5): the one the signature names, else the one that is there.
+      // The package's language: from the copies signature (v1 and v2), else the one note that is there. The note of
+      // the other language is not the package's: it is listed as a file Scenaria did not write (C5 review R2).
+      const notes = Object.entries(PACKAGE_NOTES) as ["de" | "en", string][];
+      const present = notes.filter(([, nm]) => isFile(join(dirname(file), nm)));
+      const lang = signedLang ?? (present.length === 1 ? present[0][0] : undefined);
+      if (lang) {
+        noteName = PACKAGE_NOTES[lang];
+        renders[noteName] = [renderPackageReadme(x, lang)];
+      } else if (present.length > 1) {
+        noteName = null; // two notes, no signature to tell: neither is checked, both are listed
+      } else if (atLeast(x.context?.scenariaVersion, [0, 9, 10])) copies.push({ name: `${PACKAGE_NOTES.de} / ${PACKAGE_NOTES.en}`, state: "missing" });
       for (const name of Object.keys(renders)) {
         const p = join(dirname(file), name);
         if (!isFile(p)) {
@@ -183,13 +226,19 @@ export function checkExportPath(path: string, version: string): PackageCheck {
           copies.push({ name, state: "different" });
           continue;
         }
-        const copy = readFileSync(p, "utf8");
+        const bytes = readFileSync(p);
         const signedHash = signedCopies?.[name];
-        if (signedHash) copies.push({ name, state: sha256(copy) === signedHash ? "same" : "different" });
-        else copies.push({ name, state: renders[name].includes(copy) ? "same" : sameVersion ? "different" : "not_comparable" });
+        if (signedHash) copies.push({ name, state: sha256(bytes) === signedHash ? "same" : "different" });
+        else copies.push({ name, state: renders[name].some((t) => Buffer.from(t, "utf8").equals(bytes)) ? "same" : sameVersion ? "different" : "not_comparable" });
       }
     }
-    return { ...r, file, package: isPackage, copies, ...(copiesProblem ? { copiesSignature: "invalid" as const } : copiesMissing ? { copiesSignature: "missing" as const } : {}) };
+    let extra: string[] = [];
+    if (isPackage) {
+      try {
+        extra = readdirSync(dirname(file)).filter((n) => !PACKAGE_FILES.has(n) && n !== noteName && n !== ".DS_Store").sort();
+      } catch {}
+    }
+    return { ...r, file, package: isPackage, copies, ...(extra.length ? { extra } : {}), ...(copiesProblem ? { copiesSignature: "invalid" as const } : copiesMissing ? { copiesSignature: "missing" as const } : {}) };
   } catch (err: any) {
     return fail(`cannot be read (${String(err?.message ?? err).slice(0, 80)})`);
   }

@@ -196,7 +196,7 @@ export function EvidenceAdd(props: { t: Dict; control: string; controlTitle: str
         </div>
         {mode === "file" ? (
           <>
-            <input type="file" aria-label={t.evHashFile} onChange={(e) => void pick(e.target.files?.[0])} />
+            <input type="file" aria-label={t.evPickFile} onChange={(e) => void pick(e.target.files?.[0])} />
             <p className="small muted">{hashing ? t.evHashing : fileNote ?? t.evHashFileHint}</p>
             {hash && (
               <p className="small af-hash">

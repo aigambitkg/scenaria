@@ -278,8 +278,35 @@ export class Scenaria {
     // Nodes are re-hashed on every call (a hand edit shows up immediately); the parsed ledger is cached by size/mtime.
     const st = this.ledger.state();
     const seal = sealFindings(this.store, st);
-    const nodes = this.store.listNodes();
-    const r = checkIntegrity(nodes, this.ledger, { expectSealed: seal.anchored || existsSync(this.store.path("ledger.sealed")), inflight: this.inflight() });
+    let nodes = this.store.listNodes();
+    const checkOpts = () => ({ expectSealed: seal.anchored || existsSync(this.store.path("ledger.sealed")), inflight: this.inflight(), anchored: seal.anchored });
+    const r = checkIntegrity(nodes, this.ledger, checkOpts());
+    // This read holds no lock (C5 review R1): it can see a write half-way — the step file before the write, the
+    // in-flight mark already cleared, the ledger line already there. A step that looks changed or missing is read
+    // again, after the in-flight mark (anchor first, then the file): a write in progress is then either marked in
+    // flight or finished. Only what still fails counts.
+    const flagged = [...new Set([...[...r.state].filter(([, v]) => v === "tampered").map(([id]) => id), ...r.stepsMissing])];
+    if (flagged.length) {
+      const opts2 = checkOpts();
+      const fresh: ScenariaNode[] = [];
+      for (const id of flagged) {
+        try {
+          if (this.store.hasNode(id)) fresh.push(this.store.readNode(id));
+        } catch {
+          /* unreadable: stays missing */
+        }
+      }
+      const again = checkIntegrity(fresh, this.ledger, opts2);
+      const byId = new Map(nodes.map((n) => [n.id, n]));
+      for (const n of fresh) {
+        if (again.state.get(n.id) === "ok") {
+          r.state.set(n.id, "ok");
+          byId.set(n.id, n);
+        }
+      }
+      r.stepsMissing = r.stepsMissing.filter((id) => again.stepsMissing.includes(id) || (fresh.some((n) => n.id === id) && again.state.get(id) !== "ok"));
+      nodes = [...byId.values()];
+    }
     // A verdict that claims the person or an audit agent but does not verify is tampering; untrusted/revoked ones simply do not count.
     const trust = verdictTrustAll(this.store, nodes);
     for (const [id, tr] of trust) if (tr === "forged") r.state.set(id, "tampered");
@@ -337,6 +364,11 @@ export class Scenaria {
     try {
       confirmHighWater(this.root, next);
     } catch {}
+  }
+  /** Does this machine hold an anchor for the project's ledger (then only its in-flight record excuses an older step file)? */
+  private anchoredHere(): boolean {
+    const a = readLedgerAnchor(this.root);
+    return Boolean(a && a.genesis !== null);
   }
   /** The node whose write is in flight on this machine (after a crash its file may still be the previous version). */
   private inflight(): { id: string; hash: string }[] {
@@ -906,7 +938,9 @@ export class Scenaria {
   private nearestSnapshot(n: ScenariaNode) {
     if (n.snapshot) return n.snapshot;
     let cur = n.parentId;
-    while (cur) {
+    const seen = new Set<string>([n.id]);
+    while (cur && !seen.has(cur)) {
+      seen.add(cur);
       const p = this.store.readNode(cur);
       if (p.snapshot) return p.snapshot;
       cur = p.parentId;
@@ -1156,7 +1190,7 @@ export class Scenaria {
       // A brand-new project (no marker, no other node): this ledger is the first one — anchor it outside the project.
       const newborn = fresh && !existsSync(this.store.path("ledger.sealed")) && !this.store.listNodes().some((x) => x.id !== n.id);
       // Writing over a node file that was changed outside Scenaria must not launder it: the evidence stays.
-      const overTampered = !fresh && this.store.hasNode(n.id) && this.ledger.nodeTampered(this.store.readNode(n.id), this.inflight());
+      const overTampered = !fresh && this.store.hasNode(n.id) && this.ledger.nodeTampered(this.store.readNode(n.id), this.inflight(), this.anchoredHere());
       const hash = contentHash(n);
       // The mark outside the project names this node as "in flight" until its file is written too.
       next = this.appendLedger([{ id: n.id, hash, op: overTampered ? "write-over-tampered" : "write" }], { inflight: { id: n.id, hash }, deferConfirm: true });
@@ -1184,7 +1218,7 @@ export class Scenaria {
   /** Cheap per-node version of integrity().confirmed (for the knowledge-base note written with every save). */
   private noteConfirmed(n: ScenariaNode): boolean {
     if (!isConfirmedPass(n.verification)) return false;
-    return verdictTrustAll(this.store, [n]).get(n.id) === "ok" && checkIntegrity([n], this.ledger, { expectSealed: true, inflight: this.inflight() }).state.get(n.id) === "ok";
+    return verdictTrustAll(this.store, [n]).get(n.id) === "ok" && checkIntegrity([n], this.ledger, { expectSealed: true, inflight: this.inflight(), anchored: this.anchoredHere() }).state.get(n.id) === "ok";
   }
 
   private writeNote(n: ScenariaNode) {

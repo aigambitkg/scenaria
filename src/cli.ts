@@ -1383,18 +1383,28 @@ async function main() {
           process.exitCode = 1;
           return out(`${head}${C.red}NOT VALID: ${safe(r.problem)}${C.reset}`, r);
         }
-        if (r.copies.some((c) => c.state === "different") || (r as { copiesSignature?: string }).copiesSignature) process.exitCode = 1;
+        const what = (n: string) => (n.endsWith(".txt") ? "note on checking" : "reading copy");
+        const copiesSig = (r as { copiesSignature?: string }).copiesSignature;
+        const changed = r.copies.filter((c) => c.state === "different").map((c) => c.name);
+        // The first line states the overall result (C5, U-K5): a valid evidence in a package with a changed copy is NOT VALID as a whole.
+        const whyNot = [
+          ...changed.map((n) => `${what(n)} ${n} was changed`),
+          ...(copiesSig === "invalid" ? ["the signature over the reading copies does not verify"] : copiesSig === "missing" ? ["the signature over the reading copies is missing"] : []),
+        ];
+        if (whyNot.length) process.exitCode = 1;
         const copyLine = (c: { name: string; state: string }) =>
           c.state === "same"
-            ? `  reading copy ${c.name}: same content as the evidence (checked)`
+            ? `  ${what(c.name)} ${c.name}: ${c.name.endsWith(".txt") ? "as Scenaria wrote it (checked)" : "same content as the evidence (checked)"}`
             : c.state === "missing"
-              ? `${C.yellow}  reading copy ${c.name}: missing — not checked${C.reset}`
+              ? `${C.yellow}  ${what(c.name)} ${c.name}: missing — not checked${C.reset}`
               : c.state === "not_comparable"
-                ? `${C.yellow}  reading copy ${c.name}: made by another Scenaria version — cannot be compared; rely on the evidence${C.reset}`
-                : `${C.red}  reading copy ${c.name}: DOES NOT SHOW what the evidence holds — do not rely on it${C.reset}`;
+                ? `${C.yellow}  ${what(c.name)} ${c.name}: made by another Scenaria version — cannot be compared; rely on the evidence${C.reset}`
+                : `${C.red}  ${what(c.name)} ${c.name}: ${c.name.endsWith(".txt") ? "WAS CHANGED — do not follow it; use the key id and fingerprint above" : "DOES NOT SHOW what the evidence holds — do not rely on it"}${C.reset}`;
         return out(
           [
-            `${head}${C.green}Valid:${C.reset} content and signature match.`,
+            whyNot.length
+              ? `${head}${C.red}NOT VALID as a package: ${safe(whyNot.join("; "))}. The evidence itself (JSON) is valid — rely only on it.${C.reset}\n  evidence: content and signature match.`
+              : `${head}${C.green}Valid:${C.reset} content and signature match.`,
             `  fingerprint sha256:${safe(r.digest)}`,
             `  key ${safe(r.keyId)}${r.keyTrustedHere ? " (trusted on this machine)" : " — confirm this key id with the person over a second channel"}`,
             `  project ${safe(r.projectId)} · generated ${safe(r.generatedAt).replace("T", " ").slice(0, 16)} UTC · ${r.names === "roles-only" ? "roles only" : "with names"}`,
@@ -1404,6 +1414,7 @@ async function main() {
             ...((r as { copiesSignature?: string }).copiesSignature === "invalid" ? [`${C.red}  the signature over the reading copies (audit-file.copies.json) does NOT verify${C.reset}`] : []),
             ...((r as { copiesSignature?: string }).copiesSignature === "missing" ? [`${C.red}  the signature over the reading copies (audit-file.copies.json) is MISSING — every package of this version has it; do not rely on the copies${C.reset}`] : []),
             ...(r.package ? r.copies.map(copyLine) : ["  reading copies: not checked (a single file, not a package folder)"]),
+            ...((r as { extra?: string[] }).extra?.length ? [`${C.yellow}  not part of the package, not checked: ${safe((r as { extra?: string[] }).extra!.join(", "))}${C.reset}`] : []),
             "The signature means: computed by Scenaria at that time from these records and released by the key's holder — not that every fact is proven.",
           ].join("\n"),
           r,
@@ -1500,7 +1511,7 @@ async function main() {
       }
       const lab = (x: { de: string; en: string }) => x.en;
       const status = (c: (typeof f.controls)[number]) => {
-        const [word, col] = c.status === "partly" ? ["partly", C.green] : c.status === "not_covered" ? ["not covered", C.yellow] : c.status === "organisational" ? ["organisation", C.dim] : [c.status, ""];
+        const [word, col] = c.status === "partly" ? ["partly", C.cyan] : c.status === "not_covered" ? ["not covered", C.yellow] : c.status === "organisational" ? ["organisation", C.dim] : [c.status, ""];
         return `${col}${word.padEnd(13)}${col ? C.reset : ""}`;
       };
       const lines = [

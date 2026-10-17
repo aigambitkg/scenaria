@@ -23,6 +23,7 @@ import type { CanonEvent } from "./canon.js";
 import { projectIdChanged } from "./canon.js";
 import { gateResults } from "./gate.js";
 import { effectiveStatus, isConfirmedPass, isUnconfirmedPass } from "./verdict.js";
+import { archivedVerdictTrust } from "./trust.js";
 
 export type Severity = "high" | "medium" | "low";
 
@@ -98,12 +99,38 @@ function pathSet(nodes: ScenariaNode[], head: string | null): Set<string> {
   return out;
 }
 
+/**
+ * Steps whose parent links lead back to themselves (C5, S-K1). Scenaria never writes such a loop;
+ * it comes from a hand edit or a bad merge. Every walk along parent links must stop on it.
+ */
+export function parentCycles(nodes: ScenariaNode[]): string[] {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const state = new Map<string, 1 | 2>(); // 1 = on the current walk, 2 = done
+  const inCycle = new Set<string>();
+  for (const start of nodes) {
+    if (state.get(start.id)) continue;
+    const walk: string[] = [];
+    let cur: string | undefined = start.id;
+    while (cur && byId.has(cur) && !state.get(cur)) {
+      state.set(cur, 1);
+      walk.push(cur);
+      cur = byId.get(cur)!.parentId ?? undefined;
+    }
+    if (cur && state.get(cur) === 1) for (const id of walk.slice(walk.indexOf(cur))) inCycle.add(id);
+    for (const id of walk) state.set(id, 2);
+  }
+  return [...inCycle].sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
+}
+
 /** Nodes that follow a decision on its chosen line, up to the next decision or task. */
 function consequences(d: ScenariaNode, kids: Map<string, ScenariaNode[]>): ScenariaNode[] {
   const out: ScenariaNode[] = [];
+  const seen = new Set<string>([d.id]);
   const stack = (kids.get(d.id) ?? []).filter((k) => !k.viaOption || k.viaOption === d.chosen);
   while (stack.length) {
     const n = stack.pop()!;
+    if (seen.has(n.id)) continue;
+    seen.add(n.id);
     out.push(n);
     if (n.type === "decision" || n.type === "goal") continue;
     stack.push(...(kids.get(n.id) ?? []));
@@ -118,7 +145,7 @@ function emptyStat(): AgentStat {
 export function metrics(
   nodes: ScenariaNode[],
   head: string | null,
-  opts: { rewinds?: number; integrity?: Map<string, "ok" | "tampered" | "unsealed">; stepsMissing?: string[]; ledgerBrokenAt?: number | null; ledgerMissing?: boolean; ledgerReplaced?: boolean; ledgerDiverged?: { expected: { lines: number }; found: { lines: number }; kind: "extended" | "rewritten"; since: string[] } | null; resealsUnproven?: string[]; reseals?: { id: string; at: string; kind: string; by: string }[]; restarted?: { at: string; since: string } | null; confirmed?: Set<string>; verdictsUntrusted?: string[]; verdictsRevoked?: string[]; verdictsSuperseded?: string[]; verdictsRemoved?: string[]; canon?: CanonEvent[]; canonError?: string | null; canonMissing?: string[]; gateTampered?: string[]; rules?: { unconfirmed: { id: string; text: string }[]; tampered: { id: string; text: string }[]; missing: string[]; proposals: number }; projectIdChanged?: { bound: string; inConfig: string } | null } = {},
+  opts: { rewinds?: number; integrity?: Map<string, "ok" | "tampered" | "unsealed">; stepsMissing?: string[]; ledgerBrokenAt?: number | null; ledgerMissing?: boolean; ledgerReplaced?: boolean; ledgerDiverged?: { expected: { lines: number }; found: { lines: number }; kind: "extended" | "rewritten"; since: string[] } | null; resealsUnproven?: string[]; reseals?: { id: string; at: string; kind: string; by: string }[]; restarted?: { at: string; since: string } | null; confirmed?: Set<string>; verdictsUntrusted?: string[]; verdictsRevoked?: string[]; verdictsSuperseded?: string[]; verdictsRemoved?: string[]; canon?: CanonEvent[]; canonError?: string | null; canonMissing?: string[]; verdictsForged?: string[]; snapshotsMissing?: string[]; verdictArchiveInvalid?: string[]; gateTampered?: string[]; rules?: { unconfirmed: { id: string; text: string }[]; tampered: { id: string; text: string }[]; missing: string[]; proposals: number }; projectIdChanged?: { bound: string; inConfig: string } | null } = {},
 ): Metrics {
   const issues: Issue[] = [];
   // Canon: fixed points broken, checks failed, deadlines passed, proposals waiting.
@@ -158,6 +185,10 @@ export function metrics(
     for (const id of r.missing) issues.push({ code: "rule_missing", severity: "high", message: `Project rule ${id} was deleted outside Scenaria — agents no longer receive it. Restore memory.json or add the rule again.`, subject: id });
     if (r.proposals) issues.push({ code: "rules_proposed", severity: "low", message: `${r.proposals} project rule proposal(s) from agents await your decision.`, value: r.proposals });
   }
+  // Also in the project check since C5 (Kev 2026-10-17), not only in the audit file.
+  for (const id of opts.verdictsForged ?? []) issues.push({ code: "verdict_forged", severity: "high", message: `The verdict on ${id} claims the person or an audit agent but cannot be confirmed or read — it does not count, and the step counts as changed.`, nodeId: id, subject: id });
+  for (const id of opts.snapshotsMissing ?? []) issues.push({ code: "snapshot_missing", severity: "high", message: `Step ${id} points to a file state that is not in this machine's snapshot store (deleted, or this is a copy or clone of the project without its snapshots) — its files cannot be restored here.`, nodeId: id, subject: id });
+  for (const id of opts.verdictArchiveInvalid ?? []) issues.push({ code: "verdict_archive_invalid", severity: "low", message: `Step ${id} keeps earlier verdicts whose signature cannot be confirmed — kept for comparison only, they never count.`, nodeId: id, subject: id });
   for (const id of opts.stepsMissing ?? []) issues.push({ code: "step_missing", severity: "high", message: `Step ${id} is in the integrity ledger, but its file was deleted or destroyed outside Scenaria — what it recorded is gone. Restore it (e.g. from a backup), or review and run: scenaria integrity --reseal`, nodeId: id, subject: id });
   if (opts.ledgerMissing) issues.push({ code: "ledger_missing", severity: "high", message: "The integrity ledger was deleted — changes since then cannot be verified. Review, then run: scenaria integrity --reseal" });
   if (opts.ledgerBrokenAt) issues.push({ code: "ledger_broken", severity: "high", message: `The integrity ledger was edited or truncated (line ${opts.ledgerBrokenAt}) — history may have been manipulated.`, value: opts.ledgerBrokenAt });
@@ -190,10 +221,15 @@ export function metrics(
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const root = nodes.find((n) => !n.parentId && n.type === "mission");
   const goalOf = (n: ScenariaNode): ScenariaNode | undefined => {
+    const seen = new Set<string>([n.id]);
     let cur: ScenariaNode | undefined = n.parentId ? byId.get(n.parentId) : undefined;
-    while (cur && cur.type !== "goal") cur = cur.parentId ? byId.get(cur.parentId) : undefined;
-    return cur;
+    while (cur && cur.type !== "goal" && !seen.has(cur.id)) {
+      seen.add(cur.id);
+      cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+    }
+    return cur?.type === "goal" ? cur : undefined;
   };
+  for (const id of parentCycles(nodes)) issues.push({ code: "step_cycle", severity: "high", message: `Step ${id} leads back to itself through its parent links — the step files were edited or merged outside Scenaria. Its place in the tree is not reliable; restore the step files from a backup or from git.`, nodeId: id, subject: id });
 
   if (!root?.goal) issues.push({ code: "goal_missing", severity: "high", message: "The project's main goal is not set — decisions cannot be checked against it.", nodeId: root?.id });
 
@@ -301,7 +337,7 @@ export function metrics(
 
   let health = 100;
   if (!root?.goal) health -= 20;
-  health -= Math.min(40, issues.filter((i) => ["tampered", "ledger_broken", "ledger_missing", "ledger_replaced", "ledger_diverged", "reseal_unproven", "verdict_untrusted", "verdict_removed"].includes(i.code)).length * 20);
+  health -= Math.min(40, issues.filter((i) => ["tampered", "ledger_broken", "ledger_missing", "ledger_replaced", "ledger_diverged", "reseal_unproven", "verdict_untrusted", "verdict_removed", "step_missing", "step_cycle", "verdict_forged", "snapshot_missing"].includes(i.code)).length * 20);
   health -= Math.min(30, issues.filter((i) => ["canon_broken", "canon_check_failed", "canon_tampered", "canon_untrusted", "canon_missing", "canon_check_tampered", "canon_gate_tampered", "canon_unreadable", "rule_tampered", "rule_missing", "project_id_changed"].includes(i.code) && i.severity === "high").length * 15);
   health -= Math.min(25, Math.round((1 - decisionQualityAvg) * 40));
   health -= Math.min(30, issues.filter((i) => i.code === "built_on_failure").length * 15);
@@ -332,7 +368,27 @@ function short(s: string | undefined, max = 90): string {
 export function projectMetrics(s: Scenaria): Metrics {
   const rewinds = s.store.readEvents().filter((e) => e.type === "rewind").length;
   const integ = s.integrity();
-  return metrics(s.store.listNodes(), s.store.readState().head, { rewinds, integrity: integ.state, stepsMissing: integ.stepsMissing, ledgerBrokenAt: integ.ledgerBrokenAt, ledgerMissing: integ.ledgerMissing, ledgerReplaced: integ.ledgerReplaced, ledgerDiverged: integ.ledgerDiverged, resealsUnproven: integ.resealsUnproven, reseals: integ.reseals, restarted: integ.restarted, confirmed: integ.confirmed, verdictsUntrusted: integ.verdictsUntrusted, verdictsRevoked: integ.verdictsRevoked, verdictsSuperseded: integ.verdictsSuperseded, verdictsRemoved: integ.verdictsRemoved, ...(() => {
+  const nodes = s.store.listNodes();
+  // The stored file states (one git call) and the earlier verdicts' signatures: the audit file's own alarms (C5).
+  const snapshotsMissing = (() => {
+    try {
+      const withCommit = nodes.filter((n) => n.snapshot && typeof n.snapshot === "object" && typeof n.snapshot.commit === "string" && n.snapshot.commit);
+      if (!withCommit.length || !s.repo) return [];
+      const gone = s.repo.missingCommits(withCommit.map((n) => n.snapshot!.commit));
+      return withCommit.filter((n) => gone.has(n.snapshot!.commit)).map((n) => n.id);
+    } catch {
+      return [];
+    }
+  })();
+  const verdictArchiveInvalid = (() => {
+    try {
+      const tr = archivedVerdictTrust(s.store, nodes);
+      return nodes.filter((n) => Array.isArray(n.verificationHistory) && n.verificationHistory.length && (tr.get(n.id) ?? []).some((x) => x === "forged" || x === "untrusted" || x === "revoked")).map((n) => n.id);
+    } catch {
+      return [];
+    }
+  })();
+  return metrics(nodes, s.store.readState().head, { rewinds, verdictsForged: integ.verdictsForged ?? [], snapshotsMissing, verdictArchiveInvalid, integrity: integ.state, stepsMissing: integ.stepsMissing, ledgerBrokenAt: integ.ledgerBrokenAt, ledgerMissing: integ.ledgerMissing, ledgerReplaced: integ.ledgerReplaced, ledgerDiverged: integ.ledgerDiverged, resealsUnproven: integ.resealsUnproven, reseals: integ.reseals, restarted: integ.restarted, confirmed: integ.confirmed, verdictsUntrusted: integ.verdictsUntrusted, verdictsRevoked: integ.verdictsRevoked, verdictsSuperseded: integ.verdictsSuperseded, verdictsRemoved: integ.verdictsRemoved, ...(() => {
     const cs = s.canonState();
     const ri = s.ruleIssues();
     return { canon: cs.events, canonError: cs.error, canonMissing: cs.missing, gateTampered: gateResults(s).tampered, rules: { unconfirmed: ri.unconfirmed, tampered: ri.tampered, missing: ri.missing, proposals: s.ruleProposals().length }, projectIdChanged: projectIdChanged(s.store) };

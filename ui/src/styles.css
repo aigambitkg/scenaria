@@ -8,12 +8,12 @@
   --surface: #ffffff;
   --ink: #1c2b3a;
   --ink-2: #4c5d6e;
-  --ink-3: #8394a5;
+  --ink-3: #5f7082; /* ≥ 4.5:1 on white and paper (C5, U-K11) */
   --rule: #d2dce5;
   --marker: rgba(255, 214, 51, 0.62);
   --marker-solid: #ffd633;
   --pass: #1e7f57;
-  --warn: #a86a12;
+  --warn: #9c6210;
   --fail: #b8392a;
   --lesson: #345fa8;
   --shadow-modal: 0 18px 50px rgba(28, 43, 58, 0.22);
@@ -984,3 +984,6 @@ table.gate tr.current td:first-child { box-shadow: inset 4px 0 0 var(--marker-so
   .ev-fields { grid-template-columns: minmax(0, 1fr); }
   .ev-fields dt { margin-top: 4px; }
 }
+
+/* C5: in the Simple view a notice sits in the flow, never over the top bar (view switch, lock). */
+.simple-main > .banner { position: static; margin: 12px 12px 0; }

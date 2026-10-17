@@ -150,8 +150,8 @@ const STEP_SOURCES: EvidenceSource[] = ["decisions", "checkpoints", "snapshots",
 type Rule = { level: WarningLevel; sources: EvidenceSource[]; title: Lang2; explain: Lang2 };
 
 const ALARM_TEXT: Lang2 = {
-  de: "Der Manipulationsnachweis ist beschädigt. Was die betroffenen Quellen zeigen, kann nachträglich verändert worden sein.",
-  en: "The tamper evidence is damaged. What the affected sources show may have been changed afterwards.",
+  de: "Der Fälschungsschutz ist beschädigt. Was die betroffenen Quellen zeigen, kann nachträglich verändert worden sein.",
+  en: "The tamper protection is damaged. What the affected sources show may have been changed afterwards.",
 };
 
 /** Project-check codes that concern the tamper evidence, and what they mean for the audit file. */
@@ -167,6 +167,12 @@ export const INTEGRITY_RULES: Record<string, Rule> = {
     sources: STEP_SOURCES,
     title: { de: "Schritte gelöscht oder zerstört", en: "Steps deleted or destroyed" },
     explain: { de: "Schritte stehen in der Hash-Kette, aber ihre Dateien fehlen oder sind unlesbar. Was sie aufgezeichnet hatten, fehlt in der Akte.", en: "Steps are in the hash chain, but their files are missing or unreadable. What they recorded is missing from the audit file." },
+  },
+  step_cycle: {
+    level: "alarm",
+    sources: STEP_SOURCES,
+    title: { de: "Schritte im Kreis verknüpft", en: "Steps linked in a loop" },
+    explain: { de: "Die Verweise einzelner Schritte führen im Kreis auf sie selbst zurück. Scenaria schreibt so etwas nie: Die Schritt-Dateien wurden von Hand bearbeitet oder falsch zusammengeführt. Ihre Stelle im Ablauf ist nicht verlässlich.", en: "The links of some steps lead back to themselves in a loop. Scenaria never writes this: the step files were edited by hand or merged wrongly. Their place in the sequence is not reliable." },
   },
   ledger_missing: {
     level: "alarm",
@@ -214,7 +220,7 @@ export const INTEGRITY_RULES: Record<string, Rule> = {
     level: "alarm",
     sources: ["snapshots"],
     title: { de: "Gesicherte Dateistände fehlen", en: "Stored file states missing" },
-    explain: { de: "Schritte verweisen auf Dateistände, die im Sicherungsspeicher von Scenaria nicht mehr vorhanden sind. Zu diesen Schritten lassen sich die Dateien nicht wiederherstellen; sie zählen nicht.", en: "Steps point to file states that are no longer in Scenaria's snapshot store. Their files cannot be restored; they do not count." },
+    explain: { de: "Schritte verweisen auf Dateistände, die im Sicherungsspeicher von Scenaria auf diesem Rechner fehlen: gelöscht, oder das Projekt ist eine Kopie bzw. ein Klon ohne seine Sicherungen. Zu diesen Schritten lassen sich die Dateien hier nicht wiederherstellen; sie zählen nicht.", en: "Steps point to file states that are missing from Scenaria's snapshot store on this machine: deleted, or the project is a copy or clone without its snapshots. Their files cannot be restored here; they do not count." },
   },
   verdict_archive_invalid: {
     level: "note",
@@ -353,9 +359,6 @@ export const INTEGRITY_RULES: Record<string, Rule> = {
 /** Codes the audit file computes itself (not from the project check): their own lists, never a message of `scenaria analyze`. */
 export const AUDIT_FILE_OWN_CODES = [
   "evaluation_failed",
-  "verdict_forged",
-  "snapshot_missing",
-  "verdict_archive_invalid",
   "org_evidence_tampered",
   "org_evidence_missing",
   "org_evidence_unreadable",
@@ -785,7 +788,7 @@ export function buildAuditFile(s: Scenaria, period: Period = { from: null, to: n
     if (x.trust !== "verified") continue;
     const e = x.entry;
     const keyId = e.pub ? publicKeyId(e.pub) : undefined;
-    const ref = e.discarded ? e.id : `${e.control}/${e.id}`;
+    const ref = e.control ? `${e.control}/${e.id}` : e.id;
     if (!e.discarded && inPeriod(p, e.recordedAt)) {
       approvals.push({ at: e.recordedAt, kind: "evidence", ref, action: "recorded", by: e.recordedBy, via: e.recordedVia, origin: "person", keyId, text: e.title || e.url, unsigned: [], carries: false });
     }
@@ -1008,10 +1011,10 @@ export function buildAuditFile(s: Scenaria, period: Period = { from: null, to: n
     state === "alarm"
       ? { de: `Achtung: ${ALARM_TEXT.de} Betroffen: ${summary.withAlarm} von ${summary.controls} Kontrollen.`, en: `Warning: ${ALARM_TEXT.en} Affected: ${summary.withAlarm} of ${summary.controls} controls.` }
       : state === "notes"
-        ? t("Der Manipulationsnachweis ist intakt. Es gibt Hinweise, die ein Auditor kennen sollte.", "The tamper evidence is intact. There are notes an auditor should know.")
+        ? t("Der Fälschungsschutz ist intakt. Es gibt Hinweise, die ein Auditor kennen sollte.", "The tamper protection is intact. There are notes an auditor should know.")
         : t(
-            "Der Manipulationsnachweis ist intakt: Bei den aufgezeichneten Schritten und den signierten Nachweisen wurde keine Veränderung außerhalb von Scenaria gefunden.",
-            "The tamper evidence is intact: no change outside Scenaria was found in the recorded steps and the signed records.",
+            "Der Fälschungsschutz ist intakt: Bei den aufgezeichneten Schritten und den signierten Nachweisen wurde keine Veränderung außerhalb von Scenaria gefunden.",
+            "The tamper protection is intact: no change outside Scenaria was found in the recorded steps and the signed records.",
           );
 
   const whole = !p.from && !p.to;

@@ -49,7 +49,7 @@ tr.area td{background:#fff;font-weight:600;color:var(--accent);padding-top:12px;
 .stat b{display:block;font-size:20px}
 .stat span{color:var(--muted);font-size:11.5px}
 .badge{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;white-space:nowrap;border:1px solid transparent}
-.b-partly{background:var(--okbg);color:var(--ok)}
+.b-partly{background:#eef2f8;color:var(--accent);border-color:#c9d3e3}
 .b-not_covered{background:var(--warnbg);color:var(--warn)}
 .b-organisational{background:var(--soft);color:var(--muted);border-color:var(--line)}
 .b-evidenced{background:var(--okbg);color:var(--ok)}
@@ -208,7 +208,8 @@ export function renderPackageReadme(x: AuditExport, lang: "de" | "en" = "de"): s
     `  audit-file.json  ${T("das Beweisstück (signiert)", "the evidence (signed)")}`,
     `  audit-file.html  ${T("Lesekopie zum Drucken; PDF: im Browser „Drucken → Als PDF sichern“", "reading copy to print; PDF: in the browser “Print → Save as PDF”")}`,
     `  audit-file.md    ${T("Lesekopie als Text", "reading copy as text")}`,
-    `  audit-file.copies.json  ${T("die Signatur der Person über die beiden Lesekopien", "the person's signature over both reading copies")}`,
+    `  audit-file.copies.json  ${T("die Signatur der Person über die Lesekopien und diese Anleitung", "the person's signature over the reading copies and this note")}`,
+    `  ${T("Andere Dateien in diesem Ordner (z. B. ein selbst gesichertes PDF) prüft verify nicht.", "Other files in this folder (e.g. a PDF saved here) are not checked by verify.")}`,
     "",
     T("Prüfen:", "Check:"),
     `  scenaria audit-file verify ${T("   (in diesem Ordner)", "   (in this folder)")}`,

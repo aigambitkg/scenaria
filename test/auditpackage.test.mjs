@@ -40,7 +40,8 @@ test("C4b: the package holds the evidence, a print-ready page, Markdown and a no
   const r = checkExportPath(folder, VERSION);
   assert.equal(r.valid, true, r.problem);
   assert.equal(r.package, true);
-  assert.deepEqual(r.copies, [{ name: "audit-file.html", state: "same" }, { name: "audit-file.md", state: "same" }]);
+  // Since 0.9.13 (C5, S-K5) the note on checking is checked too.
+  assert.deepEqual(r.copies, [{ name: "audit-file.html", state: "same" }, { name: "audit-file.md", state: "same" }, { name: "PRUEFEN.txt", state: "same" }]);
   const note = readFileSync(join(folder, "PRUEFEN.txt"), "utf8");
   assert.ok(note.includes(x.signature.digest) && note.includes(x.signature.keyId));
   assert.throws(() => writeAuditPackage(out, x, "de"), /EEXIST/, "never into an existing folder");
@@ -109,16 +110,16 @@ test("C4b-1: a reading copy is rendered again from the evidence and compared —
   writeFileSync(join(folder, "audit-file.md"), `> Fingerabdruck: \`sha256:${x.signature.digest}\`\n# Alles belegt\n`);
   let r = checkExportPath(folder, VERSION);
   assert.equal(r.valid, true, "the evidence itself is fine");
-  assert.deepEqual(r.copies.map((c) => c.state), ["different", "different"]);
+  assert.deepEqual(r.copies.map((c) => c.state), ["different", "different", "same"]);
   // Made by another Scenaria version: cannot be compared — never reported as matching.
   r = checkExportPath(folder, "0.0.0-other");
-  assert.deepEqual(r.copies.map((c) => c.state), ["not_comparable", "not_comparable"]);
+  assert.deepEqual(r.copies.map((c) => c.state), ["not_comparable", "not_comparable", "same"], "the untouched note still renders the same");
   const cli = run(["audit-file", "verify", folder], folder);
   assert.equal(cli.status, 1);
   // A missing copy is said, not hidden.
   const f2 = writeAuditPackage(mkdtempSync(join(tmpdir(), "pkg-c1b-")), x, "en");
   rmSync(join(f2, "audit-file.html"));
-  assert.deepEqual(checkExportPath(f2, VERSION).copies, [{ name: "audit-file.html", state: "missing" }, { name: "audit-file.md", state: "same" }]);
+  assert.deepEqual(checkExportPath(f2, VERSION).copies, [{ name: "audit-file.html", state: "missing" }, { name: "audit-file.md", state: "same" }, { name: "CHECK.txt", state: "same" }]);
   // A single file is not a package: its reading copies are not checked, and that is said.
   const single = join(mkdtempSync(join(tmpdir(), "pkg-single-")), "audit-file-x.json");
   writeFileSync(single, JSON.stringify(x));
@@ -165,11 +166,11 @@ test("C4b: the person also signs the reading copies, so any Scenaria version can
   assert.ok(readdirSync(folder).includes("audit-file.copies.json"));
   // Another version would not be able to compare by rendering — with the signature it can.
   let r = checkExportPath(folder, "9.9.9-other");
-  assert.deepEqual(r.copies.map((c) => c.state), ["same", "same"]);
+  assert.deepEqual(r.copies.map((c) => c.state), ["same", "same", "same"]);
   const page = readFileSync(join(folder, "audit-file.html"), "utf8");
   writeFileSync(join(folder, "audit-file.html"), page.replace("Manipulationsnachweis</h2>", "Manipulationsnachweis (geprüft)</h2>"));
   r = checkExportPath(folder, "9.9.9-other");
-  assert.deepEqual(r.copies.map((c) => c.state), ["different", "same"]);
+  assert.deepEqual(r.copies.map((c) => c.state), ["different", "same", "same"]);
   // A forged copies signature is said loudly.
   const cf = join(folder, "audit-file.copies.json");
   const c = JSON.parse(readFileSync(cf, "utf8"));
