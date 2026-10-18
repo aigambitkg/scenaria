@@ -16,6 +16,8 @@ import { tempProject } from "./helpers.mjs";
 const ROOT = join(import.meta.dirname, "..");
 const CLI = join(ROOT, "dist", "cli.js");
 const src = (f) => readFileSync(join(ROOT, "ui", "src", f), "utf8");
+// A child's console output can carry colour codes (the test runner may set FORCE_COLOR): compare plain text.
+const plain = (t) => String(t).replace(/\x1b\[[0-9;]*m/g, "");
 
 function project() {
   const p = tempProject("c5-");
@@ -53,7 +55,7 @@ test("C5 S-K1: a loop in the parent links never hangs the audit file; it raises 
       console.log(JSON.stringify({ state: f.integrity.state, w: f.integrity.warnings.map((w) => [w.code, w.items]) }));`;
     const r = spawnSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8", timeout: 20_000, env: process.env });
     assert.equal(r.status, 0, `${kind}: finished (${r.signal ?? ""} ${r.stderr})`);
-    const out = JSON.parse(r.stdout.trim().split("\n").pop());
+    const out = JSON.parse(plain(r.stdout).trim().split("\n").pop());
     assert.equal(out.state, "alarm", kind);
     const w = out.w.find(([c]) => c === "step_cycle");
     assert.ok(w, `${kind}: step_cycle alarm`);
@@ -251,11 +253,11 @@ test("C5: a damaged (too short) auditor-mode key is replaced on disk, never kept
     const server = createServer(app.handler);
     await new Promise((r) => server.listen(0, "127.0.0.1", r));
     const r = await fetch("http://127.0.0.1:" + server.address().port + "/api/audit-file/auditor-mode", { method: "POST", headers: { "content-type": "application/json", "x-scenaria": "1", cookie: "scenaria_approval=sess" }, body: "{}" });
-    console.log(r.status);
+    console.log(String(r.status));
     server.close(); app.close?.();
     process.exit(0);`;
   const r = spawnSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8", env, timeout: 30_000 });
-  assert.equal(r.stdout.trim().split("\n").pop(), "200", r.stderr);
+  assert.equal(plain(r.stdout).trim().split("\n").pop(), "200", r.stderr);
   assert.ok(readFileSync(keyFile).length >= 32, "the key on disk was replaced");
 });
 
@@ -348,7 +350,7 @@ test("C5 R1: a reader without the lock never sees a false alarm while another pr
     const ids = s.store.listNodes().filter((x) => x.type === "checkpoint").map((x) => x.id);
     const end = Date.now() + ${SECS * 1000}; let n = 0;
     while (Date.now() < end) { if (n % 2) s.checkpoint({ title: "w" + n, outputs: ["x"], agent: "a" }); else s.update(ids[n % ids.length], { summary: "s" + n }); n++; }
-    console.log(n);`;
+    console.log(String(n));`;
   const reader = `
     const { Scenaria } = await import(${idx});
     const s = Scenaria.open(${JSON.stringify(dir)});
@@ -357,8 +359,8 @@ test("C5 R1: a reader without the lock never sees a false alarm while another pr
       if (t.length || i.stepsMissing.length) { bad++; if (ex.length < 3) ex.push([t, i.stepsMissing]); } }
     console.log(JSON.stringify({ reads, bad, ex }));`;
   const [w, r] = await Promise.all([run(writer), run(reader)]);
-  const res = JSON.parse(r.split("\n").pop());
-  assert.ok(Number(w) > 20 && res.reads > 20, `enough overlap: ${w} writes, ${res.reads} reads`);
+  const res = JSON.parse(plain(r).split("\n").pop());
+  assert.ok(Number(plain(w).split("\n").pop()) > 20 && res.reads > 20, `enough overlap: ${w} writes, ${res.reads} reads`);
   assert.equal(res.bad, 0, JSON.stringify(res.ex));
 });
 
