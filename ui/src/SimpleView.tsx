@@ -8,8 +8,9 @@
  */
 import { useContext, useEffect, useMemo, useState } from "react";
 import { ReadOnlyContext } from "./Approval";
-import { api, type ConversationMessage, type Fidelity, type ProjectProgress, type ScenariaNode } from "./api";
+import { api, type ConversationMessage, type Fidelity, type ProjectProgress, type ScenariaNode, type WindowStatus } from "./api";
 import { ProgressCard } from "./Progress";
+import { HandoverDialog, WindowCard } from "./Window";
 import type { Dict, Lang } from "./i18n";
 import { verdictView } from "../../src/core/verdict";
 import { Modal } from "./Dialogs";
@@ -54,8 +55,17 @@ export function whoDidIt(n: ScenariaNode, t: Dict): string {
 }
 
 /** One plain sentence for a step. */
-export function sentenceFor(n: ScenariaNode, nodes: ScenariaNode[], t: Dict): { head: string; sub?: string } {
+export function sentenceFor(n: ScenariaNode, nodes: ScenariaNode[], t: Dict, cutIds?: Set<string>): { head: string; sub?: string } {
   const option = (d: ScenariaNode, id?: string) => d.options?.find((o) => o.id === id)?.label;
+  // E3b-2: Scenaria's own save before a window change, in plain words (the node's text is written in English).
+  const cut = (n.meta as { contextCut?: { zone?: string; fill?: number } } | undefined)?.contextCut;
+  // Only a save the server counts (unchanged since written): a marker written into a node by hand reads as a normal step.
+  if (cut && n.tags?.includes("context-cut") && n.agent === "scenaria") {
+    // Not (yet) in the server's list — still loading, or not counted: a neutral line, never the raw English title.
+    if (!cutIds?.has(n.id)) return { head: t.svAutoSaved, sub: n.changedFiles?.length ? t.svFilesChanged(n.changedFiles.length) : undefined };
+    const fill = typeof cut.fill === "number" ? (t.langCode === "de" ? String(cut.fill).replace(".", ",") : String(cut.fill)) : "?";
+    return { head: t.cwSavedHead(fill, t.cwZones[cut.zone ?? ""] ?? String(cut.zone)), sub: n.changedFiles?.length ? t.svFilesChanged(n.changedFiles.length) : t.cwSavedSub };
+  }
   switch (n.type) {
     case "mission":
       return { head: t.svStarted };
@@ -127,6 +137,8 @@ export function SimpleView(props: {
   fidelityError?: boolean;
   /** E2: progress (computed on the server from evidence); the card shows the current task only. */
   progress?: ProjectProgress | null;
+  /** E3b-2: how full the AI's context window is (measured on the server); the card shows the newest window. */
+  windows?: WindowStatus | null;
   onEditGoal: () => void;
   onRewound: () => Promise<void>;
   onDiff: (from: string, to: string) => void;
@@ -138,6 +150,8 @@ export function SimpleView(props: {
   const { t, lang, nodes, headId } = props;
   const [limit, setLimit] = useState(40);
   const [showOther, setShowOther] = useState(false);
+  const [handover, setHandover] = useState(false);
+  const cutIds = useMemo(() => new Set((props.windows?.windows ?? []).flatMap((w) => w.cuts.map((c) => c.node))), [props.windows]);
   const [confirm, setConfirm] = useState<ScenariaNode | null>(null);
 
   const line = useMemo(() => pathTo(nodes, headId), [nodes, headId]);
@@ -227,6 +241,8 @@ export function SimpleView(props: {
       </section>
 
       {lastStep && <ProgressCard p={props.progress ?? null} task={currentTask} t={t} lang={lang} />}
+      {lastStep && <WindowCard ws={props.windows ?? null} t={t} lang={lang} onHandover={() => setHandover(true)} />}
+      {handover && <HandoverDialog t={t} window={props.windows?.current?.id} onClose={() => setHandover(false)} />}
 
       {!lastStep ? (
         <section className="sv-empty">
@@ -260,6 +276,7 @@ export function SimpleView(props: {
                       isNow={n.id === headId}
                       abandoned={!onLine.has(n.id)}
                       confirmed={confirmed.has(n.id)}
+                      cutIds={cutIds}
                       onBack={() => setConfirm(n)}
                       onDiff={props.onDiff}
                       toast={props.toast}
@@ -331,13 +348,15 @@ function Step(props: {
   isNow: boolean;
   abandoned: boolean;
   confirmed?: boolean;
+  /** Scenaria's own saves the server counts (E3b-2). */
+  cutIds?: Set<string>;
   onBack: () => void;
   onDiff: (from: string, to: string) => void;
   toast: Toast;
 }) {
   const readOnly = useContext(ReadOnlyContext);
   const { n, t, lang } = props;
-  const s = sentenceFor(n, props.nodes, t);
+  const s = sentenceFor(n, props.nodes, t, props.cutIds);
   const view = verdictView(n.verification, props.confirmed);
   const [open, setOpen] = useState(false);
   const [asked, setAsked] = useState<ConversationMessage | null | undefined>(undefined);

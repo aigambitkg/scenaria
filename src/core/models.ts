@@ -18,7 +18,8 @@ export const A_MODEL_DEFAULT = 200_000;
 export interface ModelEntry {
   /** The model ids this row covers (exact, after normalising; a dated snapshot "-YYYYMMDD" / "-YYYY-MM-DD" counts too). */
   ids: string[];
-  provider: "anthropic" | "openai" | "google";
+  /** "person": a local model whose window size the person entered (E3b; Ollama and the like). */
+  provider: "anthropic" | "openai" | "google" | "person";
   /** Window size the provider documents, in tokens. */
   cMax: number;
   source: string;
@@ -48,9 +49,20 @@ export function normaliseModel(model: string): string {
     .replace(/^(?:anthropic|openai|google|models)\//, "");
 }
 
-export function lookupModel(model: string | null | undefined): ModelEntry | null {
+/**
+ * The row for a model: the documented table first, then the rows the person entered (`extra`, E3b) — a person's
+ * entry never overrides a documented size. Person rows match their id exactly (after normalising).
+ */
+export function lookupModel(model: string | null | undefined, extra: ModelEntry[] = []): ModelEntry | null {
   if (!model) return null;
   const m = normaliseModel(model);
+  const doc = lookupDocumented(m);
+  if (doc) return doc;
+  for (const row of extra) if (row.ids.some((id) => normaliseModel(id) === m)) return row;
+  return null;
+}
+
+function lookupDocumented(m: string): ModelEntry | null {
   for (const row of MODEL_TABLE)
     for (const id of row.ids) if (m === id || new RegExp(`^${id.replace(/[.]/g, "\\.")}-(?:\\d{8}|\\d{4}-\\d{2}-\\d{2})$`).test(m)) return row;
   return null;

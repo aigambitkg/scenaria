@@ -30,8 +30,9 @@ import { createHash } from "node:crypto";
 import { appendFileSync, closeSync, openSync, readSync, statSync } from "node:fs";
 import type { Scenaria } from "./engine.js";
 import { windowAnchor } from "./canon.js";
-import { compact, CONTEXT_RULE, CONTEXT_ZONES, contextNextLimit, contextZone, derive, type ContextZone, type Derivation } from "./derivation.js";
-import { A_MODEL_DEFAULT, lookupModel, MODEL_TABLE_VERSION, normaliseModel } from "./models.js";
+import { compact, CONTEXT_ZONES, contextNextLimit, contextZone, derive, type ContextZone, type Derivation } from "./derivation.js";
+import { lookupModel, MODEL_TABLE_VERSION, normaliseModel } from "./models.js";
+import { describeSettings, readContextSettings, type ContextSettings } from "./contextsettings.js";
 
 export type WindowSource = "transcript" | "proxy";
 export type StartReason = "new-session" | "clear" | "resume" | "compact" | "drop" | "restart";
@@ -287,7 +288,7 @@ function endsWithoutNewline(f: string): boolean {
  * from the cached records, without the checks of windowStatus. Never shown and never acted on by itself — it only
  * decides whether the full, checked measurement is worth computing (below the yellow line nothing can be due).
  */
-export function quickFill(s: Scenaria, key: string): { w: string; tokens: number; fill: number } | null {
+export function quickFill(s: Scenaria, key: string, cs: ContextSettings = readContextSettings(s.store)): { w: string; tokens: number; fill: number } | null {
   let lines: Line[];
   try {
     const p = readLines(s);
@@ -306,10 +307,10 @@ export function quickFill(s: Scenaria, key: string): { w: string; tokens: number
   for (let i = lines.length - 1; i >= 0; i--) {
     const l = lines[i];
     if (l.t === "sample" && l.w === w) {
-      const row = lookupModel(l.model);
+      const row = lookupModel(l.model, cs.modelRows);
       if (!row) return null;
       // The same formula as the checked measurement (the soft threshold plays no part in the value).
-      const fill = derive("context.fill", "context-fill/1", { tokens: l.tokens, cMax: row.cMax, aModel: A_MODEL_DEFAULT, soft: 0, rule: CONTEXT_RULE }).value;
+      const fill = derive("context.fill", "context-fill/1", { tokens: l.tokens, cMax: row.cMax, aModel: cs.values.aModel, soft: 0, rule: cs.rule }).value;
       return { w, tokens: l.tokens, fill };
     }
     if (l.t === "open" && l.w === w) break;
@@ -348,6 +349,8 @@ export interface WindowInfo {
   soft?: Derivation;
   zone?: ContextZone;
   next?: { at: number; zone: ContextZone } | null;
+  /** The rule (version and values) this window's numbers are computed with. */
+  rule: string;
   /** Checkpoints Scenaria set because of this window's fill (E3a-2), oldest first. */
   cuts: WindowCut[];
 }
@@ -372,6 +375,8 @@ export interface WindowCut {
   fill: number;
   at: string;
   moment: ContextCutMeta["moment"];
+  /** The rule (version and values) the cut was made under. */
+  rule: string;
   /** On the current line of work (the way from the root to HEAD); after a rewind a cut can lie on an abandoned branch. */
   onLine: boolean;
 }
@@ -395,7 +400,7 @@ function cutsByWindow(nodes: { id: string; createdAt: string; meta?: unknown; ta
     if (integ().get(n.id) === "tampered") continue;
     const k = `${m.window}@${m.startedAt}`;
     const list = out.get(k) ?? [];
-    list.push({ node: n.id, zone: m.zone, fill: Number(m.fill) || 0, at: String(n.createdAt), moment: m.moment === "now" || m.moment === "answer" ? m.moment : "turn-end", onLine: line.has(n.id) });
+    list.push({ node: n.id, zone: m.zone, fill: Number(m.fill) || 0, at: String(n.createdAt), moment: m.moment === "now" || m.moment === "answer" ? m.moment : "turn-end", rule: typeof m.rule === "string" ? m.rule.slice(0, 200) : "", onLine: line.has(n.id) });
     out.set(k, list);
   }
   for (const l of out.values()) l.sort((a, b) => a.at.localeCompare(b.at));
@@ -409,6 +414,8 @@ export interface WindowStatus {
   windows: WindowInfo[];
   /** The window with the newest answer (of the conversation `key`, when asked for one). */
   current: WindowInfo | null;
+  /** The values in force (the person's signed setting or the start values) and what they change, in plain words. */
+  settings: { trust: ContextSettings["trust"]; why?: ContextSettings["why"]; elsewhere?: string; looser: ContextSettings["looser"]; rule: string; rev: number | null; at: string | null; by: string | null; text: { de: string; en: string } };
   /** The records were changed outside Scenaria: what showed it. Windows with unconfirmed lines show no number. */
   changed: { by: "chain" | "anchor" | "checkpoint" | "unreadable" | "restarted"; node?: string; line?: number } | null;
 }
@@ -420,7 +427,8 @@ function sampleAt(samples: SampleLine[], t: string): number {
   return v;
 }
 
-export function windowStatus(s: Scenaria, opts: { limit?: number; key?: string } = {}): WindowStatus {
+export function windowStatus(s: Scenaria, opts: { limit?: number; key?: string; settings?: ContextSettings } = {}): WindowStatus {
+  const cs = opts.settings ?? readContextSettings(s.store);
   // File and outside anchor read together under the lock: an append in progress is never half seen.
   const { p, anchor } = s.store.withLock(() => ({ p: readLines(s, true), anchor: windowAnchor(s.store).read() }));
   const lines = p.lines;
@@ -545,16 +553,20 @@ export function windowStatus(s: Scenaria, opts: { limit?: number; key?: string }
       tokens: last?.tokens ?? null,
       maxTokens: ss.length ? ss.reduce((m, x) => (x.tokens > m ? x.tokens : m), 0) : null,
       measurable: false,
+      rule: cs.rule,
       cuts: cuts.get(`${o.w}@${o.at}`) ?? [],
     };
     if (!trusted(o.idx) || ss.some((x) => !trusted(x.idx))) return { ...info, tokens: null, maxTokens: null, why: "changed-outside" };
     if (!last) return { ...info, why: "no-sample" };
-    const row = lookupModel(last.model);
+    const row = lookupModel(last.model, cs.modelRows);
     if (!row) return { ...info, why: "model-unknown" };
-    const cEff = Math.min(row.cMax, A_MODEL_DEFAULT);
+    const aModel = cs.values.aModel;
+    const cEff = Math.min(row.cMax, aModel);
     const steps = (stepsByModel.get(normaliseModel(last.model ?? "")) ?? []).slice(-MAX_STEPS).map(String);
-    const soft = derive("context.soft", "context-soft/1", { cMax: row.cMax, aModel: A_MODEL_DEFAULT, steps, handover, rule: CONTEXT_RULE });
-    const fill = derive("context.fill", "context-fill/1", { tokens: last.tokens, cMax: row.cMax, aModel: A_MODEL_DEFAULT, soft: soft.value, rule: CONTEXT_RULE });
+    // Where C_max comes from goes into the derivation itself (exports carry it, not only the console line).
+    const cMaxSource = row.provider === "person" ? `entered by the person (rule ${cs.rule.split(" ")[0]}, ${row.read})` : `${row.source} (read ${row.read})`;
+    const soft = derive("context.soft", "context-soft/1", { cMax: row.cMax, cMaxSource, aModel, steps, handover, rule: cs.rule });
+    const fill = derive("context.fill", "context-fill/1", { tokens: last.tokens, cMax: row.cMax, cMaxSource, aModel, soft: soft.value, rule: cs.rule });
     return {
       ...info,
       measurable: true,
@@ -563,14 +575,15 @@ export function windowStatus(s: Scenaria, opts: { limit?: number; key?: string }
       modelSource: { source: row.source, read: row.read, table: MODEL_TABLE_VERSION },
       fill,
       soft,
-      zone: contextZone(fill.value, soft.value, CONTEXT_RULE),
-      next: contextNextLimit(fill.value, soft.value, CONTEXT_RULE),
+      zone: contextZone(fill.value, soft.value, cs.rule),
+      next: contextNextLimit(fill.value, soft.value, cs.rule),
     };
   });
   windows.sort((a, b) => String(b.lastAt ?? b.startedAt).localeCompare(String(a.lastAt ?? a.startedAt)) || Number(b.id.slice(1)) - Number(a.id.slice(1)));
   return {
     table: MODEL_TABLE_VERSION,
-    rule: CONTEXT_RULE,
+    rule: cs.rule,
+    settings: { trust: cs.trust, ...(cs.why ? { why: cs.why } : {}), ...(cs.elsewhere ? { elsewhere: cs.elsewhere } : {}), looser: cs.looser, rule: cs.rule, rev: cs.set?.rev ?? null, at: cs.set?.at ?? null, by: cs.set?.by ?? null, text: describeSettings(cs) },
     windows: windows.slice(0, opts.limit ?? 50),
     current: (opts.key ? windows.find((w) => w.key === opts.key) : windows[0]) ?? null,
     changed,
@@ -649,6 +662,9 @@ export function renderWindows(ws: WindowStatus, lang: "de" | "en" = "en", only?:
         : `Warning: the window data is not as Scenaria wrote it on this machine – changed outside, or from elsewhere${c.by === "checkpoint" ? ` (no longer matches step ${c.node})` : c.by === "unreadable" ? " (file not readable)" : ""}. Affected windows show no number.`,
     );
   else if (c) out.push(de ? "Hinweis: Die Messung wurde neu begonnen, weil frühere Fenster-Daten nicht bestätigt werden konnten; ältere Fenster zeigen keine Zahl." : "Note: the measurement started again because earlier window data could not be confirmed; older windows show no number.");
+  // The values in force: the person's setting, or the start values; an invalid stored setting is said plainly.
+  if (ws.settings.trust === "invalid") out.push(de ? `Achtung: ${ws.settings.text.de}` : `Warning: ${ws.settings.text.en}`);
+  else if (ws.settings.trust === "verified" || ws.settings.elsewhere) out.push(ws.settings.text[lang]);
   for (const w of list) {
     const head = `${w.id} · ${w.agent} · ${w.model ?? "?"} · ${de ? "Beginn" : "start"}: ${L(START_TEXT[w.start])}${w.end ? ` · ${de ? "Ende" : "end"}: ${L(START_TEXT[w.end])}` : ""}`;
     if (!w.measurable || !w.fill) {
@@ -659,13 +675,22 @@ export function renderWindows(ws: WindowStatus, lang: "de" | "en" = "en", only?:
     const plainLine = de
       ? `Das Kontextfenster ist zu ${String(w.fill.value).replace(".", ",")} % gefüllt – ${CONTEXT_ZONES[w.zone!].de}: ${ZONE_MEANS[w.zone!].de}.`
       : `The context window is ${w.fill.value} % full – ${CONTEXT_ZONES[w.zone!].en}: ${ZONE_MEANS[w.zone!].en}.`;
-    const src = w.modelSource ? (de ? `Fenstergröße laut ${w.modelSource.source} (abgerufen ${w.modelSource.read})` : `window size per ${w.modelSource.source} (read ${w.modelSource.read})`) : "";
+    const byPerson = Boolean(w.modelSource?.source.startsWith("entered by the person"));
+    const src = !w.modelSource
+      ? ""
+      : byPerson
+        ? de
+          ? `Fenstergröße von der Person eingetragen (${w.modelSource.read})`
+          : `window size entered by the person (${w.modelSource.read})`
+        : de
+          ? `Fenstergröße laut ${w.modelSource.source} (abgerufen ${w.modelSource.read})`
+          : `window size per ${w.modelSource.source} (read ${w.modelSource.read})`;
     const cutLine = w.cuts.length
       ? `\n  ${de ? "Gesichert" : "Saved"}: ${w.cuts.map((c) => `${c.node} (${CONTEXT_ZONES[c.zone][lang]}, ${de ? String(c.fill).replace(".", ",") : c.fill} %)`).join(", ")}`
       : "";
     out.push(`${head}\n  ${plainLine}\n  ${L(w.fill.sentence)}\n  ${de ? "Weiche Schwelle" : "Soft threshold"} ${L(w.soft!.sentence)}${src ? `\n  ${src}` : ""}${cutLine}`);
   }
-  const ver = /^v[\d.]+/.exec(ws.rule)?.[0] ?? ws.rule;
+  const ver = /^v[\d.]+(?:-p\d+)?/.exec(ws.rule)?.[0] ?? ws.rule;
   out.push(de ? `Modelltabelle ${ws.table}, Regel ${ver}. Ab Orange sichert Scenaria automatisch einen Schritt (orange am Zugende, ab Rot sofort); ein neues Fenster öffnen kann es nicht erzwingen.` : `Model table ${ws.table}, rule ${ver}. From orange on Scenaria saves a step automatically (orange at the end of a turn, from red at once); it cannot force a new window.`);
   return out.join("\n");
 }
@@ -689,5 +714,5 @@ export function windowsForAgents(ws: WindowStatus) {
     next: w.next,
     cuts: w.cuts.map((c) => ({ node: c.node, zone: c.zone, fill: c.fill, onLine: c.onLine })),
   });
-  return { table: ws.table, rule: ws.rule, current: ws.current ? slim(ws.current) : null, windows: ws.windows.map(slim), changed: ws.changed };
+  return { table: ws.table, rule: ws.rule, settings: { trust: ws.settings.trust, rule: ws.settings.rule, rev: ws.settings.rev }, current: ws.current ? slim(ws.current) : null, windows: ws.windows.map(slim), changed: ws.changed };
 }

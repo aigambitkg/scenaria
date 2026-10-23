@@ -3,6 +3,9 @@ import type { AnalysisRecord, Metrics } from "../../src/core/analysis";
 import type { FidelityPoint } from "../../src/core/fidelity";
 import type { CanonEvent, CanonExpect, CanonSuggestion } from "../../src/core/canon";
 import type { ProjectProgress, TaskProgress, CriterionProgress } from "../../src/core/progress";
+import type { WindowStatus, WindowInfo, WindowCut } from "../../src/core/window";
+import type { ContextSettings, ContextValues, LocalModel } from "../../src/core/contextsettings";
+import type { Handover } from "../../src/core/windowact";
 import type { StringPayload } from "../../src/core/workspace";
 import type { SettingsView, LlmRole } from "../../src/core/settings";
 import type { LlmChoice } from "../../src/core/global";
@@ -119,7 +122,7 @@ async function req<T>(path: string, body?: unknown): Promise<T> {
   });
   const data = await res.json().catch(() => ({}));
   const code = typeof (data as any)?.code === "string" ? (data as any).code : undefined;
-  if (!res.ok) throw new ApiError((code && errorTexts[code]) || ((data as any)?.error ?? `HTTP ${res.status}`), res.status, code);
+  if (!res.ok) throw new ApiError((code && errorTexts[code]) || ((data as any)?.error ?? `HTTP ${res.status}`), res.status, code, typeof (data as any)?.key === "string" ? (data as any).key : undefined);
   return data as T;
 }
 
@@ -128,11 +131,14 @@ export const errorTexts: Record<string, string> = {};
 
 /** An error answer of Scenaria: the message, the HTTP status and Scenaria's code (e.g. "approval_required"). */
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number, readonly code?: string) {
+  /** `key`: the field a refused value belongs to (e.g. "red"), when the server names one. */
+  constructor(message: string, readonly status: number, readonly code?: string, readonly key?: string) {
     super(message);
   }
 }
 export type { AuditFile, AuditAccess, CopyPlan, OrgEvidence, OrgEvidenceInput, OrgEvidenceState };
+export type { WindowStatus, WindowInfo, WindowCut, ContextSettings, ContextValues, LocalModel, Handover };
+export type ContextSettingsView = ContextSettings & { text: { de: string; en: string }; defaults: ContextValues; bounds: Record<keyof ContextValues, [number, number]>; approval: boolean };
 /** What removing would do, and the digest of the entry concerned (sent back so nothing unseen is signed). */
 export type RemovePlanView = RemovePlan & { digest: string };
 export interface AuditPackageResult {
@@ -177,6 +183,13 @@ export const api = {
   fidelity: () => req<Fidelity>("/api/fidelity"),
   /** E2: progress per task and for the project, each with its derivation. */
   progress: () => req<ProjectProgress>("/api/progress"),
+  /** E3: how full each agent's context window is (measured), with the derivation of every number. */
+  windows: () => req<WindowStatus>("/api/windows"),
+  /** E3a-2: the prepared handover to a new window (read-only). */
+  handover: (window?: string) => req<Handover>(`/api/handover${window ? `?window=${encodeURIComponent(window)}` : ""}`),
+  /** E3b-1: the values of the context-window rule; setting them is the person's (approval session). */
+  contextSettings: () => req<ContextSettingsView>("/api/context-settings"),
+  setContextSettings: (body: { values?: Partial<ContextValues>; models?: LocalModel[]; reset?: boolean }) => req<ContextSettingsView>("/api/context-settings", body),
   canon: () => req<{ events: CanonEvent[]; suggestions: CanonSuggestion[]; error: string | null; missing?: string[]; letGo?: { id: string; text: string }[]; approval: boolean }>("/api/canon"),
   approval: () => req<{ granted: boolean; mode: "local" | "team" | "disabled"; auditView?: boolean | "stale" }>("/api/approval"),
   /** The ISO/IEC 42001 audit file (C2): the person's (or the auditor mode's), unless the person opened it. */

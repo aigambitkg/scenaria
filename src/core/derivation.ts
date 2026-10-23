@@ -326,7 +326,8 @@ export function parseContextRule(x: InputValue): ContextRule {
     return m ? Number(m[1]) : d;
   };
   return {
-    version: /^v\d+(?:\.\d+)*/.exec(s)?.[0] ?? "v1.0",
+    // "v1.0" = the start values; "v1.0-p3" = the person's revision 3 of them (E3b-1).
+    version: /^v\d+(?:\.\d+)*(?:-p\d+)?/.exec(s)?.[0] ?? "v1.0",
     yellow: get("yellow", 50),
     red: get("red", 70),
     emergency: get("emergency", 85),
@@ -378,11 +379,12 @@ const p1 = (x: number, lang: "de" | "en") => (lang === "de" ? String(x).replace(
 const CONTEXT_SOFT: Formula = {
   id: "context-soft/1",
   expression: {
-    de: "max(Boden; 70 % − Puffer), auf 0,1 abgerundet; Puffer = 100 × (P95(Schrittgröße) + Übergabekosten + Marge) / C_eff; C_eff = min(C_max; A_modell); P95 ab 20 gemessenen Schritten, vorher Startwert 5 % von C_eff; Marge 2 % von C_eff",
-    en: "max(floor; 70 % − buffer), rounded down to 0.1; buffer = 100 × (P95(step size) + handover cost + margin) / C_eff; C_eff = min(C_max; A_model); P95 from 20 measured steps, before that the start value 5 % of C_eff; margin 2 % of C_eff",
+    de: "max(Boden; Rot-Linie − Puffer), auf 0,1 abgerundet; Puffer = 100 × (P95(Schrittgröße) + Übergabekosten + Marge) / C_eff; C_eff = min(C_max; A_modell); P95 ab 20 gemessenen Schritten, vorher der P95-Startwert (in % von C_eff); Rot-Linie, Boden, P95-Startwert und Marge laut der Eingabe „Regel“ (Startwerte v1.0: 70 %, 50 %, 5 %, 2 %)",
+    en: "max(floor; red line − buffer), rounded down to 0.1; buffer = 100 × (P95(step size) + handover cost + margin) / C_eff; C_eff = min(C_max; A_model); P95 from 20 measured steps, before that the P95 start value (in % of C_eff); red line, floor, P95 start value and margin per the input \"rule\" (start values v1.0: 70 %, 50 %, 5 %, 2 %)",
   },
   inputs: [
-    { name: "cMax", label: { de: "C_max: Fenstergröße laut Anbieter (Tokens)", en: "C_max: window size documented by the provider (tokens)" } },
+    { name: "cMax", label: { de: "C_max: Fenstergröße (Tokens)", en: "C_max: window size (tokens)" } },
+    { name: "cMaxSource", label: { de: "Herkunft von C_max: Doku des Anbieters mit Datum, oder von der Person eingetragen", en: "where C_max comes from: the provider's documentation with its date, or entered by the person" } },
     { name: "aModel", label: { de: "A_modell: Obergrenze für gute Arbeit (Tokens, Setzung)", en: "A_model: upper limit for good work (tokens, a setting)" } },
     { name: "steps", label: { de: "Schrittgrößen: Tokens zwischen zwei Checkpoints (dieses Projekt und Modell, die letzten 200)", en: "step sizes: tokens between two checkpoints (this project and model, the last 200)" } },
     { name: "handover", label: { de: "Übergabekosten: Größe der Übergabe-Kapsel (Tokens, Zeichen / 4)", en: "handover cost: size of the handover capsule (tokens, characters / 4)" } },
@@ -431,12 +433,13 @@ export function contextNextLimit(fill: number, soft: number, rule: InputValue = 
 const CONTEXT_FILL: Formula = {
   id: "context-fill/1",
   expression: {
-    de: "100 × Tokens / C_eff, auf 0,1 abgerundet; C_eff = min(C_max; A_modell); Tokens = Eingabe + Cache-Schreiben + Cache-Lesen der letzten Antwort laut Anbieter; Zonen: grün unter 50 %, gelb ab 50 %, orange ab der weichen Schwelle, rot ab 70 %, Notsicherung ab 85 %",
-    en: "100 × tokens / C_eff, rounded down to 0.1; C_eff = min(C_max; A_model); tokens = input + cache write + cache read of the last answer as reported by the provider; zones: green below 50 %, yellow from 50 %, orange from the soft threshold, red from 70 %, emergency from 85 %",
+    de: "100 × Tokens / C_eff, auf 0,1 abgerundet; C_eff = min(C_max; A_modell); Tokens = Eingabe + Cache-Schreiben + Cache-Lesen der letzten Antwort laut Anbieter; Zonen laut der Eingabe „Regel“: grün unter der Gelb-Linie, gelb ab ihr, orange ab der weichen Schwelle, rot ab der Rot-Linie, Notsicherung ab ihrer Linie (Startwerte v1.0: 50 %, 70 %, 85 %)",
+    en: "100 × tokens / C_eff, rounded down to 0.1; C_eff = min(C_max; A_model); tokens = input + cache write + cache read of the last answer as reported by the provider; zones per the input \"rule\": green below the yellow line, yellow from it, orange from the soft threshold, red from the red line, emergency from its line (start values v1.0: 50 %, 70 %, 85 %)",
   },
   inputs: [
     { name: "tokens", label: { de: "Tokens im Fenster laut Anbieter (letzte Antwort)", en: "tokens in the window as reported by the provider (last answer)" } },
-    { name: "cMax", label: { de: "C_max: Fenstergröße laut Anbieter (Tokens)", en: "C_max: window size documented by the provider (tokens)" } },
+    { name: "cMax", label: { de: "C_max: Fenstergröße (Tokens)", en: "C_max: window size (tokens)" } },
+    { name: "cMaxSource", label: { de: "Herkunft von C_max: Doku des Anbieters mit Datum, oder von der Person eingetragen", en: "where C_max comes from: the provider's documentation with its date, or entered by the person" } },
     { name: "aModel", label: { de: "A_modell: Obergrenze für gute Arbeit (Tokens, Setzung)", en: "A_model: upper limit for good work (tokens, a setting)" } },
     { name: "soft", label: { de: "weiche Schwelle in % (context-soft/1)", en: "soft threshold in % (context-soft/1)" } },
     { name: "rule", label: { de: "Regel (Version und Grenzen in %)", en: "rule (version and limits in %)" } },

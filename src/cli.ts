@@ -16,6 +16,8 @@ import { dossier, analysisPrompt, projectMetrics, renderMetrics, runAnalysis } f
 import { progressForAgents, projectProgress, renderProgress } from "./core/progress.js";
 import { renderWindows, windowsForAgents, windowStatus } from "./core/window.js";
 import { prepareHandover } from "./core/windowact.js";
+import { checkModels, checkValues, CONTEXT_BOUNDS, CONTEXT_DEFAULTS, describeSettings, readContextSettings, setContextSettings, type ContextValues } from "./core/contextsettings.js";
+import { normaliseModel } from "./core/models.js";
 import type { ScenariaNode } from "./core/types.js";
 import { isUnconfirmedPass, verdictOrigin } from "./core/verdict.js";
 import { buildAuditFile, parsePeriod } from "./core/auditfile.js";
@@ -75,6 +77,8 @@ Canon events (fixed points; agents only propose — you approve)
   progress [<task>]          progress per task and for the project, with how it is computed
   window [<w>]               how full the agent's context window is (measured, not estimated)
   handover [<w>]             the prepared handover to a new context window (read-only)
+  window settings [set k=v … | model <id> <tokens|remove> | reset]
+                             the values of the context-window rule (setting them: the person, interactive only)
   canon suggest [--llm <provider> --model <m>]  The archivist's candidates (with --llm: stored as proposals)
   canon check [id …]                    Run the check commands of approved events (interactive only)
   canon gate [node …] [--show]          Run the checks on every line's snapshot ("surviving strings"; interactive)
@@ -376,6 +380,78 @@ async function allowPrintedApprovalLink(v: Record<string, unknown>): Promise<boo
 }
 
 /** A person's action: an interactive terminal AND typing the confirmation word on it. */
+/** `scenaria window settings …` (E3b-1): show, or — the person, at a terminal — set the context-window rule. */
+async function windowSettingsCommand(s: Scenaria, p: string[], out: (text: string, data?: unknown) => unknown) {
+  const show = () => {
+    const cs = readContextSettings(s.store);
+    const v = cs.values;
+    const head =
+      cs.trust === "verified"
+        ? `Context-window rule ${cs.rule.split(" ")[0]} — set by ${cs.set!.by} via ${cs.set!.via} on ${cs.set!.at.slice(0, 16).replace("T", " ")} (signed; ${cs.history.length} revision${cs.history.length === 1 ? "" : "s"} kept)`
+        : cs.trust === "invalid"
+          ? `${C.red}${describeSettings(cs).en}${C.reset}`
+          : `Context-window rule ${cs.rule.split(" ")[0]} — start values (not set for this folder)${cs.elsewhere ? `\n  ${describeSettings(cs).en}` : ""}`;
+    const lines = [
+      head,
+      `  yellow from ${v.yellow} %, red from ${v.red} %, emergency from ${v.emergency} % (of C_eff)`,
+      `  P95 start value ${v.p95start} %, margin ${v.margin} %, A_model ${v.aModel} tokens`,
+      cs.models.length ? `  local models: ${cs.models.map((m) => `${m.id} ${m.cMax} tokens`).join(", ")}` : "  local models: none entered",
+      ...(cs.trust === "verified" && (cs.looser.length || cs.dropped.length) ? [`  ${describeSettings(cs).en.replace(/^[^.]*\.\s*/, "")}`] : []),
+    ];
+    return out(lines.join("\n"), cs);
+  };
+  if (!p[0]) return show();
+  const notPerson = "The context-window rule is the person's setting: run this in an interactive terminal, or use the dashboard (lock → approval mode).";
+  const by = process.env.SCENARIA_USER || userInfo().username || "person";
+  const cur = readContextSettings(s.store);
+  // Checked BEFORE the person is asked: nothing to confirm that would be refused (review E3b-1 L5).
+  const precheck = (values: Partial<ContextValues>, models: { id: string; cMax: number }[]) => {
+    const next = { ...cur.values, ...values };
+    const bad = checkValues(next) ?? checkModels(models);
+    if (bad) throw new Error(bad.message);
+    if (cur.trust !== "invalid" && JSON.stringify(next) === JSON.stringify(cur.values) && JSON.stringify(models.map((m) => ({ id: normaliseModel(m.id), cMax: m.cMax }))) === JSON.stringify(cur.models))
+      throw new Error("Nothing changes: these values are already in force.");
+    return next;
+  };
+  if (p[0] === "reset") {
+    precheck(CONTEXT_DEFAULTS, []);
+    await personConfirm("reset", "Go back to the start values v1.0 of the context-window rule (and remove the local models you entered)?", notPerson);
+    setContextSettings(s.store, { reset: true }, { by, via: "terminal" });
+    return show();
+  }
+  if (p[0] === "set") {
+    const values: Partial<ContextValues> = {};
+    for (const a of p.slice(1)) {
+      const m = /^(yellow|red|emergency|p95start|margin|aModel)=(\d+(?:\.\d+)?)$/.exec(a);
+      if (!m) throw new Error(`Usage: scenaria window settings set yellow=50 red=70 emergency=85 p95start=5 margin=2 aModel=200000 (bounds: ${Object.entries(CONTEXT_BOUNDS).map(([k, b]) => `${k} ${b[0]}–${b[1]}`).join(", ")})`);
+      values[m[1] as keyof ContextValues] = Number(m[2]);
+    }
+    if (!Object.keys(values).length) throw new Error("Name at least one value, e.g. scenaria window settings set red=72");
+    const next = precheck(values, cur.models);
+    await personConfirm("set", `Set the context-window rule to: yellow ${next.yellow} %, red ${next.red} %, emergency ${next.emergency} %, P95 start ${next.p95start} %, margin ${next.margin} %, A_model ${next.aModel} tokens (start values: ${CONTEXT_DEFAULTS.yellow}/${CONTEXT_DEFAULTS.red}/${CONTEXT_DEFAULTS.emergency} %, ${CONTEXT_DEFAULTS.p95start} %, ${CONTEXT_DEFAULTS.margin} %, ${CONTEXT_DEFAULTS.aModel})?`, notPerson);
+    setContextSettings(s.store, { values }, { by, via: "terminal" });
+    return show();
+  }
+  if (p[0] === "model") {
+    const id = p[1];
+    const size = p[2];
+    if (!id || !size) throw new Error("Usage: scenaria window settings model <model id> <window size in tokens, e.g. 32768 or 128k (= 128,000) | remove>   (Ollama: the CONTEXT column of `ollama ps`)");
+    const models = cur.models.filter((m) => m.id !== normaliseModel(id));
+    let n = 0;
+    if (size !== "remove") {
+      const k = /^(\d+(?:[.,]\d+)?)\s*([kKmM]?)$/.exec(size.replace(/_/g, ""));
+      if (!k) throw new Error(`"${size}" is no window size: give tokens (e.g. 32768, 128k or 1m)`);
+      n = Math.round(Number(k[1].replace(",", ".")) * (k[2].toLowerCase() === "k" ? 1000 : k[2].toLowerCase() === "m" ? 1_000_000 : 1)); // k = 1,000 (the confirmation shows the exact number)
+      models.push({ id, cMax: n });
+    } else if (models.length === cur.models.length) throw new Error(`No window size was entered for ${id}.`);
+    precheck({}, models);
+    await personConfirm("model", size === "remove" ? `Remove the window size you entered for ${id}?` : `Enter ${n} tokens as the window size of ${id} (your entry, not the provider's documentation)?`, notPerson);
+    setContextSettings(s.store, { models }, { by, via: "terminal" });
+    return show();
+  }
+  throw new Error("Usage: scenaria window settings [set k=v … | model <id> <tokens|remove> | reset]");
+}
+
 async function personConfirm(confirm: string, what: string, notInteractive: string) {
   if (!isPersonTerminal()) throw new Error(notInteractive);
   const { createInterface } = await import("node:readline/promises");
@@ -994,6 +1070,7 @@ async function main() {
     }
     case "window": {
       const s = Scenaria.open(v.root);
+      if (p[0] === "settings") return await windowSettingsCommand(s, p.slice(1), out);
       const ws = windowStatus(s);
       if (p[0] && !ws.windows.some((w) => w.id === p[0])) throw new Error(`${p[0]} is not a window`);
       const data = windowsForAgents(ws);

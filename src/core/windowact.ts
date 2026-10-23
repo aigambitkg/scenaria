@@ -1,7 +1,7 @@
 /**
  * Batch E3a-2: acting on the measured fill of a context window (Kev 2026-10-18, n75–n79; design in docs/intern).
  *
- * What Scenaria does, by zone (thresholds from CONTEXT_RULE, the fill only as windowStatus measured and checked it):
+ * What Scenaria does, by zone (thresholds from the rule in force — the person's signed setting or the start values, contextsettings.ts — the fill only as windowStatus measured and checked it):
  *   green      nothing
  *   yellow     a notice to the agent (do not start a new large part of the work; a handover is ready)
  *   orange     a notice; at the END of the turn an automatic checkpoint (a clean cut before the window change)
@@ -22,7 +22,8 @@
  */
 import type { Scenaria, TaskHint } from "./engine.js";
 import type { ScenariaNode } from "./types.js";
-import { CONTEXT_RULE, CONTEXT_ZONES, parseContextRule, type ContextZone } from "./derivation.js";
+import { CONTEXT_ZONES, parseContextRule, type ContextZone } from "./derivation.js";
+import { readContextSettings } from "./contextsettings.js";
 import { quickFill, windowStatus, type ContextCutMeta, type WindowInfo } from "./window.js";
 import { projectProgress, renderProgress } from "./progress.js";
 
@@ -45,9 +46,11 @@ export interface ContextAdvice {
  */
 export function contextAdvice(s: Scenaria, key: string): ContextAdvice | null {
   try {
-    const q = quickFill(s, key);
-    if (!q || q.fill < parseContextRule(CONTEXT_RULE).yellow) return null;
-    const w = windowStatus(s, { key }).current;
+    // The values in force (the person's signed setting, else the start values v1.0; E3b-1).
+    const cs = readContextSettings(s.store);
+    const q = quickFill(s, key, cs);
+    if (!q || q.fill < parseContextRule(cs.rule).yellow) return null;
+    const w = windowStatus(s, { key, settings: cs }).current;
     if (!w || w.key !== key || !w.measurable || !w.fill || !w.zone || w.zone === "green") return null;
     const mine = w.cuts.filter((c) => c.onLine);
     const top = mine.reduce<ContextZone>((z, c) => (ZONE_RANK[c.zone] > ZONE_RANK[z] ? c.zone : z), "green");
@@ -72,14 +75,14 @@ export const tellsPerson = (a: ContextAdvice) => ZONE_RANK[a.zone] >= ZONE_RANK.
 
 /** What a cut checkpoint records about itself. */
 export function cutMeta(a: ContextAdvice, moment: CutMoment): ContextCutMeta {
-  return { window: a.window.id, key: a.window.key, startedAt: a.window.startedAt, zone: a.zone, fill: a.fill, tokens: a.window.tokens ?? 0, rule: CONTEXT_RULE, moment };
+  return { window: a.window.id, key: a.window.key, startedAt: a.window.startedAt, zone: a.zone, fill: a.fill, tokens: a.window.tokens ?? 0, rule: a.window.rule, moment };
 }
 
 const pct = (x: number, lang: "de" | "en") => (lang === "de" ? String(x).replace(".", ",") : String(x));
 
 /** The output bullet of a cut checkpoint (English, like every node text the hooks write). */
 export function cutBullet(a: ContextAdvice): string {
-  return `Context window ${a.window.id} ${a.fill} % full (${CONTEXT_ZONES[a.zone].en}): Scenaria saved this step before the window change (rule ${parseContextRule(CONTEXT_RULE).version}; how computed: scenaria_window)`;
+  return `Context window ${a.window.id} ${a.fill} % full (${CONTEXT_ZONES[a.zone].en}): Scenaria saved this step before the window change (rule ${parseContextRule(a.window.rule).version}; how computed: scenaria_window)`;
 }
 
 /**

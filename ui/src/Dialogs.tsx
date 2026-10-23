@@ -10,15 +10,27 @@ import type { Dict } from "./i18n";
 import { NodeId } from "./Map";
 import { GateSection } from "./Control";
 
+/** Open dialogs, newest last: Escape closes only the topmost one (a dialog opened from a dialog — E3b-2 review). */
+const openModals: number[] = [];
+let modalSeq = 0;
+
 export function Modal(props: { title: ReactNode; onClose: () => void; children: ReactNode; wide?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
+  // The id is taken in render order (a parent renders before the dialog it contains), not in effect order.
+  const idRef = useRef(0);
+  if (!idRef.current) idRef.current = ++modalSeq;
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
+    const id = idRef.current;
+    openModals.push(id);
+    openModals.sort((a, b) => a - b);
     ref.current?.querySelector<HTMLElement>("textarea, input, button")?.focus();
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && props.onClose();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && openModals[openModals.length - 1] === id && props.onClose();
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("keydown", onKey);
+      const i = openModals.indexOf(id);
+      if (i >= 0) openModals.splice(i, 1);
       prev?.focus?.();
     };
   }, []);

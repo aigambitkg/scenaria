@@ -2,7 +2,7 @@
  * The help area: every function in plain words — what it is, when it helps, how to use it, one example.
  * Kept as data (DE/EN) so the help dialog, the onboarding and the "?" buttons share one source.
  */
-export type HelpAction = "goal" | "forecasts" | "audit" | "auditfile" | "analysis" | "expert" | "canon" | "progress" | "chat" | "relay" | "settings" | "prompt" | "conversations" | "protocol" | "projects" | "onboarding";
+export type HelpAction = "goal" | "forecasts" | "audit" | "auditfile" | "analysis" | "expert" | "canon" | "progress" | "window" | "chat" | "relay" | "settings" | "prompt" | "conversations" | "protocol" | "projects" | "onboarding";
 
 export interface HelpTopic {
   id: string;
@@ -245,6 +245,30 @@ const de: HelpTopic[] = [
       "Grenze: Ein Kriterium ohne Datei veraltet nie; eine Prüfung nach der Aufgabe prüft die Datei so, wie sie damals war.",
     ],
     open: { action: "progress", label: "Fortschritt öffnen" },
+  },
+  {
+    id: "window",
+    title: "Kontextfenster: wie voll ist das Gedächtnis der KI?",
+    what: "Jede KI arbeitet mit einem begrenzten Arbeitsgedächtnis, dem Kontextfenster. Scenaria misst, wie voll es ist – aus den Token-Zahlen, die der Anbieter meldet, nie geschätzt – und sichert rechtzeitig, bevor es zu voll wird.",
+    when: "Bei langen Aufgaben: Wird das Fenster voll, vergisst die KI Einzelheiten oder der Anbieter komprimiert den Verlauf. Ein sauberer Schnitt mit Übergabe an ein neues Fenster verliert weniger.",
+    how: [
+      "Grün: genug Platz. Gelb: die KI soll keine große neue Teilaufgabe mehr beginnen.",
+      "Orange: Scenaria sichert am Ende des Zugs von selbst einen Schritt.",
+      "Rot: Scenaria sichert sofort (auch mitten im Zug) und bittet dich, ein neues Fenster zu öffnen (in Claude Code: /clear). Die Übergabe liegt bereit („Übergabe anzeigen“).",
+      "Notsicherung: wie Rot, der Hinweis an die KI wiederholt sich bei jedem Zug.",
+    ],
+    terms: [
+      ["C_eff", "Die nutzbare Fenstergröße: die kleinere von Fenstergröße laut Anbieter und A_modell (Startwert 200.000 Tokens, die Grenze für gute Arbeit)."],
+      ["Weiche Schwelle", "Rot-Linie minus Puffer (typische Schrittgröße + Übergabe + Marge): ab hier ist Orange."],
+      ["Regel v1.0-p2", "Die Werte, mit denen gerechnet wurde: v1.0 sind die Startwerte, -p2 deine zweite Änderung. Jede Zahl nennt ihre Regel."],
+      ["Wie berechnet?", "Zeigt die Formel (context-fill/1, context-soft/1) mit allen Eingängen und rechnet hier im Browser nach."],
+    ],
+    notes: [
+      "Nur du änderst die Werte der Regel (Steuerung → Kontextfenster, unter dem Schloss, oder „scenaria window settings“ im Terminal). Jede Änderung ist signiert, der Verlauf liegt außerhalb des Projekts. Lockerere Werte als die Startwerte werden ausdrücklich genannt.",
+      "Für lokale Modelle (z. B. Ollama) trägst du die Fenstergröße selbst ein; eine belegte Größe eines Anbieters wird nie überschrieben.",
+      "Grenze: Ohne Token-Zahlen (Claude Desktop nur über MCP) ist nichts messbar. Scenaria kann kein neues Fenster erzwingen und blockiert die KI nie.",
+    ],
+    open: { action: "window", label: "Kontextfenster öffnen" },
   },
   {
     id: "chat",
@@ -582,6 +606,30 @@ const en: HelpTopic[] = [
       "Limit: a criterion without a file never goes stale; a check after the task checks the file as it was then.",
     ],
     open: { action: "progress", label: "Open progress" },
+  },
+  {
+    id: "window",
+    title: "Context window: how full is the AI's memory?",
+    what: "Every AI works with a limited working memory, its context window. Scenaria measures how full it is — from the token counts the provider reports, never estimated — and saves in time before it gets too full.",
+    when: "On long tasks: when the window fills up, the AI forgets details or the provider compacts the history. A clean cut with a handover to a new window loses less.",
+    how: [
+      "Green: enough room. Yellow: the AI should not start a large new part of the work.",
+      "Orange: Scenaria saves a step by itself at the end of the turn.",
+      "Red: Scenaria saves at once (also mid-turn) and asks you to open a new window (in Claude Code: /clear). The handover is ready (\"Show the handover\").",
+      "Emergency: like red; the AI's notice repeats on every turn.",
+    ],
+    terms: [
+      ["C_eff", "The usable window size: the smaller of the provider's window size and A_model (start value 200,000 tokens, the limit for good work)."],
+      ["Soft threshold", "The red line minus a buffer (typical step size + handover + margin): orange starts here."],
+      ["Rule v1.0-p2", "The values a number was computed with: v1.0 are the start values, -p2 your second change. Every number names its rule."],
+      ["How computed?", "Shows the formula (context-fill/1, context-soft/1) with all its inputs and recomputes it here in the browser."],
+    ],
+    notes: [
+      "Only you change the rule's values (Manage → Context window, under the lock, or \"scenaria window settings\" in a terminal). Every change is signed and its history kept outside the project. Values looser than the start values are named.",
+      "For local models (e.g. Ollama) you enter the window size yourself; a provider's documented size is never overridden.",
+      "Limit: without token counts (Claude Desktop over MCP alone) nothing can be measured. Scenaria cannot force a new window and never blocks the AI.",
+    ],
+    open: { action: "window", label: "Open the context window" },
   },
   {
     id: "chat",

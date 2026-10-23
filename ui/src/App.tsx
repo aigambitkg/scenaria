@@ -1,8 +1,9 @@
 import { ReadOnlyContext, requestApproval, useApprovalSignal } from "./Approval";
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
-import { api, errorTexts, type Fidelity, type Graph, type ProjectProgress, type ScenariaEvent, type ScenariaNode } from "./api";
+import { api, errorTexts, type Fidelity, type Graph, type ProjectProgress, type ScenariaEvent, type ScenariaNode, type WindowStatus } from "./api";
 import { ProgressDialog } from "./Progress";
+import { WindowDialog } from "./Window";
 import { dict, initialLang, saveLang, type Lang } from "./i18n";
 import { ProjectSwitcher } from "./Projects";
 import { HelpDialog, Onboarding, onboardingDone, restartOnboarding } from "./Help";
@@ -61,6 +62,16 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
   const [canonOpen, setCanonOpen] = useState(false);
   const [progress, setProgress] = useState<ProjectProgress | null>(null);
   const [progressOpen, setProgressOpen] = useState(false);
+  // E3b-2: the context window (measured on the server); the dialog in Audit and Manage, a card in Simple.
+  const [windows, setWindows] = useState<WindowStatus | null>(null);
+  const [windowOpen, setWindowOpen] = useState(false);
+  // The fill grows with every answer, not only at a step: look again every 30 s while the page is visible.
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (document.visibilityState === "visible") api.windows().then(setWindows).catch(() => {});
+    }, 30_000);
+    return () => clearInterval(id);
+  }, []);
   const [auditOpen, setAuditOpen] = useState(false);
   const [auditFileOpen, setAuditFileOpen] = useState(false);
   const [canonInfo, setCanonInfo] = useState<{ active: number; proposed: number } | null>(null);
@@ -171,6 +182,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
   useEffect(() => {
     api.analysis().then((m) => setHealth(m.health)).catch(() => setHealth(null));
     api.progress().then(setProgress).catch(() => setProgress(null));
+    api.windows().then(setWindows).catch(() => setWindows(null));
     api
       .fidelity()
       .then((f) => {
@@ -352,6 +364,9 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
       case "progress":
         setProgressOpen(true);
         break;
+      case "window":
+        setWindowOpen(true);
+        break;
       case "chat":
         if (auditView) break;
         if (view === "simple") setView("manage");
@@ -468,6 +483,16 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
             <button className="btn" onClick={() => setProgressOpen(true)} title={t.pgButtonHint}>
               {t.pgButton}
               {progress && progress.tasks.length > 0 && <span className="hchip">{progress.value} %</span>}
+            </button>
+          )}
+          {view !== "simple" && (
+            <button className="btn" onClick={() => setWindowOpen(true)} title={t.cwButtonHint}>
+              {t.cwButton}
+              {windows?.current?.fill && windows.current.zone && (
+                <span className={`hchip z-${windows.current.zone}`} aria-label={`${windows.current.fill.value} % · ${t.cwZones[windows.current.zone]}`}>
+                  {windows.current.fill.value} % · {t.cwZones[windows.current.zone]}
+                </span>
+              )}
             </button>
           )}
           {view !== "simple" && (
@@ -624,6 +649,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
                 fidelity={fidelity}
                 fidelityError={fidelityError}
                 progress={progress}
+                windows={windows}
                 toast={toast}
                 onEditGoal={() => setEditGoal(root?.goal ?? "")}
                 onRewound={load}
@@ -848,6 +874,20 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
                   setCanonOpen(true);
                 }
           }
+        />
+      )}
+      {windowOpen && (
+        <WindowDialog
+          t={t}
+          lang={lang}
+          approved={approved}
+          editable={view === "manage" && !auditView}
+          onClose={() => setWindowOpen(false)}
+          onChanged={() => api.windows().then(setWindows).catch(() => setWindows(null))}
+          onNode={(id) => {
+            if (graph?.nodes.some((x) => x.id === id)) setSelected(id);
+            setWindowOpen(false);
+          }}
         />
       )}
       {canonOpen && (
