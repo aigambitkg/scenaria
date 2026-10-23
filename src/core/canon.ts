@@ -38,6 +38,17 @@ import type { ScenariaNode } from "./types.js";
 import { isConfirmedPass } from "./verdict.js";
 
 export type CanonKind = "past" | "future";
+
+/**
+ * A refused change to the fixed points, with a code (E2b review M3): the dashboard says it in the person's language
+ * (`ui/src/i18n.ts` errCanon), agents and the terminal read the English message. `status` is the HTTP answer.
+ */
+export class CanonError extends Error {
+  constructor(readonly code: string, message: string, readonly status = 400) {
+    super(message);
+    this.name = "CanonError";
+  }
+}
 /**
  * Computed, never stored: "tampered" = signature missing or does not match the content;
  * "untrusted" = validly signed, but by a key you have not chosen to trust.
@@ -95,6 +106,28 @@ export interface CanonEvent {
   trust?: CanonTrust;
   /** Computed on read: a check result was present but its signature does not verify (dropped). */
   checkTampered?: boolean;
+  /**
+   * Batch E2: a future fixed point can be a completion criterion of one task (`task`, a goal node id), with a
+   * weight (1–100) and the file it produces (`artifact`, a path or simple pattern inside the project). All three
+   * are signed (`canon/v3`); progress (core/progress.ts) is computed from evidence about them.
+   */
+  task?: string;
+  weight?: number;
+  artifact?: string;
+  /**
+   * When the person approved the criterion (set on approval or when the person adds it; kept by reweigh and
+   * confirm). File changes count as evidence only from then on (E2a review M3: never the proposal's own time,
+   * which an agent can edit before the person looks). Signed.
+   */
+  approvedAt?: string;
+}
+
+/** What the person saw when approving a criterion: approval is refused if the stored event differs (review M3). */
+export interface CanonExpect {
+  text: string;
+  task?: string;
+  weight?: number;
+  artifact?: string;
 }
 
 export interface CanonInput {
@@ -104,6 +137,10 @@ export interface CanonInput {
   check?: string;
   due?: string;
   evidence?: string[];
+  /** Batch E2 (future only): completion criterion of this task, its weight and the file it produces. */
+  task?: string;
+  weight?: number;
+  artifact?: string;
 }
 
 // ------------------------------------------------------------------ approver keys & signatures
@@ -183,7 +220,7 @@ export function trustApprover(pub: string, name?: string): TrustedKey {
   try {
     createPublicKey({ key: Buffer.from(pub, "base64"), format: "der", type: "spki" });
   } catch {
-    throw new Error("not a valid public key");
+    throw new CanonError("canon_trust_key", "not a valid public key");
   }
   const keys = trustedApprovers().filter((k) => k.id !== id);
   const k: TrustedKey = { id, pub, name: name?.slice(0, 80), addedAt: new Date().toISOString() };
@@ -194,8 +231,14 @@ export function trustApprover(pub: string, name?: string): TrustedKey {
 
 // Both payloads name the project and the revision: a signed record copied from another project, or an
 // older signed version of the same event (from git history, canon.json.bak, …), does not verify as current.
+// A completion criterion (E2) is signed as canon/v3: task, weight, file and the approval time (the time from which
+// file changes count as evidence) are part of it. Removing all of them from a v3 record changes the payload to v2,
+// adding them to a v2 record changes it to v3: either way the signature no longer verifies.
+const isCriterion = (e: CanonEvent) => e.task !== undefined || e.weight !== undefined || e.artifact !== undefined;
 function decisionPayload(pid: string, e: CanonEvent) {
-  return JSON.stringify(["canon/v2", pid, e.rev ?? 0, e.id, e.kind, e.text, e.status, e.hard, e.check ?? "", e.due ?? "", e.decidedAt ?? "", e.decidedBy ?? ""]);
+  const base = [pid, e.rev ?? 0, e.id, e.kind, e.text, e.status, e.hard, e.check ?? "", e.due ?? "", e.decidedAt ?? "", e.decidedBy ?? ""];
+  if (isCriterion(e)) return JSON.stringify(["canon/v3", ...base, e.approvedAt ?? "", e.task ?? "", e.weight ?? 0, e.artifact ?? ""]);
+  return JSON.stringify(["canon/v2", ...base]);
 }
 function checkPayload(pid: string, e: CanonEvent, c: CanonCheck) {
   return JSON.stringify(["check/v2", pid, e.rev ?? 0, e.id, e.check ?? "", c.status, c.at, c.node ?? "", c.clean, c.how ?? "command"]);
@@ -297,6 +340,10 @@ interface Anchor {
   rev: number;
   status: string;
   sig: string;
+  /** E2: the task of a completion criterion — so a criterion removed or moved by hand still holds its task back (review H1). */
+  task?: string;
+  /** E2: the criterion's words, so a criterion removed by hand can still be named (review 2, M-2). */
+  text?: string;
 }
 
 function anchorFile(pid: string, kind = "") {
@@ -353,7 +400,7 @@ function signChange(store: Store, e: CanonEvent, check?: CanonCheck) {
   } else if (e.lastCheck) {
     e.lastCheck = undefined; // a check result belongs to one revision; a new decision needs a new check
   }
-  return { pid, anchor: { rev: e.rev, status: e.status, sig: e.sig } as Anchor };
+  return { pid, anchor: { rev: e.rev, status: e.status, sig: e.sig, ...(e.task ? { task: e.task, text: e.text.slice(0, 120) } : {}) } as Anchor };
 }
 
 /** Can this machine vouch for an event's binding state? */
@@ -376,6 +423,47 @@ function file(store: Store) {
 const one = (s: string, max = 300) => s.replace(/\s+/g, " ").trim().slice(0, max);
 const isDate = (d: unknown) => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d) && !Number.isNaN(Date.parse(`${d}T00:00:00Z`)) && new Date(`${d}T00:00:00Z`).toISOString().startsWith(d);
 const strArr = (x: unknown) => (Array.isArray(x) ? x.filter((v) => typeof v === "string").map((v) => v.slice(0, 80)).slice(0, 20) : typeof x === "string" ? [x.slice(0, 80)] : undefined);
+
+const TASK_ID = /^n\d{1,7}$/;
+const isWeight = (w: unknown): w is number => Number.isInteger(w) && (w as number) >= 1 && (w as number) <= 100;
+
+/**
+ * The file a completion criterion produces (E2): a path or a simple pattern (`*`, `**`, `?`) inside the project.
+ * Never absolute, never above the project (`..`), one line without control or bidirectional characters.
+ */
+export function validateArtifact(a: unknown): string | undefined {
+  if (a === undefined || a === null || (typeof a === "string" && !a.trim())) return undefined;
+  if (typeof a !== "string") throw new CanonError("canon_artifact_type", "artifact must be a path inside the project");
+  let p = a.trim();
+  if (p.length > 200) throw new CanonError("canon_artifact_long", "artifact is longer than 200 characters");
+  if (/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069\u200b-\u200f]/.test(p)) throw new CanonError("canon_artifact_chars", "artifact must be one line without control or bidirectional characters");
+  if (p.includes("\\")) throw new CanonError("canon_artifact_backslash", "artifact uses / between folders, not \\");
+  if (/^(\/|~|[A-Za-z]:)/.test(p)) throw new CanonError("canon_artifact_absolute", "artifact must be a path inside the project, not an absolute one");
+  while (p.startsWith("./")) p = p.slice(2);
+  if (/[[\]{}!]/.test(p)) throw new CanonError("canon_artifact_pattern", "artifact patterns know only *, ** and ?");
+  const parts = p.split("/");
+  if (parts.some((x) => x === ".." || x === "." || x === "")) throw new CanonError("canon_artifact_dots", "artifact must not contain '..', '.' or empty folder names");
+  if (parts[0] === ".scenaria" || parts[0] === ".git") throw new CanonError("canon_artifact_internal", "artifact must be a project file, not Scenaria's or git's own data");
+  return p;
+}
+
+/** Does a project file match a criterion's artifact (path or pattern)? `**` spans folders, `*` and `?` do not. */
+export function artifactMatches(artifact: string, file: string): boolean {
+  let re = "";
+  for (let i = 0; i < artifact.length; i++) {
+    const c = artifact[i];
+    if (c === "*" && artifact[i + 1] === "*") {
+      i++;
+      if (artifact[i + 1] === "/") {
+        i++;
+        re += "(?:.*/)?";
+      } else re += ".*";
+    } else if (c === "*") re += "[^/]*";
+    else if (c === "?") re += "[^/]";
+    else re += c.replace(/[.+^$()|\\]/g, "\\$&");
+  }
+  return new RegExp(`^${re}$`).test(file);
+}
 
 /** Normalise one stored entry (files can be edited by hand or by merges). */
 function normalise(raw: any): CanonEvent | null {
@@ -406,7 +494,23 @@ function normalise(raw: any): CanonEvent | null {
     pub: typeof raw.pub === "string" ? raw.pub : undefined,
     rev: Number.isInteger(raw.rev) && raw.rev >= 0 ? raw.rev : undefined,
     keyId: typeof raw.keyId === "string" ? raw.keyId : undefined,
+    // E2: kept only in their valid form; a hand-edited value is dropped, which changes the signed payload (tampered).
+    task: raw.kind === "future" && typeof raw.task === "string" && TASK_ID.test(raw.task) ? raw.task : undefined,
+    weight: raw.kind === "future" && isWeight(raw.weight) ? raw.weight : undefined,
+    artifact: raw.kind === "future" ? safeArtifact(raw.artifact) : undefined,
+    approvedAt: raw.kind === "future" && typeof raw.approvedAt === "string" && ISO_TIME.test(raw.approvedAt) ? raw.approvedAt : undefined,
   };
+}
+
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
+
+function safeArtifact(a: unknown): string | undefined {
+  try {
+    const v = validateArtifact(a);
+    return v === a ? v : undefined; // only the stored form as it was written (no silent rewrite)
+  } catch {
+    return undefined;
+  }
 }
 
 /** Strict read for writers: a file that cannot be parsed is never overwritten (e.g. a merge conflict). */
@@ -417,7 +521,7 @@ function readRaw(store: Store): CanonEvent[] {
   try {
     raw = JSON.parse(readFileSync(f, "utf8"));
   } catch (err: any) {
-    throw new Error(`.scenaria/canon.json cannot be read (${String(err?.message ?? err).slice(0, 80)}) — fix it (merge conflict?) before changing canon events.`);
+    throw new CanonError("canon_file_unreadable", `.scenaria/canon.json cannot be read (${String(err?.message ?? err).slice(0, 80)}) — fix it (merge conflict?) before changing canon events.`);
   }
   return (Array.isArray(raw?.events) ? raw.events : []).map(normalise).filter((e: CanonEvent | null): e is CanonEvent => e !== null);
 }
@@ -443,7 +547,7 @@ export function canonState(store: Store): { events: CanonEvent[]; error: string 
     if (e.trust === "tampered" || e.trust === "unsigned") e.status = "tampered";
     else if (e.trust === "untrusted") e.status = "untrusted";
     // A newer verified revision (e.g. a teammate's approval pulled from git) raises the mark.
-    if (e.trust === "verified" && e.sig && (!anchors[e.id] || (e.rev ?? 0) > anchors[e.id].rev)) raise[e.id] = { rev: e.rev ?? 0, status: e.status, sig: e.sig };
+    if (e.trust === "verified" && e.sig && (!anchors[e.id] || (e.rev ?? 0) > anchors[e.id].rev)) raise[e.id] = { rev: e.rev ?? 0, status: e.status, sig: e.sig, ...(e.task ? { task: e.task, text: e.text.slice(0, 120) } : {}) };
     // A check result counts only for this revision and with a valid signature from a trusted key.
     if (e.lastCheck && !(e.trust === "verified" && verifySig(e.lastCheck.pub, e.lastCheck.sig, checkPayload(pid, e, e.lastCheck)) && trusted.has(keyIdOf(e.lastCheck.pub!)))) {
       if (e.trust === "verified") e.checkTampered = true; // visible, never silently dropped
@@ -479,17 +583,23 @@ function writeCanon(store: Store, events: CanonEvent[]) {
 export function validateCheck(cmd: string | undefined): string | undefined {
   if (cmd === undefined || cmd === null || !String(cmd).trim()) return undefined;
   const c = String(cmd).trim();
-  if (c.length > 500) throw new Error("check command is longer than 500 characters — put it in a script and call that");
-  if (/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069\u200b-\u200f]/.test(c)) throw new Error("check command must be a single line without control or bidirectional characters");
+  if (c.length > 500) throw new CanonError("canon_check_long", "check command is longer than 500 characters — put it in a script and call that");
+  if (/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069\u200b-\u200f]/.test(c)) throw new CanonError("canon_check_chars", "check command must be a single line without control or bidirectional characters");
   return c;
 }
 
 function validate(input: CanonInput) {
-  if (input.kind !== "past" && input.kind !== "future") throw new Error('kind must be "past" or "future"');
+  if (input.kind !== "past" && input.kind !== "future") throw new CanonError("canon_kind", 'kind must be "past" or "future"');
   const text = one(String(input.text ?? ""), 400);
-  if (text.length < 4) throw new Error("canon text is too short");
-  if (input.due && !isDate(input.due)) throw new Error("due must be a valid date YYYY-MM-DD");
-  return { text };
+  if (text.length < 4) throw new CanonError("canon_text_short", "canon text is too short");
+  if (input.due && !isDate(input.due)) throw new CanonError("canon_due", "due must be a valid date YYYY-MM-DD");
+  const given = (x: unknown) => x !== undefined && x !== null && x !== "";
+  if (input.kind === "past" && (given(input.task) || given(input.weight) || given(input.artifact))) throw new CanonError("canon_criterion_past", "task, weight and artifact belong to future fixed points (completion criteria)");
+  if (given(input.task) && (typeof input.task !== "string" || !TASK_ID.test(input.task))) throw new CanonError("canon_task_id", "task must be a task id like n12");
+  if (given(input.weight) && !isWeight(input.weight)) throw new CanonError("canon_weight", "weight must be a whole number from 1 to 100");
+  if ((given(input.weight) || given(input.artifact)) && !given(input.task)) throw new CanonError("canon_needs_task", "a weight or an artifact needs the task the criterion belongs to");
+  const artifact = validateArtifact(input.artifact);
+  return { text, task: given(input.task) ? (input.task as string) : undefined, weight: given(input.weight) ? (input.weight as number) : undefined, artifact };
 }
 
 function nextId(events: CanonEvent[]) {
@@ -501,15 +611,16 @@ function nextId(events: CanonEvent[]) {
  * is a proposal whose suggested check is kept as text only.
  */
 export function addCanon(store: Store, input: CanonInput, who: { source: CanonEvent["source"]; by?: string; via?: string }): CanonEvent {
-  const { text } = validate(input);
+  const { text, task, weight, artifact } = validate(input);
   const byUser = who.source === "user";
   const check = byUser ? validateCheck(input.check) : undefined;
   const suggested = byUser ? undefined : input.check ? String(input.check).slice(0, 500) : undefined;
   return store.withLock(() => {
     const events = readRaw(store);
-    const sameText = (e: CanonEvent) => e.kind === input.kind && e.text.toLowerCase() === text.toLowerCase();
+    // A criterion of another task with the same words is another criterion (E2).
+    const sameText = (e: CanonEvent) => e.kind === input.kind && e.text.toLowerCase() === text.toLowerCase() && (e.task ?? "") === (task ?? "");
     const pending = events.find((e) => sameText(e) && e.status === "proposed");
-    if (byUser && pending) throw new Error(`A proposal with this text exists (${pending.id}) — approve it instead.`);
+    if (byUser && pending) throw new CanonError("canon_proposal_exists", `A proposal with this text exists (${pending.id}) — approve it instead.`);
     // Agents can't re-propose what a person rejected or retired; a person may re-add it.
     const dup = events.find((e) => sameText(e) && (byUser ? e.status === "active" : true));
     if (dup) return dup;
@@ -524,6 +635,10 @@ export function addCanon(store: Store, input: CanonInput, who: { source: CanonEv
       suggestedCheck: suggested,
       due: input.due,
       evidence: strArr(input.evidence),
+      ...(task ? { task } : {}),
+      ...(weight !== undefined ? { weight } : {}),
+      ...(artifact ? { artifact } : {}),
+      ...(byUser && task ? { approvedAt: now } : {}),
       source: who.source,
       proposedBy: who.by?.slice(0, 80),
       createdAt: now,
@@ -537,14 +652,32 @@ export function addCanon(store: Store, input: CanonInput, who: { source: CanonEv
   });
 }
 
-export type CanonAction = "approve" | "reject" | "retire" | "confirm";
+export type CanonAction = "approve" | "reject" | "retire" | "confirm" | "reweigh";
 
-/** A person's decision on a canon event (signed). */
-export function decideCanon(store: Store, id: string, action: CanonAction, who: { by?: string; via: string; reason?: string; adoptCheck?: boolean | string; head?: string | null }): CanonEvent {
+/**
+ * A person's decision on a canon event (signed). `weight` (E2): on approve the person may set a criterion's
+ * weight; "reweigh" gives an active criterion a new weight as a new signed revision (its check result is cleared,
+ * the check has to run again).
+ */
+export function decideCanon(store: Store, id: string, action: CanonAction, who: { by?: string; via: string; reason?: string; adoptCheck?: boolean | string; head?: string | null; weight?: number; expect?: CanonExpect }): CanonEvent {
   return store.withLock(() => {
     const events = readRaw(store);
     const ev = events.find((e) => e.id === id);
-    if (!ev) throw new Error(`Unknown canon event "${id}"`);
+    if (!ev) {
+      // A criterion this machine saw approved that is gone from canon.json (removed by hand or by a merge): the person
+      // can let it go ("retire"), so it no longer holds its task back (E2a review 2, M-2). The mark outside the
+      // project records the person's decision; the event log says who and why.
+      const pid0 = projectId(store, false);
+      const a = readAnchors(pid0)[id];
+      if (action === "retire" && a && a.status === "active" && typeof a.task === "string") {
+        const at = new Date().toISOString();
+        const signed = signRecord(store, ["canon-forget/v1", id, a.rev, a.sig, at, who.by ?? ""]);
+        raiseAnchors(signed.pid, { [id]: { rev: a.rev + 1, status: "retired", sig: signed.sig, task: a.task, ...(a.text ? { text: a.text } : {}) } });
+        store.appendEvent({ type: "canon", data: { message: `${id} (missing from canon.json) let go by ${who.by ?? "?"} via ${who.via}${who.reason ? `: ${who.reason}` : ""}`, id, status: "retired" } });
+        return { id, kind: "future", text: a.text ?? "", status: "retired", hard: true, source: "user", createdAt: "", task: a.task, decidedBy: who.by, decidedAt: at, decidedVia: who.via } as CanonEvent;
+      }
+      throw new CanonError("canon_unknown", `Unknown canon event "${id}"`, 404);
+    }
     const pid = projectId(store, false);
     const anchor = readAnchors(pid)[id];
     const trust = trustOf(pid, ev, trustedIds(), anchor);
@@ -552,12 +685,33 @@ export function decideCanon(store: Store, id: string, action: CanonAction, who: 
     // Re-approving an unverifiable event never revives what a person closed: the last status this
     // machine saw signed (or, without that, the stored one) decides.
     const closed = anchor && (anchor.status === "retired" || anchor.status === "rejected") ? anchor.status : bad && (ev.status === "retired" || ev.status === "rejected") ? ev.status : null;
-    if (action === "approve" && closed) throw new Error(`${id} was ${closed} by a person — add it again (as a new event) if it should apply again`);
-    if (action === "approve" && ev.status !== "proposed" && !bad) throw new Error(`${id} is ${ev.status}, only proposals can be approved`);
-    if (action === "reject" && ev.status !== "proposed" && !bad) throw new Error(`${id} is ${ev.status}, only proposals can be rejected`);
-    if (action === "retire" && (ev.status !== "active" || bad)) throw new Error(`${id} is not an approved active event`);
+    if (action === "approve" && closed) throw new CanonError("canon_closed", `${id} was ${closed} by a person — add it again (as a new event) if it should apply again`);
+    if (action === "approve" && ev.status !== "proposed" && !bad) throw new CanonError("canon_not_proposal", `${id} is ${ev.status}, only proposals can be approved`);
+    if (action === "reject" && ev.status !== "proposed" && !bad) throw new CanonError("canon_not_proposal", `${id} is ${ev.status}, only proposals can be rejected`);
+    if (action === "retire" && (ev.status !== "active" || bad)) throw new CanonError("canon_not_active", `${id} is not an approved active event`);
+    if (who.weight !== undefined && who.weight !== null) {
+      if (action !== "approve" && action !== "reweigh") throw new CanonError("canon_weight_action", `a weight can be set on approve or reweigh, not on ${action}`);
+      if (!isWeight(who.weight)) throw new CanonError("canon_weight", "weight must be a whole number from 1 to 100");
+      if (ev.kind !== "future" || !ev.task) throw new CanonError("canon_not_criterion", `${id} is not a completion criterion of a task — only those have a weight`);
+    }
+    if (action === "reweigh") {
+      if (ev.status !== "active" || bad) throw new CanonError("canon_not_active", `${id} is not an approved active event`);
+      if (!isWeight(who.weight)) throw new CanonError("canon_weight", "reweigh needs a weight from 1 to 100");
+      if (ev.weight === who.weight) throw new CanonError("canon_weight_same", `${id} already has the weight ${who.weight}`);
+      const before = ev.weight;
+      ev.weight = who.weight;
+      ev.decidedBy = who.by?.slice(0, 80);
+      ev.decidedAt = new Date().toISOString();
+      ev.decidedVia = who.via;
+      if (who.reason) ev.reason = one(who.reason, 300);
+      const signed = signChange(store, ev);
+      writeCanon(store, events);
+      raiseAnchors(signed.pid, { [id]: signed.anchor });
+      store.appendEvent({ type: "canon", data: { message: `${id} weight ${before ?? "–"} → ${ev.weight} by ${who.by ?? "?"} via ${who.via}${who.reason ? `: ${who.reason}` : ""}`, id, status: ev.status } });
+      return ev;
+    }
     if (action === "confirm") {
-      if (ev.status !== "active" || bad) throw new Error(`${id} is not an approved active event`);
+      if (ev.status !== "active" || bad) throw new CanonError("canon_not_active", `${id} is not an approved active event`);
       const c: CanonCheck = { status: "passed", at: new Date().toISOString(), node: who.head ?? null, clean: true, detail: `confirmed by ${who.by ?? "a person"}${who.reason ? `: ${one(who.reason, 200)}` : ""}`, by: who.by, how: "manual" };
       const signed = signChange(store, ev, c);
       writeCanon(store, events);
@@ -573,13 +727,24 @@ export function decideCanon(store: Store, id: string, action: CanonAction, who: 
       let adopt: string | undefined;
       if (typeof who.adoptCheck === "string") {
         adopt = candidates.find((c) => c === who.adoptCheck);
-        if (!adopt) throw new Error(`${id}: the check command changed since you saw it — reload and review it again`);
+        if (!adopt) throw new CanonError("canon_check_changed", `${id}: the check command changed since you saw it — reload and review it again`, 409);
       } else if (who.adoptCheck === true) {
-        if (new Set(candidates).size > 1) throw new Error(`${id} has two different commands — say which one to adopt`);
+        if (new Set(candidates).size > 1) throw new CanonError("canon_check_ambiguous", `${id} has two different commands — say which one to adopt`);
         adopt = candidates[0];
       }
       ev.check = adopt ? validateCheck(adopt) : undefined;
       ev.suggestedCheck = adopt ? undefined : ev.suggestedCheck ?? (candidates[0] ? candidates[0].slice(0, 500) : undefined);
+      // A criterion is approved exactly as the person saw it: text, task, weight and file (review M3), like the check.
+      const crit = ev.task !== undefined || ev.weight !== undefined || ev.artifact !== undefined;
+      if (crit && !who.expect) throw new CanonError("canon_needs_expect", `${id} is a completion criterion — approving it needs what you were shown (text, task, weight, file): use the criterion view in the dashboard or "scenaria canon approve ${id}" in a terminal`);
+      if (who.expect) {
+        const x = who.expect;
+        if (x.text !== ev.text || (x.task ?? undefined) !== ev.task || (x.weight ?? undefined) !== ev.weight || (x.artifact ?? undefined) !== ev.artifact) throw new CanonError("canon_changed", `${id} changed since you saw it — reload and review it again`, 409);
+      }
+      if (who.weight !== undefined && who.weight !== null) ev.weight = who.weight;
+      // Evidence counts from the person's approval on, never from the proposal's own (unsigned) time.
+      if (ev.task) ev.approvedAt = new Date().toISOString();
+      else ev.approvedAt = undefined;
     }
     ev.status = action === "approve" ? "active" : action === "reject" ? "rejected" : "retired";
     ev.decidedBy = who.by?.slice(0, 80);
@@ -592,6 +757,13 @@ export function decideCanon(store: Store, id: string, action: CanonAction, who: 
     store.appendEvent({ type: "canon", data: { message: `${id} ${ev.status} by ${who.by ?? "?"} via ${who.via}${who.reason ? `: ${who.reason}` : ""}`, id, status: ev.status } });
     return ev;
   });
+}
+
+/** E2 (review H1): the task of every completion criterion this machine saw signed, with its last signed status. */
+export function criterionAnchors(store: Store): Record<string, { task: string; status: string; text?: string }> {
+  const out: Record<string, { task: string; status: string; text?: string }> = {};
+  for (const [id, a] of Object.entries(readAnchors(projectId(store, false)))) if (a && typeof a.task === "string" && typeof a.status === "string") out[id] = { task: a.task, status: a.status, ...(typeof a.text === "string" ? { text: a.text } : {}) };
+  return out;
 }
 
 export function activeCanon(store: Store): CanonEvent[] {
@@ -706,6 +878,20 @@ export function evidenceAnchors(store: Store) {
   const pid = projectId(store, false);
   return { read: () => readAnchors(pid, "evidence"), raise: (u: Record<string, Anchor>) => raiseAnchors(projectId(store, true), u, "evidence") };
 }
+/**
+ * Batch E3a-1: where the chain of context-window records stood after Scenaria's last append on this machine.
+ * `rev` counts appends (only rises), `status` holds the number of lines, `sig` the chain hash of the last line.
+ */
+export function windowAnchor(store: Store) {
+  const pid = projectId(store, false);
+  return {
+    read: (): { count: number; lines: number; head: string } | null => {
+      const a = readAnchors(pid, "windows").chain;
+      return a && Number.isInteger(a.rev) && /^\d+$/.test(String(a.status)) && typeof a.sig === "string" ? { count: a.rev, lines: Number(a.status), head: a.sig } : null;
+    },
+    raise: (count: number, lines: number, head: string) => raiseAnchors(projectId(store, true), { chain: { rev: count, status: String(lines), sig: head } }, "windows"),
+  };
+}
 export type { Anchor };
 
 /** Run the check commands of approved canon events — only on a person's request. Async: the server keeps serving. */
@@ -802,7 +988,8 @@ export function canonLines(events: CanonEvent[], maxSoft = 8): { line: string; h
   const act = events.filter((e) => e.status === "active");
   const fmt = (e: CanonEvent) => {
     const check = e.lastCheck ? ` [last check: ${e.lastCheck.status}${e.lastCheck.clean ? "" : " on unsaved files"}${e.lastCheck.how === "manual" ? ", confirmed by a person" : ""}]` : e.check ? " [check defined, not run yet]" : "";
-    return `- ${e.id} (${e.kind}${e.hard ? ", hard" : ", soft"}${e.due ? `, by ${e.due}` : ""}): ${e.text}${check}`;
+    const crit = e.task ? ` [criterion of ${e.task}${e.weight !== undefined ? `, weight ${e.weight}` : ", no weight yet"}${e.artifact ? `, file ${e.artifact}` : ""}]` : "";
+    return `- ${e.id} (${e.kind}${e.hard ? ", hard" : ", soft"}${e.due ? `, by ${e.due}` : ""}): ${e.text}${crit}${check}`;
   };
   const hard = act.filter((e) => e.hard).map((e) => ({ line: fmt(e), hard: true }));
   const soft = act.filter((e) => !e.hard);

@@ -216,6 +216,7 @@ export function composeContext(path: ScenariaNode[], opts: CapsuleOptions = {}):
       const g = n.type === "branch" ? "⑂" : n.type === "autosave" ? "⟲" : n.type === "goal" ? "◉" : "◆";
       const lines = [`- ${n.id} ${g} ${short(n.title, 200)}`];
       if (fullSet.has(i)) lines.push(...bullets(n.outputs?.slice(0, 6).map((o) => short(o, 200)), "  "));
+      if (Array.isArray(n.fulfills) && n.fulfills.length) lines.push(`  - reports criteria ${n.fulfills.slice(0, 8).join(", ")} as implemented (counts with evidence only)`);
       if (n.verification && n.verification.status !== "unverified") lines.push(`  - verification: ${verdictLine(n.verification)}${n.verification.notes ? ` — ${short(n.verification.notes, 160)}` : ""}`);
       add("task", fullSet.has(i) ? 5 : 5.5, lines);
     }

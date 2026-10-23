@@ -116,6 +116,7 @@ export function applyBlocks(s: Scenaria, text: string, actor: Actor = {}, task?:
             basedOn: strList(body.basedOn),
             openQuestions: strList(body.openQuestions),
             irreversible: strList(body.irreversible),
+            fulfills: strList(body.fulfills),
             taskDone: Boolean(body.taskDone),
             summary: body.summary,
             tags: ["from-chat"],
@@ -138,7 +139,7 @@ export function applyBlocks(s: Scenaria, text: string, actor: Actor = {}, task?:
         }
         case "canon": {
           // From a chat: always a proposal; the user approves it in the dashboard.
-          s.proposeCanon({ kind: body.kind === "future" ? "future" : "past", text: String(body.text ?? ""), due: body.due, evidence: strList(body.evidence) }, actor);
+          s.proposeCanon({ kind: body.kind === "future" ? "future" : "past", text: String(body.text ?? ""), due: body.due, evidence: strList(body.evidence), task: typeof body.task === "string" ? body.task : undefined, weight: typeof body.weight === "number" ? body.weight : undefined, artifact: typeof body.artifact === "string" ? body.artifact : undefined }, actor);
           break;
         }
         case "rule": {

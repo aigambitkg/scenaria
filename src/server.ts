@@ -26,7 +26,7 @@ import { archivistProposals } from "./core/canon-llm.js";
 import { addAuditor, listAuditors, removeAuditor } from "./core/auditors.js";
 import { buildAuditFile, parsePeriod } from "./core/auditfile.js";
 import { exportAuditFile, renderAuditMarkdown } from "./core/auditexport.js";
-import { signRecord } from "./core/canon.js";
+import { CanonError, criterionAnchors, signRecord } from "./core/canon.js";
 import { renderAuditHtml } from "./core/audithtml.js";
 import { writeAuditPackage } from "./core/auditpackage.js";
 import { addOrgEvidence, catalogueFingerprint, confirmOrgEvidence, copyOrgEvidence, entryDigest, OrgEvidenceError, orgEvidenceStates, planCopy, planRemove, removeOrgEvidence, validateInput } from "./core/orgevidence.js";
@@ -40,11 +40,14 @@ import { auditForecast, auditOverview, auditReportMarkdown, deepAudit, listOracl
 import { chat } from "./chat.js";
 import { TARGETS, agentStatus, connectionSnippets, setupAgents, writeLauncher, type Target } from "./setup.js";
 import { callLlm } from "./core/analysis.js";
+import { projectProgress } from "./core/progress.js";
+import { windowStatus } from "./core/window.js";
+import { prepareHandover } from "./core/windowact.js";
 import { adoptRecommendation, expertAnalysis, factSheet, getReport, listPersonalReports, listReports } from "./core/expert.js";
 import { forgetProject, listProjects, registerProject } from "./core/projects.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
-export const VERSION = "0.9.14";
+export const VERSION = "0.9.17";
 
 const KEY_ENVS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "AZURE_OPENAI_API_KEY"];
 
@@ -553,6 +556,14 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
 
         // ---------- context fidelity, workspace, references, expectations ----------
         if (req.method === "GET" && p === "/api/fidelity") return send(res, 200, s.fidelity());
+        // Batch E2: progress per task and for the project, each with its derivation (read-only, computed from evidence).
+        if (req.method === "GET" && p === "/api/progress") return send(res, 200, projectProgress(s));
+        // Batch E3a-1: how full the agents' context windows are, each number with its derivation (read-only, measured).
+        if (req.method === "GET" && p === "/api/windows") return send(res, 200, windowStatus(s));
+        if (req.method === "GET" && p === "/api/handover") {
+          const w = url.searchParams.get("window") ?? undefined;
+          return send(res, 200, prepareHandover(s, { window: w }));
+        }
         if (p === "/api/v1/workspace" && (req.method === "GET" || req.method === "POST")) {
           // Reader mode changes what a reader is told next time, so it needs POST (+ X-Scenaria / token), never a plain GET.
           const b = req.method === "POST" ? await readBody(req) : {};
@@ -575,7 +586,9 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         if (req.method === "GET" && p === "/api/approval") return send(res, 200, { granted: isApprover(req), mode: token ? (opts.approverToken ? "team" : "disabled") : "local", auditView: isAuditView(req) ? true : hasViewCookie(req) ? "stale" : false });
         if (req.method === "GET" && p === "/api/canon") {
           const st = s.canonState();
-          return send(res, 200, { events: st.events, error: st.error, missing: st.missing, suggestions: st.error ? [] : s.suggestCanon(), approval: isApprover(req) });
+          // letGo (E2): missing criteria the person can let go (they hold their task back until then).
+          const anchored = criterionAnchors(s.store);
+          return send(res, 200, { events: st.events, error: st.error, missing: st.missing, letGo: st.missing.filter((id) => anchored[id]).map((id) => ({ id, text: anchored[id].text ?? "" })), suggestions: st.error ? [] : s.suggestCanon(), approval: isApprover(req) });
         }
         // Binding canon actions, the person's settings, the built-in chat and the relay: only with the
         // approval session (not with the API/agent token) — they act for the person or use the person's keys.
@@ -977,13 +990,17 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         if (req.method === "POST" && p === "/api/canon") {
           // The dashboard is a person's surface: adding here makes the event binding (audited as "dashboard").
           const b = await readBody(req);
-          return send(res, 200, s.addCanonAsUser({ kind: b?.kind, text: String(b?.text ?? ""), hard: b?.hard !== false, check: b?.check, due: b?.due || undefined, evidence: Array.isArray(b?.evidence) ? b.evidence : undefined }, { user: approver, via: "dashboard" }));
+          return send(res, 200, s.addCanonAsUser({ kind: b?.kind, text: String(b?.text ?? ""), hard: b?.hard !== false, check: b?.check, due: b?.due || undefined, evidence: Array.isArray(b?.evidence) ? b.evidence : undefined, task: b?.task || undefined, weight: b?.weight ?? undefined, artifact: b?.artifact || undefined }, { user: approver, via: "dashboard" }));
         }
         if (req.method === "POST" && p === "/api/canon/decide") {
           const b = await readBody(req);
-          if (!["approve", "reject", "retire", "confirm"].includes(b?.action)) return send(res, 400, { error: "action must be approve, reject, retire or confirm" });
+          if (!["approve", "reject", "retire", "confirm", "reweigh"].includes(b?.action)) return send(res, 400, { error: "action must be approve, reject, retire, confirm or reweigh" });
           const adoptCheck = typeof b?.adoptCheck === "string" ? b.adoptCheck : b?.adoptCheck === true;
-          return send(res, 200, s.decideCanon(String(b?.id ?? ""), b.action, { user: approver, via: "dashboard", reason: b?.reason, adoptCheck }));
+          // What the person saw (text, task, weight, file): a criterion is approved only exactly so (E2a review M3).
+          const x = b?.expect && typeof b.expect === "object" ? b.expect : null;
+          const expect = x ? { text: String(x.text ?? ""), task: typeof x.task === "string" ? x.task : undefined, weight: typeof x.weight === "number" ? x.weight : undefined, artifact: typeof x.artifact === "string" ? x.artifact : undefined } : undefined;
+          // A refusal carries its code (CanonError): the dashboard says it in the person's language (E2b review M3).
+          return send(res, 200, s.decideCanon(String(b?.id ?? ""), b.action, { user: approver, via: "dashboard", reason: b?.reason, adoptCheck, weight: b?.weight ?? undefined, expect }));
         }
         if (req.method === "GET" && p === "/api/canon/gate") return send(res, 200, gateMatrix(s));
         if (req.method === "POST" && p === "/api/canon/gate") {
@@ -1266,7 +1283,9 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
       res.writeHead(200, { "content-type": MIME[extname(name)] ?? "application/octet-stream", "cache-control": "no-cache" });
       res.end(asset);
     } catch (err: any) {
-      send(res, 400, { error: err?.message ?? String(err) });
+      // A refused change to the fixed points says why with a code the dashboard translates (E2b review M3).
+      if (err instanceof CanonError) send(res, err.status, { error: err.message, code: err.code });
+      else send(res, 400, { error: err?.message ?? String(err) });
     }
   };
   return {

@@ -31,7 +31,7 @@
     --surface: #172c47;
     --ink: #e8f0f8;
     --ink-2: #aec0d3;
-    --ink-3: #7590ad;
+    --ink-3: #859db8; /* ≥ 4.5:1 on surface and paper in dark mode (E2b review) */
     --rule: #2b4a70;
     --marker: rgba(255, 214, 51, 0.36);
     --marker-solid: #f2cc3a;
@@ -1016,3 +1016,34 @@ table.gate tr.current td:first-child { box-shadow: inset 4px 0 0 var(--marker-so
   .why-inputs tr { display: block; padding: 3px 0; border-bottom: 1px solid var(--rule); }
   .why-inputs th, .why-inputs td, .why-inputs td.why-num { display: block; min-width: 0; text-align: left; padding: 0; white-space: normal; }
 }
+
+/* ---------- E2b: progress ---------- */
+.pg-bar { position: relative; height: 10px; border: 1px solid var(--ink-3); border-radius: 2px; background: var(--surface); margin: 6px 0 8px; max-width: 520px; overflow: hidden; }
+.pg-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--lesson); }
+.pg-tick { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--ink-3); opacity: 0.55; }
+.pg-value { font-variant-numeric: tabular-nums; font-weight: 700; }
+.pg-task h3, .pg-project h3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.pg-task-title { overflow-wrap: anywhere; }
+.pg-next { margin: 4px 0 8px; }
+.pg-details summary { cursor: pointer; font-weight: 600; }
+.pg-details h4 { margin: 10px 0 4px; font-size: 13px; }
+.pg-gates { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+.pg-gates li { padding: 2px 0; }
+.pg-gates li.met > span:first-child { color: var(--pass); font-weight: 700; }
+.pg-gates li.open { color: var(--ink-2); }
+.pg-crit-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.pg-crit p { margin: 4px 0; overflow-wrap: anywhere; }
+.chip.pg-level.lv-1 { border-color: var(--pass); color: var(--pass); }
+.chip.pg-level.lv-075 { border-color: var(--pass); color: var(--pass); border-style: dashed; }
+.chip.pg-level.lv-05 { border-color: var(--lesson); color: var(--lesson); }
+.chip.pg-level.lv-025 { border-color: var(--warn); color: var(--warn); }
+.pg-note { color: var(--warn); }
+.pg-unsettled { padding-left: 18px; margin: 0; }
+.pg-card { margin: 0 0 24px; padding: 12px 14px; border: 1px solid var(--rule); border-radius: 2px; background: var(--surface); }
+.pg-card h2 { margin: 0 0 4px; font-size: 15px; }
+.pg-big { margin: 0; font-size: 22px; }
+.pg-weight { flex-direction: row; align-items: center; gap: 6px; }
+.pg-weight input { width: 5.5em; min-height: 32px; }
+.canon-form select { min-height: 32px; }
+.error-text { color: var(--fail); }
+.pg-why { margin: 0 0 4px; }

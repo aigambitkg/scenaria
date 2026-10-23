@@ -894,8 +894,12 @@ export function CanonDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: stri
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [adopt, setAdopt] = useState<Record<string, string | undefined>>({});
-  const [form, setForm] = useState({ kind: "past", text: "", check: "", due: "", hard: true });
+  const [form, setForm] = useState({ kind: "past", text: "", check: "", due: "", hard: true, task: "", weight: "", artifact: "" });
   const [verdict, setVerdict] = useState<StringPayload | null>(null);
+  // E2: completion criteria — the tasks to choose from, weights typed per criterion, missing ones the person can let go.
+  const [tasks, setTasks] = useState<{ id: string; title: string }[]>([]);
+  const [weights, setWeights] = useState<Record<string, string>>({});
+  const [letGo, setLetGo] = useState<{ id: string; text: string }[]>([]);
 
   const reload = async () => {
     const r = await api.canon();
@@ -903,9 +907,11 @@ export function CanonDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: stri
     setSugs(r.suggestions);
     setFileError(r.error);
     setMissing(r.missing ?? []);
+    setLetGo(r.letGo ?? []);
     setApproval(r.approval);
     try {
       const g = await api.graph();
+      setTasks(g.nodes.filter((n) => n.type === "goal").map((n) => ({ id: n.id, title: n.title })));
       if (g.state.head) setVerdict(await api.stringAt(g.state.head));
     } catch {
       setVerdict(null);
@@ -923,6 +929,8 @@ export function CanonDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: stri
       props.onChanged();
     } catch (e: any) {
       setErr(String(e?.message ?? e));
+      // Show what is stored now (e.g. a proposal that changed since it was shown — E2b review M2).
+      await reload().catch(() => {});
     } finally {
       setBusy(null);
     }
@@ -933,6 +941,44 @@ export function CanonDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: stri
   const tampered = events.filter((e) => e.status === "tampered" || e.status === "untrusted");
   const pending = (e: CanonEvent) => e.status === "proposed" || e.status === "tampered" || e.status === "untrusted";
   const closed = events.filter((e) => e.status === "rejected" || e.status === "retired");
+  /**
+   * The weight in a criterion's field: undefined = untouched (the field shows the stored weight, which is signed as
+   * shown); null = touched but not a whole number from 1 to 100 (empty too) — the buttons stay off (E2b review M1).
+   */
+  const typedWeight = (e: CanonEvent): number | null | undefined => {
+    const w = weights[e.id];
+    if (w === undefined) return undefined;
+    return /^\d{1,3}$/.test(w.trim()) && Number(w) >= 1 && Number(w) <= 100 ? Number(w) : null;
+  };
+  const forget = (id: string) =>
+    setWeights((x) => {
+      const { [id]: _, ...rest } = x;
+      return rest;
+    });
+  /** A criterion (and any fixed point) is approved exactly as shown here (E2a review M3). */
+  const shownAs = (e: CanonEvent) => ({ text: e.text, task: e.task, weight: e.weight, artifact: e.artifact });
+  const weightField = (e: CanonEvent) => (
+    <>
+      <label className="field inline pg-weight">
+        <span>{t.canonWeight}</span>
+        <input
+          type="number"
+          min={1}
+          max={100}
+          step={1}
+          inputMode="numeric"
+          disabled={locked}
+          value={weights[e.id] ?? String(e.weight ?? "")}
+          title={t.canonWeightHint}
+          aria-label={`${t.canonWeight} ${e.id}`}
+          aria-invalid={typedWeight(e) === null}
+          // Text the browser cannot read as a number ("5-") arrives as "" with badInput: invalid, never "unchanged".
+          onChange={(x) => setWeights({ ...weights, [e.id]: x.target.validity.badInput ? "?" : x.target.value })}
+        />
+      </label>
+      {typedWeight(e) === null && <span className="small error-text">{t.canonWeightInvalid}</span>}
+    </>
+  );
   const row = (e: CanonEvent) => (
     <li key={e.id} className={`canon-item k-${e.kind} ${e.status === "tampered" || e.status === "untrusted" ? "tampered" : ""}`}>
       <div className="canon-main">
@@ -947,6 +993,13 @@ export function CanonDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: stri
           </span>
         )}
         {e.status === "tampered" && <span className="chip v-failed">⛔ {t.canonTampered}</span>}
+        {e.task && <span className="chip k-future">{t.canonCriterionOf(e.task)}</span>}
+        {e.task && <span className="chip">{e.weight !== undefined ? `${t.canonWeight} ${e.weight}` : t.pgNoWeight}</span>}
+        {e.artifact && (
+          <span className="chip">
+            {t.canonFile} <code className="cmd">{e.artifact}</code>
+          </span>
+        )}
       </div>
       <p>{e.text}</p>
       {e.check && !pending(e) && (
@@ -986,7 +1039,18 @@ export function CanonDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: stri
       <div className="row">
         {pending(e) && (
           <>
-            <button className="btn ok" disabled={locked} onClick={() => run(e.id, () => api.decideCanon(e.id, "approve", adopt[e.id] ? { adoptCheck: adopt[e.id] } : {}))}>
+            {e.task && weightField(e)}
+            <button
+              className="btn ok"
+              disabled={locked || (Boolean(e.task) && typedWeight(e) === null)}
+              onClick={() => {
+                const w = typedWeight(e);
+                return run(e.id, async () => {
+                  await api.decideCanon(e.id, "approve", { ...(adopt[e.id] ? { adoptCheck: adopt[e.id] } : {}), expect: shownAs(e), ...(e.task && typeof w === "number" && w !== e.weight ? { weight: w } : {}) });
+                  forget(e.id);
+                });
+              }}
+            >
               {e.status === "proposed" ? t.canonApprove : t.canonReapprove}
             </button>
             <button className="btn bad" disabled={locked} onClick={() => run(e.id, () => api.decideCanon(e.id, "reject"))}>
@@ -996,6 +1060,25 @@ export function CanonDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: stri
         )}
         {e.status === "active" && (
           <>
+            {e.task && (
+              <>
+                {weightField(e)}
+                <button
+                  className="btn"
+                  disabled={locked || typeof typedWeight(e) !== "number" || typedWeight(e) === e.weight}
+                  onClick={() => {
+                    const w = typedWeight(e);
+                    if (typeof w !== "number") return;
+                    return run(e.id, async () => {
+                      await api.decideCanon(e.id, "reweigh", { weight: w });
+                      forget(e.id); // the field shows the new stored weight (E2b review L8)
+                    });
+                  }}
+                >
+                  {t.canonReweigh}
+                </button>
+              </>
+            )}
             {e.kind === "future" && (
               <button className="btn" disabled={locked} onClick={() => run(e.id, () => api.decideCanon(e.id, "confirm"))}>
                 {t.canonConfirm}
@@ -1015,10 +1098,25 @@ export function CanonDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: stri
         <p className="hint">{t.canonIntro}</p>
         {!approval && <LockedNote t={t} text={t.canonLocked} />}
         {fileError && <p className="error">{fileError}</p>}
-        {missing.length > 0 && (
+        {missing.filter((id) => !letGo.some((g) => g.id === id)).length > 0 && (
           <p className="error">
-            ⛔ {missing.join(", ")}: {t.canonMissing}
+            ⛔ {missing.filter((id) => !letGo.some((g) => g.id === id)).join(", ")}: {t.canonMissing}
           </p>
+        )}
+        {letGo.length > 0 && (
+          <div className="error">
+            <p>⛔ {t.canonLetGoHint}</p>
+            <ul className="pg-unsettled">
+              {letGo.map((g) => (
+                <li key={g.id}>
+                  <span className="canon-id">{g.id}</span> {g.text || "–"}{" "}
+                  <button className="btn" disabled={locked} onClick={() => run(`go-${g.id}`, () => api.decideCanon(g.id, "retire"))}>
+                    {t.canonLetGo}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
         {err && <p className="error">{err}</p>}
         {verdict && (
@@ -1109,8 +1207,16 @@ export function CanonDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: stri
               e.preventDefault();
               if (form.text.trim().length < 4 || locked) return;
               run("add", async () => {
-                await api.addCanon({ kind: form.kind, text: form.text, hard: form.hard, check: form.check || undefined, due: form.kind === "future" && form.due ? form.due : undefined });
-                setForm({ ...form, text: "", check: "", due: "" });
+                const crit = form.kind === "future" && form.task;
+                await api.addCanon({
+                  kind: form.kind,
+                  text: form.text,
+                  hard: form.hard,
+                  check: form.check || undefined,
+                  due: form.kind === "future" && form.due ? form.due : undefined,
+                  ...(crit ? { task: form.task, weight: form.weight.trim() ? Number(form.weight) : undefined, artifact: form.artifact.trim() || undefined } : {}),
+                });
+                setForm({ ...form, text: "", check: "", due: "", weight: "", artifact: "" });
               });
             }}
           >
@@ -1124,6 +1230,28 @@ export function CanonDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: stri
             <input value={form.text} placeholder={form.kind === "past" ? t.canonPastPh : t.canonFuturePh} onChange={(e) => setForm({ ...form, text: e.target.value })} />
             <input value={form.check} placeholder={t.canonCheckPh} onChange={(e) => setForm({ ...form, check: e.target.value })} />
             {form.kind === "future" && <input type="date" value={form.due} onChange={(e) => setForm({ ...form, due: e.target.value })} />}
+            {form.kind === "future" && (
+              <label className="field">
+                <span>{t.canonTask}</span>
+                <select value={form.task} onChange={(e) => setForm({ ...form, task: e.target.value })}>
+                  <option value="">{t.canonTaskNone}</option>
+                  {tasks.map((x) => (
+                    <option key={x.id} value={x.id}>
+                      {x.id} · {x.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {form.kind === "future" && form.task && (
+              <>
+                <label className="field inline pg-weight">
+                  <span>{t.canonWeight}</span>
+                  <input type="number" min={1} max={100} step={1} inputMode="numeric" value={form.weight} title={t.canonWeightHint} onChange={(e) => setForm({ ...form, weight: e.target.value })} />
+                </label>
+                <input value={form.artifact} placeholder={t.canonArtifactPh} aria-label={t.canonFile} onChange={(e) => setForm({ ...form, artifact: e.target.value })} />
+              </>
+            )}
             <label className="check">
               <input type="checkbox" checked={form.hard} onChange={(e) => setForm({ ...form, hard: e.target.checked })} />
               <span>{t.canonHardLabel}</span>

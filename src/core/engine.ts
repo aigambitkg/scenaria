@@ -32,7 +32,7 @@ import { ulid, versionLabel } from "./ids.js";
 import { isForbiddenRoot } from "./global.js";
 import { Ledger, checkIntegrity, contentHash, workHash } from "./ledger.js";
 import { fidelityAll } from "./fidelity.js";
-import { activeCanon, addCanon, canonLines, canonState, decideCanon, projectIdentity, publicKeyId, rebindProjectId, ruleAnchors, ruleTrustFingerprint, readCanon, runCanonChecks, signRecord, suggestCanon, trustedApproverIdSet, verifyEd25519, type CanonAction, type CanonInput } from "./canon.js";
+import { activeCanon, addCanon, canonLines, canonState, decideCanon, projectIdentity, publicKeyId, rebindProjectId, ruleAnchors, ruleTrustFingerprint, readCanon, runCanonChecks, signRecord, suggestCanon, trustedApproverIdSet, verifyEd25519, type CanonAction, type CanonExpect, type CanonInput, CanonError } from "./canon.js";
 
 export interface Actor {
   agent?: string;
@@ -127,6 +127,8 @@ export interface CheckpointInput extends Actor {
   /** Mark the current task as done (optionally with a summary). */
   taskDone?: boolean;
   summary?: string;
+  /** Batch E2: completion criteria (approved future fixed points, k3) the agent claims this step fulfils. */
+  fulfills?: string[];
 }
 
 export interface RewindOptions extends Actor {
@@ -581,8 +583,10 @@ export class Scenaria {
         writeFileSync(this.store.path("ledger.sealed"), new Date().toISOString() + "\n");
       });
     }
+    // Idempotent and repeated on every open: when the store is busy, skip it after a short wait rather than hold up
+    // the caller (hooks run after every tool since E3a-2; review 2, N1).
     try {
-      this.store.withLock(() => ensureLedgerAnchor(this.store, this.ledger.state(), markerTime(this.store)));
+      this.store.withLock(() => ensureLedgerAnchor(this.store, this.ledger.state(), markerTime(this.store)), { waitMs: 1000 });
     } catch {}
   }
 
@@ -1525,6 +1529,8 @@ export class Scenaria {
       basedOn: clean(input.basedOn),
       openQuestions: clean(input.openQuestions),
       irreversible: clean(input.irreversible),
+      // Only approved completion criteria (a claim; progress weighs it against evidence, core/progress.ts).
+      fulfills: clean(input.fulfills?.filter((k) => activeCanon(this.store).some((e) => e.id === k && e.kind === "future"))),
       createdAt: new Date().toISOString(),
       ...attrib(input),
       tags: clean(input.tags),
@@ -1842,16 +1848,26 @@ export class Scenaria {
 
   /** Agents and the archivist propose; the event stays "proposed" until a person approves it. */
   proposeCanon(input: CanonInput, actor: Actor & { archivist?: boolean } = {}) {
+    this.checkCriterionTask(input);
     return addCanon(this.store, input, { source: actor.archivist ? "archivist" : "agent", by: actor.agent ?? actor.user });
   }
 
   /** A person adds a fixed point directly (dashboard / interactive CLI). */
   addCanonAsUser(input: CanonInput, who: { user?: string; via: string }) {
+    this.checkCriterionTask(input);
     return addCanon(this.store, input, { source: "user", by: who.user ?? defaultUser(), via: who.via });
   }
 
-  decideCanon(id: string, action: CanonAction, who: { user?: string; via: string; reason?: string; adoptCheck?: boolean | string }) {
-    return decideCanon(this.store, id, action, { by: who.user ?? defaultUser(), via: who.via, reason: who.reason, adoptCheck: who.adoptCheck, head: this.store.readState().head });
+  /** A completion criterion (E2) belongs to a task that exists. */
+  private checkCriterionTask(input: CanonInput) {
+    const t = input.task;
+    if (t === undefined || t === null || t === "") return;
+    if (typeof t !== "string" || !/^n\d{1,7}$/.test(t) || !this.store.hasNode(t)) throw new CanonError("canon_task_unknown", `task ${String(t).slice(0, 20)} does not exist`);
+    if (this.store.readNode(t).type !== "goal") throw new CanonError("canon_task_not_goal", `${t} is not a task — completion criteria belong to a task (scenaria_status shows the current one)`);
+  }
+
+  decideCanon(id: string, action: CanonAction, who: { user?: string; via: string; reason?: string; adoptCheck?: boolean | string; weight?: number; expect?: CanonExpect }) {
+    return decideCanon(this.store, id, action, { by: who.user ?? defaultUser(), via: who.via, reason: who.reason, adoptCheck: who.adoptCheck, head: this.store.readState().head, weight: who.weight, expect: who.expect });
   }
 
   /** The archivist's candidate fixed points from the recorded history (nothing is stored). */

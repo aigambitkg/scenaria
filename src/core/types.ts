@@ -129,6 +129,8 @@ export interface ScenariaNode {
   basedOn?: string[];
   /** Canon events (k1, …) the decision was checked against and respects. */
   respectsCanon?: string[];
+  /** Batch E2: completion criteria (approved future fixed points) a checkpoint claims to fulfil — a claim, not proof. */
+  fulfills?: string[];
   /** Canon events the decision knowingly breaks (needs a rationale; flagged everywhere). */
   breaksCanon?: string[];
 

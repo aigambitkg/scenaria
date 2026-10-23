@@ -1,7 +1,8 @@
 import type { AnalysisConfig, ConversationMessage, ConversationSession, ProjectRule, ScenariaConfig, ScenariaEvent, ScenariaNode, ScenariaState } from "../../src/core/types";
 import type { AnalysisRecord, Metrics } from "../../src/core/analysis";
 import type { FidelityPoint } from "../../src/core/fidelity";
-import type { CanonEvent, CanonSuggestion } from "../../src/core/canon";
+import type { CanonEvent, CanonExpect, CanonSuggestion } from "../../src/core/canon";
+import type { ProjectProgress, TaskProgress, CriterionProgress } from "../../src/core/progress";
 import type { StringPayload } from "../../src/core/workspace";
 import type { SettingsView, LlmRole } from "../../src/core/settings";
 import type { LlmChoice } from "../../src/core/global";
@@ -72,7 +73,7 @@ export interface LlmCall {
   keyFor?: string;
 }
 
-export type { CanonEvent, CanonSuggestion, StringPayload };
+export type { CanonEvent, CanonSuggestion, StringPayload, ProjectProgress, TaskProgress, CriterionProgress };
 
 export type { ScenariaNode, ScenariaEvent, ConversationMessage, ConversationSession, ProjectRule, AnalysisRecord, Metrics, AnalysisConfig, FidelityPoint };
 
@@ -174,7 +175,9 @@ export const api = {
   ingestText: (text: string) => req<{ created: { id: string; type: string; title: string }[]; errors: string[]; skipped: number }>("/api/v1/ingest-text", { text, log: true }),
   analysis: () => req<Metrics>("/api/analysis"),
   fidelity: () => req<Fidelity>("/api/fidelity"),
-  canon: () => req<{ events: CanonEvent[]; suggestions: CanonSuggestion[]; error: string | null; missing?: string[]; approval: boolean }>("/api/canon"),
+  /** E2: progress per task and for the project, each with its derivation. */
+  progress: () => req<ProjectProgress>("/api/progress"),
+  canon: () => req<{ events: CanonEvent[]; suggestions: CanonSuggestion[]; error: string | null; missing?: string[]; letGo?: { id: string; text: string }[]; approval: boolean }>("/api/canon"),
   approval: () => req<{ granted: boolean; mode: "local" | "team" | "disabled"; auditView?: boolean | "stale" }>("/api/approval"),
   /** The ISO/IEC 42001 audit file (C2): the person's (or the auditor mode's), unless the person opened it. */
   auditFile: (from?: string, to?: string) => {
@@ -199,8 +202,9 @@ export const api = {
   orgEvidenceConfirm: (id: string, digest: string) => req<{ entry: OrgEvidence }>("/api/audit-file/evidence/confirm", { id, digest }),
   orgEvidenceCopyPlan: (from: string) => req<CopyPlan>("/api/audit-file/evidence/copy", { from, dryRun: true }),
   orgEvidenceCopy: (from: string, expect: { name: string; entries: { id: string; digest: string }[] }) => req<{ copied: OrgEvidence[]; skipped: { id: string; reason: string }[]; from: string }>("/api/audit-file/evidence/copy", { from, expect }),
-  addCanon: (c: { kind: string; text: string; hard: boolean; check?: string; due?: string; evidence?: string[] }) => req<CanonEvent>("/api/canon", c),
-  decideCanon: (id: string, action: "approve" | "reject" | "retire" | "confirm", opts: { reason?: string; adoptCheck?: boolean | string } = {}) => req<CanonEvent>("/api/canon/decide", { id, action, ...opts }),
+  addCanon: (c: { kind: string; text: string; hard: boolean; check?: string; due?: string; evidence?: string[]; task?: string; weight?: number; artifact?: string }) => req<CanonEvent>("/api/canon", c),
+  /** A criterion is approved exactly as shown (`expect`); `weight` sets it on approve or reweigh. */
+  decideCanon: (id: string, action: "approve" | "reject" | "retire" | "confirm" | "reweigh", opts: { reason?: string; adoptCheck?: boolean | string; weight?: number; expect?: CanonExpect } = {}) => req<CanonEvent>("/api/canon/decide", { id, action, ...opts }),
   checkCanon: () => req<{ id: string; status: string; detail: string }[]>("/api/canon/check", {}),
   archivist: (lang: string) => req<{ proposed: CanonEvent[]; skipped: number; model: string }>("/api/canon/archivist", { lang }),
   stringAt: (id: string) => req<StringPayload>(`/api/v1/string?at=${encodeURIComponent(id)}`),

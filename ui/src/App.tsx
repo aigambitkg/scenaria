@@ -1,7 +1,8 @@
 import { ReadOnlyContext, requestApproval, useApprovalSignal } from "./Approval";
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
-import { api, errorTexts, type Fidelity, type Graph, type ScenariaEvent, type ScenariaNode } from "./api";
+import { api, errorTexts, type Fidelity, type Graph, type ProjectProgress, type ScenariaEvent, type ScenariaNode } from "./api";
+import { ProgressDialog } from "./Progress";
 import { dict, initialLang, saveLang, type Lang } from "./i18n";
 import { ProjectSwitcher } from "./Projects";
 import { HelpDialog, Onboarding, onboardingDone, restartOnboarding } from "./Help";
@@ -58,6 +59,8 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
   // The integrity check could not be loaded: then nothing counts as checked (rule 11), and the Simple view warns.
   const [fidelityError, setFidelityError] = useState(false);
   const [canonOpen, setCanonOpen] = useState(false);
+  const [progress, setProgress] = useState<ProjectProgress | null>(null);
+  const [progressOpen, setProgressOpen] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
   const [auditFileOpen, setAuditFileOpen] = useState(false);
   const [canonInfo, setCanonInfo] = useState<{ active: number; proposed: number } | null>(null);
@@ -167,6 +170,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
 
   useEffect(() => {
     api.analysis().then((m) => setHealth(m.health)).catch(() => setHealth(null));
+    api.progress().then(setProgress).catch(() => setProgress(null));
     api
       .fidelity()
       .then((f) => {
@@ -245,6 +249,8 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
   errorTexts.auditor_mode_active = t.afAuditorActive;
   errorTexts.not_normal = t.evErrNotNormal;
   errorTexts.changed = t.evErrChanged;
+  // Every refused change to the fixed points, in the person's language (E2b review M3).
+  for (const [code, text] of Object.entries(t.errCanon)) errorTexts[code] = text;
   errorTexts.plan_first = t.evErrPlanFirst;
   // In auditor mode the dashboard checks in every 2 minutes: while it does, nobody can open an approval link
   // that could land in this browser (review C4c-1 S1).
@@ -342,6 +348,9 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
         break;
       case "canon":
         setCanonOpen(true);
+        break;
+      case "progress":
+        setProgressOpen(true);
         break;
       case "chat":
         if (auditView) break;
@@ -453,6 +462,12 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
           {view === "manage" && !auditView && (
             <button className={`btn ${side === "chat" ? "primary" : ""}`} onClick={() => setSide(side === "chat" ? "node" : "chat")} title={t.chatHint}>
               {t.chat}
+            </button>
+          )}
+          {view !== "simple" && (
+            <button className="btn" onClick={() => setProgressOpen(true)} title={t.pgButtonHint}>
+              {t.pgButton}
+              {progress && progress.tasks.length > 0 && <span className="hchip">{progress.value} %</span>}
             </button>
           )}
           {view !== "simple" && (
@@ -608,6 +623,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
                 goal={root?.goal ?? null}
                 fidelity={fidelity}
                 fidelityError={fidelityError}
+                progress={progress}
                 toast={toast}
                 onEditGoal={() => setEditGoal(root?.goal ?? "")}
                 onRewound={load}
@@ -812,6 +828,26 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
             if (graph?.nodes.some((x) => x.id === id)) setSelected(id);
             setConvos(false);
           }}
+        />
+      )}
+      {progressOpen && (
+        <ProgressDialog
+          p={progress}
+          t={t}
+          lang={lang}
+          onClose={() => setProgressOpen(false)}
+          onNode={(id) => {
+            if (graph?.nodes.some((x) => x.id === id)) setSelected(id);
+            setProgressOpen(false);
+          }}
+          onOpenCanon={
+            view === "simple"
+              ? undefined
+              : () => {
+                  setProgressOpen(false);
+                  setCanonOpen(true);
+                }
+          }
         />
       )}
       {canonOpen && (

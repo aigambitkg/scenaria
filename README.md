@@ -174,6 +174,16 @@ An auditor finds every one of the 38 Annex A controls in one place: what this pr
 
 Next to context fidelity, the project check and the audit file's counts there is **ⓘ How computed?**: the formula with its version, the inputs (for counts every counted item) and one sentence in plain words. Hovering shows the sentence; a tap or Enter shows everything. Scenaria recomputes the number from the inputs and says whether it matches. In the audit package the derivations are footnotes, and `scenaria audit-file verify` recomputes them. A model never supplies one of these numbers.
 
+## Progress: how far along is the work? (v0.9.15)
+
+**Progress** shows in percent how far each task and the whole project are — computed only from evidence, by fixed rules, with **ⓘ How computed?** like every number. You set when a task is done: completion criteria are milestones with the task, a weight and optionally the file they produce; the AI proposes them, you approve them exactly as shown. The AI reports in a checkpoint which criterion it implemented; that counts only with evidence (the file changed since your approval). Levels: started, implemented, checked (the check command passed), confirmed (by you, or the reporting step was verified). Gates cap the value: 90 % needs every criterion confirmed, 100 % your own verdict on the task's last step — the AI can never compute itself "done". Only the current line counts: going back leaves no evidence of the abandoned attempt. Agents read it with `scenaria_progress`, the terminal with `scenaria progress`.
+
+## How full is the AI's context window? (v0.9.18)
+
+Scenaria measures how full an agent's context window is — from the token counts the provider reports, never estimated: in Claude Code from the session transcript, with other agents through the LLM proxy. A compaction starts a new window. The value is a percentage of the usable window, `C_eff = min(window size documented by the provider, 200,000 tokens)`, with zones: green below 50 %, yellow from 50 %, orange from a soft threshold (70 % minus a buffer computed from the size of the work steps), red from 70 %, emergency from 85 %. A model whose window size is not documented in Scenaria's table gets no number, and where Scenaria sees no tokens (Claude Desktop over MCP alone) it says "not measurable here". Records changed outside Scenaria show and then count for nothing. Agents read it with `scenaria_window`, the terminal with `scenaria window`.
+
+Scenaria acts on it, without ever blocking the agent: from yellow the agent is told not to start a large new part of the work; from orange the end of the turn is saved as a step; from red a step is saved at once, also in the middle of a turn, and you see a message ("please open a new window"). Each zone is saved once per window. The handover to the new window is ready at any time: `scenaria_handover` for agents, `scenaria handover` in the terminal. With the LLM proxy the answers carry `x-scenaria-context-zone` from yellow on. Scenaria cannot open a new window itself. The display in the dashboard follows.
+
 ## Help and introduction
 
 **?** (top right) explains every function in plain words, and every dialog has its own **?**. On the first visit a short introduction (goal → your AI → history → views) gets you going. You can skip it, and restart it from **More → Introduction**.

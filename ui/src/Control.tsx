@@ -616,6 +616,13 @@ export function ChatPanel(props: { t: Dict; lang: "de" | "en"; keys: SessionKeys
               <span className="canon-id">{data.id}</span>
               <span className={`chip ${data.kind === "past" ? "k-past" : "k-future"}`}>{t.canonKinds[data.kind as "past" | "future"] ?? data.kind}</span>
               <span className="chip">{data.hard ? t.canonHard : t.canonSoft}</span>
+              {typeof data.task === "string" && <span className="chip k-future">{t.canonCriterionOf(data.task)}</span>}
+              {typeof data.task === "string" && <span className="chip">{typeof data.weight === "number" ? `${t.canonWeight} ${data.weight}` : t.pgNoWeight}</span>}
+              {typeof data.artifact === "string" && (
+                <span className="chip">
+                  {t.canonFile} <code className="cmd">{data.artifact}</code>
+                </span>
+              )}
             </div>
             <p>{String(data.text ?? "")}</p>
             {data.suggestedCheck && (
@@ -628,7 +635,8 @@ export function ChatPanel(props: { t: Dict; lang: "de" | "en"; keys: SessionKeys
               disabled={!approval}
               onClick={async () => {
                 try {
-                  await api.decideCanon(data.id, "approve");
+                  // Exactly what this card shows (E2a review M3): a changed proposal is refused.
+                  await api.decideCanon(data.id, "approve", { expect: { text: String(data.text ?? ""), task: typeof data.task === "string" ? data.task : undefined, weight: typeof data.weight === "number" ? data.weight : undefined, artifact: typeof data.artifact === "string" ? data.artifact : undefined } });
                   props.toast(`${data.id} ✓`);
                   props.onChanged();
                 } catch (x) {

@@ -2,7 +2,7 @@
  * The help area: every function in plain words — what it is, when it helps, how to use it, one example.
  * Kept as data (DE/EN) so the help dialog, the onboarding and the "?" buttons share one source.
  */
-export type HelpAction = "goal" | "forecasts" | "audit" | "auditfile" | "analysis" | "expert" | "canon" | "chat" | "relay" | "settings" | "prompt" | "conversations" | "protocol" | "projects" | "onboarding";
+export type HelpAction = "goal" | "forecasts" | "audit" | "auditfile" | "analysis" | "expert" | "canon" | "progress" | "chat" | "relay" | "settings" | "prompt" | "conversations" | "protocol" | "projects" | "onboarding";
 
 export interface HelpTopic {
   id: string;
@@ -221,6 +221,30 @@ const de: HelpTopic[] = [
     ],
     notes: ["Fixpunkte sind signiert; ein von außen veränderter Fixpunkt wird als manipuliert angezeigt."],
     open: { action: "canon", label: "Kanon öffnen" },
+  },
+  {
+    id: "progress",
+    title: "Fortschritt: wie weit ist die Arbeit?",
+    what: "Scenaria zeigt in Prozent, wie weit jede Aufgabe und das ganze Projekt sind – berechnet nur aus Nachweisen, nach festen Regeln. Kein Agent kann sich „fertig rechnen“.",
+    when: "Wenn du wissen willst, was schon wirklich erledigt ist und was als Nächstes fehlt – ohne dich auf die Selbstauskunft der KI zu verlassen.",
+    how: [
+      "Für eine Aufgabe festlegen, wann sie fertig ist: Fertig-Kriterien sind Meilensteine (unter „Regeln & Meilensteine“) mit Aufgabe, Gewicht (wie viel der Aufgabe es ausmacht) und optional der Datei, die dabei entsteht. Die KI schlägt sie vor, du gibst sie frei.",
+      "Die KI meldet im Checkpoint, welches Kriterium sie umgesetzt hat. Das zählt erst mit Nachweis: die Datei wurde seit deiner Freigabe geändert.",
+      "Prüfbefehl laufen lassen (du startest ihn) oder ein Kriterium selbst als erfüllt bestätigen.",
+      "Zum Schluss den letzten Schritt der Aufgabe prüfen und „bestanden“ geben: erst dann steht sie bei 100 %.",
+    ],
+    terms: [
+      ["Stufen", "offen 0 · begonnen 0,25 (Datei da oder ein Schritt nennt es) · umgesetzt 0,5 (gemeldet und Datei geändert) · geprüft 0,75 (Prüfbefehl bestanden) · bestätigt 1 (du hast es als erfüllt bestätigt, oder der Schritt, der es meldet, wurde geprüft)."],
+      ["Tore", "Deckel für die Aufgabe: 10 % Ziel und Kriterium, 20 % gewichtet und Lösungsweg entschieden, 40 % erste Ergebnisse, 60 % alles umgesetzt, 80 % alles geprüft, 90 % alles bestätigt, 100 % dein Prüfurteil „bestanden“ auf dem letzten Schritt der Aufgabe."],
+      ["Wie berechnet?", "Zeigt die Formel (progress/1) mit allen Eingängen und rechnet den Wert hier im Browser nach."],
+    ],
+    notes: [
+      "Eine fehlgeschlagene Prüfung hält ein Kriterium bei höchstens „umgesetzt“.",
+      "Es zählt nur der aktuelle Weg: Nach einem Zurückspringen zählen Nachweise des aufgegebenen Versuchs nicht mehr.",
+      "Der Projektwert ist der Mittelwert über alle Aufgaben mit Kriterien. Aufgaben ohne Kriterien zählen nicht mit, aufgegebene schon, bis du ihre Kriterien ausmusterst.",
+      "Grenze: Ein Kriterium ohne Datei veraltet nie; eine Prüfung nach der Aufgabe prüft die Datei so, wie sie damals war.",
+    ],
+    open: { action: "progress", label: "Fortschritt öffnen" },
   },
   {
     id: "chat",
@@ -534,6 +558,30 @@ const en: HelpTopic[] = [
     ],
     notes: ["Fixed points are signed; one changed from outside is shown as tampered."],
     open: { action: "canon", label: "Open canon" },
+  },
+  {
+    id: "progress",
+    title: "Progress: how far along is the work?",
+    what: "Scenaria shows in percent how far each task and the whole project are — computed only from evidence, by fixed rules. No agent can compute itself \"done\".",
+    when: "When you want to know what is really finished and what is missing next, without relying on the AI's own account.",
+    how: [
+      "Set when a task is done: completion criteria are milestones (under “Rules & milestones”) with a task, a weight (how much of the task it is) and optionally the file it produces. The AI proposes them, you approve them.",
+      "The AI reports in a checkpoint which criterion it implemented. That counts only with evidence: the file changed since your approval.",
+      "Run the check command (you start it) or confirm a criterion as met yourself.",
+      "Finally review the task's last step and give \"passed\": only then is it at 100 %.",
+    ],
+    terms: [
+      ["Levels", "open 0 · started 0.25 (file there or a step names it) · implemented 0.5 (reported and the file changed) · checked 0.75 (check command passed) · confirmed 1 (you confirmed it as met, or the step that reports it was verified)."],
+      ["Gates", "Caps for the task: 10 % goal and a criterion, 20 % weighted and approach decided, 40 % first results, 60 % all implemented, 80 % all checked, 90 % all confirmed, 100 % your verdict “passed” on the task's last step."],
+      ["How computed?", "Shows the formula (progress/1) with all its inputs and recomputes the value here in the browser."],
+    ],
+    notes: [
+      "A failed check keeps a criterion at \"implemented\" at most.",
+      "Only the current line counts: after going back, evidence of the abandoned attempt no longer counts.",
+      "The project value is the mean over all tasks with criteria. Tasks without criteria do not count; abandoned ones do, until you retire their criteria.",
+      "Limit: a criterion without a file never goes stale; a check after the task checks the file as it was then.",
+    ],
+    open: { action: "progress", label: "Open progress" },
   },
   {
     id: "chat",

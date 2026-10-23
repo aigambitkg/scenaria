@@ -2,9 +2,11 @@ import { appendFileSync, existsSync, readFileSync, statSync } from "node:fs";
 import { Scenaria } from "./core/engine.js";
 import { findRoot } from "./core/store.js";
 import { ingestClaudeTranscript } from "./ingest.js";
+import { windowsHead, type StartReason } from "./core/window.js";
 import { isPlausibleProject, readGlobalConfig } from "./core/global.js";
 import { promptReminder } from "./core/prompts.js";
 import { applyBlocks } from "./core/blocks.js";
+import { agentNotice, cutBullet, cutIfDue, cutMeta, cutOnce, personNotice, sessionStartLine, tellsPerson } from "./core/windowact.js";
 import type { TaskHint } from "./core/engine.js";
 
 /**
@@ -16,6 +18,10 @@ import type { TaskHint } from "./core/engine.js";
  *   pre-tool      (PreToolUse: Bash)  autosave before destructive commands, flag external side effects
  *   stop          (Stop)              checkpoint at the end of a turn if files changed
  *   session-start (SessionStart)      inject a compact resume capsule
+ *
+ * Context window (E3a-2, core/windowact.ts): from the yellow zone on the prompt reminder carries a notice; from orange
+ * the end of a turn is saved as a checkpoint; from red a checkpoint is saved at once after a tool (mid-turn) and the
+ * person sees a system message. None of this ever blocks: every error is caught like any other.
  */
 
 interface HookInput {
@@ -37,6 +43,10 @@ interface Session {
   /** The session's task (becomes a goal node with the session's first real node). */
   taskTitle?: string;
   taskGoal?: string;
+  /** How Claude Code started this session (SessionStart `source`): the start reason of its first window (E3a-1). */
+  startSource?: string;
+  /** The transcript this session first named (E3a-2): a different path for the same session is not read. */
+  transcriptPath?: string;
 }
 
 const AGENT = "claude-code";
@@ -154,6 +164,46 @@ function logError(root: string | null, err: unknown) {
   }
 }
 
+const givenTranscript = (input: HookInput) => (typeof input.transcript_path === "string" && input.transcript_path ? input.transcript_path.slice(0, 1000) : undefined);
+/** A session reads only the transcript it named first (E3a-2 review M5). */
+const boundTranscript = (given: string | undefined, session: Session) => (given && session.transcriptPath && given !== session.transcriptPath ? undefined : given);
+const startReasonOf = (session: Session): StartReason => ({ clear: "clear", resume: "resume", compact: "compact" } as Record<string, StartReason>)[String(session.startSource ?? "")] ?? "new-session";
+const windowKeyOf = (input: HookInput, transcript?: string) => `claude-code:${input.session_id ?? transcript}`;
+const langOf = (): "de" | "en" => (readGlobalConfig().ui?.lang === "en" ? "en" : "de");
+
+/** After an ordinary tool: from red on, a checkpoint at once (Kev n77). Never waits long, never throws. */
+function afterTool(s: Scenaria, input: HookInput, session: Session, upd: (fn: (cur: Session) => void) => Session): string | null {
+  const given = givenTranscript(input);
+  const transcript = boundTranscript(given, session);
+  if (!transcript) return null;
+  let size: number;
+  try {
+    size = statSync(transcript).size;
+  } catch {
+    return null;
+  }
+  const offsets = s.store.readScratch<{ offsets: Record<string, number> }>("transcripts", { offsets: {} }).offsets ?? {};
+  if (offsets[transcript] === size) return null; // nothing new since the last read: nothing to measure
+  try {
+    return s.store.withLock(
+      () => {
+        if (!session.transcriptPath) upd((cur) => (cur.transcriptPath ??= transcript));
+        ingestClaudeTranscript(s, transcript, input.session_id, { startReason: startReasonOf(session) });
+        const taskHint = session.taskTitle ? { key: `claude-code:${input.session_id ?? "session"}`, title: session.taskTitle, goal: session.taskGoal } : undefined;
+        const { advice: adv, node } = cutIfDue(s, windowKeyOf(input, transcript), "now", { task: taskHint, source: "hook" });
+        if (!adv || !node) return null;
+        return JSON.stringify({
+          systemMessage: personNotice(adv, node.id, langOf()),
+          hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: agentNotice(adv, node.id) },
+        });
+      },
+      { waitMs: 1500 },
+    );
+  } catch {
+    return null; // busy: the next tool or the end of the turn acts
+  }
+}
+
 export async function handleHook(event: string, input: HookInput): Promise<string | null> {
   const start = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
   let root = findRoot(process.env.CLAUDE_PROJECT_DIR || start) ?? findRoot(start);
@@ -195,9 +245,25 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
       return out;
     };
     const readSession = (): Session => s.store.readScratch<SessionsFile>("session", {}).sessions?.[sid] ?? {};
-    const session = updSession(() => {});
     const name = event || input.hook_event_name || "";
+    // E3a-2: after an ordinary tool (the hook runs after EVERY tool) only the context window is looked at, on a fast
+    // path that holds nothing up (review 2, N1): nothing new in the transcript → nothing to do, without any lock;
+    // otherwise read and act under the lock, waiting at most 1.5 s (busy → skip: the next tool or the turn's end acts).
+    if ((name === "post-tool" || name === "PostToolUse") && input.tool_name !== "AskUserQuestion" && input.tool_name !== "ExitPlanMode") {
+      return afterTool(s, input, readSession(), (fn) => updSession(fn));
+    }
+    // E3a-2 (review M5): a session's transcript is the one it named first. Someone calling the hook with the same
+    // session and a transcript of their own cannot feed that session's window (the numbers become actions now).
+    const given = givenTranscript(input);
+    const session = updSession((cur) => {
+      if (given && !cur.transcriptPath) cur.transcriptPath = given;
+    });
+    const transcript = boundTranscript(given, session);
     const taskKey = `claude-code:${input.session_id ?? "session"}`;
+    // The conversation's key in the window records (as ingest.ts writes it).
+    const windowKey = windowKeyOf(input, transcript);
+    const lang = langOf;
+    const startReason = startReasonOf(session);
     const task = (): TaskHint | undefined => {
       const cur = readSession();
       return cur.taskTitle ? { key: taskKey, title: cur.taskTitle, goal: cur.taskGoal } : undefined;
@@ -221,14 +287,21 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
           }
         });
         // Conversation overlay: catch up on the transcript, then record this prompt.
-        ingestClaudeTranscript(s, input.transcript_path, input.session_id);
+        ingestClaudeTranscript(s, transcript, input.session_id, { startReason });
         s.logMessages(
-          { externalId: `claude-code:${input.session_id ?? input.transcript_path ?? "session"}`, source: "transcript", provider: "anthropic", agent: "claude-code" },
+          { externalId: `claude-code:${input.session_id ?? transcript ?? "session"}`, source: "transcript", provider: "anthropic", agent: "claude-code" },
           [{ role: "user", text: prompt, agent: "claude-code" }],
           "append",
         );
-        if (s.config().promptReminder !== false) {
-          return JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: promptReminder(s) } });
+        // E3a-2: the window's state after the last turn. A cut the last turn's end missed (interrupted) is made now.
+        const { advice: adv, node: savedNode } = cutIfDue(s, windowKey, "turn-end", { task: task(), source: "hook" });
+        const saved = savedNode?.id ?? null;
+        const person = adv && saved && tellsPerson(adv) ? personNotice(adv, saved, lang()) : undefined;
+        const notice = adv ? agentNotice(adv, saved) : "";
+        const reminder = s.config().promptReminder !== false ? promptReminder(s) : "";
+        const additionalContext = [reminder, notice].filter(Boolean).join(" ");
+        if (additionalContext || person) {
+          return JSON.stringify({ ...(person ? { systemMessage: person } : {}), hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext } });
         }
         break;
       }
@@ -275,6 +348,16 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
             meta: { plan: plan.slice(0, 6000) },
           });
         }
+        // E3a-2: from red on, save at once — also in the middle of a turn (Kev n77). The newest answer is in the
+        // transcript before the tool ran; reading it here is incremental.
+        ingestClaudeTranscript(s, transcript, input.session_id, { startReason });
+        const { advice: adv, node } = cutIfDue(s, windowKey, "now", { task: task(), source: "hook" });
+        if (adv && node) {
+          return JSON.stringify({
+            systemMessage: personNotice(adv, node.id, lang()),
+            hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: agentNotice(adv, node.id) },
+          });
+        }
         break;
       }
 
@@ -303,21 +386,44 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
       case "stop":
       case "Stop": {
         // Record the turn's conversation first, so it links to the state it led away from.
-        ingestClaudeTranscript(s, input.transcript_path, input.session_id);
+        ingestClaudeTranscript(s, transcript, input.session_id, { startReason });
         const irreversible = session.pendingIrreversible ?? [];
-        const summary = lastAssistantText(input.transcript_path);
+        const summary = lastAssistantText(transcript);
         // Decisions written as ```scenaria blocks (agents without MCP tools).
         if (summary?.includes("```scenaria")) applyBlocks(s, summary, { agent: AGENT, source: "hook" }, task());
-        const transcriptTokens = input.transcript_path && existsSync(input.transcript_path) ? Math.round(statSync(input.transcript_path).size / 4) : undefined;
-        const node = s.checkpoint({
-          title: session.pendingPrompt ? excerpt(session.pendingPrompt, 110) : "End of turn",
-          outputs: summary ? summaryToBullets(summary) : undefined,
-          irreversible,
-          onlyIfChanged: irreversible.length === 0,
-          agent: AGENT,
-          source: "hook",
-          meta: transcriptTokens ? { transcriptTokens } : undefined,
-          task: task(),
+        const transcriptTokens = transcript && existsSync(transcript) ? Math.round(statSync(transcript).size / 4) : undefined;
+        // E3a-2: from orange on, this turn's end is saved even without a file change (a clean cut before the change).
+        // Check and write under one lock (parallel hooks cut once). A cut that saved nothing new is Scenaria's own.
+        const { advice: cutAdv, node, cut: didCut } = cutOnce(s, windowKey, "turn-end", (adv, due) => {
+          const cut = due ? adv : null;
+          const quiet = Boolean(cut) && irreversible.length === 0 && Boolean(s.repo) && !s.isDirty(s.head());
+          return s.checkpoint({
+            title: quiet ? "Saved before the window change" : session.pendingPrompt ? excerpt(session.pendingPrompt, 110) : "End of turn",
+            // A quiet cut is Scenaria's record: the agent's own words go to meta, labelled as the agent's (review 2, N2).
+            outputs: quiet ? [cutBullet(cut!)] : cut ? [...(summary ? summaryToBullets(summary, 5) : []), cutBullet(cut)] : summary ? summaryToBullets(summary) : undefined,
+            irreversible,
+            onlyIfChanged: irreversible.length === 0 && !cut,
+            ...(cut ? { tags: ["context-cut"] } : {}),
+            agent: quiet ? "scenaria" : AGENT,
+            source: "hook",
+            // The chain of window records at this turn's end (E3a-1): rewriting older window lines shows later.
+            meta: (() => {
+              let w: ReturnType<typeof windowsHead> = null;
+              try {
+                w = windowsHead(s);
+              } catch {
+                w = null; // an unreadable record must never cost the turn its checkpoint (E3a-1 review M1)
+              }
+              const m = {
+                ...(transcriptTokens ? { transcriptTokens } : {}),
+                ...(w ? { windows: w } : {}),
+                ...(cut ? { contextCut: cutMeta(cut, "turn-end") } : {}),
+                ...(quiet && summary ? { agentSummary: { agent: AGENT, outputs: summaryToBullets(summary) } } : {}),
+              };
+              return Object.keys(m).length ? m : undefined;
+            })(),
+            task: task(),
+          });
         });
         if (node || irreversible.length === 0) {
           updSession((cur) => {
@@ -325,14 +431,20 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
             cur.pendingPrompt = undefined;
           });
         }
+        if (didCut && node && cutAdv && tellsPerson(cutAdv)) return JSON.stringify({ systemMessage: personNotice(cutAdv, node.id, lang()) });
         break;
       }
 
       case "session-start":
       case "SessionStart": {
+        if (typeof input.source === "string" && input.source)
+          updSession((cur) => {
+            cur.startSource = String(input.source).slice(0, 20);
+          });
         if (!s.config().injectContextOnSessionStart || !s.head()) break;
         const c = s.context();
-        const additionalContext = `${c.markdown}\n\n(Scenaria is active: ONE project tree. New work → scenaria_start_mission (task); real choices → scenaria_decide with context, rationale, servesGoal; steps → scenaria_checkpoint; older details → scenaria_recall.)`;
+        const handover = sessionStartLine(s, AGENT);
+        const additionalContext = `${c.markdown}${handover ? `\n\n${handover}` : ""}\n\n(Scenaria is active: ONE project tree. New work → scenaria_start_mission (task); real choices → scenaria_decide with context, rationale, servesGoal; steps → scenaria_checkpoint; older details → scenaria_recall.)`;
         return JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext } });
       }
     }

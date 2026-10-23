@@ -117,6 +117,8 @@ const READ_SAFE_TOOLS = [
   "scenaria_status",
   "scenaria_recall",
   "scenaria_health",
+  "scenaria_progress",
+  "scenaria_window",
   "scenaria_workspace",
   "scenaria_expect",
   "scenaria_canon",
@@ -181,7 +183,8 @@ function setupClaudeTarget(root: string, r: SetupResult, claudeMd: boolean) {
   };
   const cmd = (event: string, timeout = 30) => ({ type: "command", command: hookCommand(event), timeout });
   add("UserPromptSubmit", { hooks: [cmd("user-prompt", 20)] });
-  add("PostToolUse", { matcher: "AskUserQuestion|ExitPlanMode", hooks: [cmd("post-tool")] });
+  // Every tool (E3a-2): questions and plans become decisions, and from red the context window is saved at once.
+  add("PostToolUse", { matcher: "*", hooks: [cmd("post-tool")] });
   add("PreToolUse", { matcher: "Bash", hooks: [cmd("pre-tool")] });
   add("Stop", { hooks: [cmd("stop", 60)] });
   add("SessionStart", { hooks: [cmd("session-start", 20)] });
@@ -189,7 +192,7 @@ function setupClaudeTarget(root: string, r: SetupResult, claudeMd: boolean) {
   settings.permissions.allow = Array.from(new Set([...(settings.permissions.allow ?? []), ...READ_SAFE_TOOLS]));
   settings.enabledMcpjsonServers = Array.from(new Set([...(settings.enabledMcpjsonServers ?? []), "scenaria"]));
   writeJson(settingsFile, settings);
-  r.changes.push(".claude/settings.json → hooks (prompt, questions/plan, risky Bash, turn end, session start) + tool permissions");
+  r.changes.push(".claude/settings.json → hooks (prompt, after each tool: questions/plan and the context window, risky Bash, turn end, session start) + tool permissions");
 
   const agentFile = join(root, ".claude", "agents", "scenaria-verifier.md");
   if (!existsSync(agentFile)) {
@@ -457,7 +460,8 @@ export function setupGlobal(targets: Target[], home = homedir()): SetupResult {
       };
       const cmd = (event: string, timeout = 30) => ({ type: "command", command: hookCommand(event), timeout });
       add("UserPromptSubmit", { hooks: [cmd("user-prompt", 20)] });
-      add("PostToolUse", { matcher: "AskUserQuestion|ExitPlanMode", hooks: [cmd("post-tool")] });
+      // Every tool (E3a-2): questions and plans become decisions, and from red the context window is saved at once.
+      add("PostToolUse", { matcher: "*", hooks: [cmd("post-tool")] });
       add("PreToolUse", { matcher: "Bash", hooks: [cmd("pre-tool")] });
       add("Stop", { hooks: [cmd("stop", 60)] });
       add("SessionStart", { hooks: [cmd("session-start", 20)] });

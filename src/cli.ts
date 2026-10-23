@@ -13,6 +13,9 @@ import { SECTIONS, checkExpectations, renderExpectations, renderWorkspace, resol
 import { publicKeyId, renderCanon } from "./core/canon.js";
 import { addAuditor, auditorKeygen, buildAuditorRequest, listAuditors, normalizePub, removeAuditor, signAuditorRequest } from "./core/auditors.js";
 import { dossier, analysisPrompt, projectMetrics, renderMetrics, runAnalysis } from "./core/analysis.js";
+import { progressForAgents, projectProgress, renderProgress } from "./core/progress.js";
+import { renderWindows, windowsForAgents, windowStatus } from "./core/window.js";
+import { prepareHandover } from "./core/windowact.js";
 import type { ScenariaNode } from "./core/types.js";
 import { isUnconfirmedPass, verdictOrigin } from "./core/verdict.js";
 import { buildAuditFile, parsePeriod } from "./core/auditfile.js";
@@ -66,7 +69,12 @@ Context integrity & handoffs
 Canon events (fixed points; agents only propose — you approve)
   canon [list]                          Active fixed points and open proposals
   canon add --past|--future "<text>" [--check "<cmd>"] [--due YYYY-MM-DD] [--soft]
-  canon approve|reject|retire <id> [--why ..]   (interactive terminal or dashboard only)
+            [--task n12 --weight 1-100 --artifact <path>]   (future + task = completion criterion)
+  canon approve|reject|retire <id> [--why ..] [--weight 1-100]   (interactive terminal or dashboard only)
+  canon reweigh <id> --weight 1-100 [--why ..]   (new weight of a completion criterion)
+  progress [<task>]          progress per task and for the project, with how it is computed
+  window [<w>]               how full the agent's context window is (measured, not estimated)
+  handover [<w>]             the prepared handover to a new context window (read-only)
   canon suggest [--llm <provider> --model <m>]  The archivist's candidates (with --llm: stored as proposals)
   canon check [id …]                    Run the check commands of approved events (interactive only)
   canon gate [node …] [--show]          Run the checks on every line's snapshot ("surviving strings"; interactive)
@@ -276,6 +284,9 @@ const opts = {
   check: { type: "string" },
   due: { type: "string" },
   soft: { type: "boolean" },
+  task: { type: "string" },
+  weight: { type: "string" },
+  artifact: { type: "string" },
 } as const;
 
 const C = process.stdout.isTTY
@@ -974,6 +985,25 @@ async function main() {
       if (f.ledgerBrokenAt) lines.push(`${C.red}Ledger broken at line ${f.ledgerBrokenAt}${C.reset}`);
       return out(lines.join("\n"), { path, ledgerBrokenAt: f.ledgerBrokenAt });
     }
+    case "progress": {
+      const s = Scenaria.open(v.root);
+      const pr = projectProgress(s);
+      if (p[0] && !pr.tasks.some((t) => t.task === p[0]) && !pr.without.some((w) => w.task === p[0])) throw new Error(`${p[0]} is not a task`);
+      const data = progressForAgents(pr);
+      return out(renderProgress(pr, v.lang === "de" ? "de" : "en", p[0]), p[0] ? { ...data, tasks: data.tasks.filter((t) => t.task === p[0]) } : data);
+    }
+    case "window": {
+      const s = Scenaria.open(v.root);
+      const ws = windowStatus(s);
+      if (p[0] && !ws.windows.some((w) => w.id === p[0])) throw new Error(`${p[0]} is not a window`);
+      const data = windowsForAgents(ws);
+      return out(renderWindows(ws, v.lang === "de" ? "de" : "en", p[0]), p[0] ? { ...data, windows: data.windows.filter((w) => w.id === p[0]) } : data);
+    }
+    case "handover": {
+      const s = Scenaria.open(v.root);
+      const h = prepareHandover(s, { window: p[0] });
+      return out(h.markdown, h);
+    }
     case "integrity": {
       const s = Scenaria.open(v.root);
       if (v.reseal) {
@@ -1074,17 +1104,21 @@ async function main() {
       if (sub === "add") {
         const kind = v.future !== undefined ? "future" : "past";
         const text = v.future ?? v.past ?? p.slice(1).join(" ");
-        await interactive("add", `Add binding ${kind} canon event: "${text}"${v.check ? `\n  check command (runs when you start checks): ${v.check}` : ""}`);
-        const ev = s.addCanonAsUser({ kind, text, check: v.check, due: v.due, hard: !v.soft }, who);
+        const weight = v.weight !== undefined ? Number(v.weight) : undefined;
+        await interactive("add", `Add binding ${kind} canon event: "${text}"${v.check ? `\n  check command (runs when you start checks): ${v.check}` : ""}${v.task ? `\n  completion criterion of ${v.task}${weight !== undefined ? `, weight ${weight}` : ""}${v.artifact ? `, file ${v.artifact}` : ""}` : ""}`);
+        const ev = s.addCanonAsUser({ kind, text, check: v.check, due: v.due, hard: !v.soft, task: v.task, weight, artifact: v.artifact }, who);
         return out(`${ev.id} (${ev.kind}, ${ev.hard ? "hard" : "soft"}) active: ${ev.text}`, ev);
       }
-      if (sub === "approve" || sub === "reject" || sub === "retire") {
-        if (!p[1]) throw new Error(`Usage: scenaria canon ${sub} <id>`);
+      if (sub === "approve" || sub === "reject" || sub === "retire" || sub === "reweigh") {
+        if (!p[1]) throw new Error(`Usage: scenaria canon ${sub} <id>${sub === "reweigh" ? " --weight 1-100" : ""}`);
         const cur = s.canon().find((k) => k.id === p[1]);
         if (!cur) throw new Error(`Unknown canon event "${p[1]}"`);
-        await interactive(p[1], `${sub} ${cur.id} (${cur.kind}): "${cur.text}"${cur.suggestedCheck ? `\n  suggested check (NOT adopted from the CLI; set it in the dashboard if wanted): ${cur.suggestedCheck}` : ""}`);
-        const ev = s.decideCanon(p[1], sub, { ...who, reason: v.why });
-        return out(`${ev.id} is now ${ev.status}: ${ev.text}`, ev);
+        const weight = v.weight !== undefined ? Number(v.weight) : undefined;
+        const crit = cur.task ? `\n  completion criterion of ${cur.task}, weight ${cur.weight ?? "–"}${weight !== undefined ? ` → ${weight}` : ""}${cur.artifact ? `, file ${cur.artifact}` : ""}` : "";
+        await interactive(p[1], `${sub} ${cur.id} (${cur.kind}): "${cur.text}"${crit}${cur.suggestedCheck ? `\n  suggested check (NOT adopted from the CLI; set it in the dashboard if wanted): ${cur.suggestedCheck}` : ""}`);
+        // Approved exactly as shown above (a change while the person reads is refused).
+        const ev = s.decideCanon(p[1], sub, { ...who, reason: v.why, weight, expect: { text: cur.text, task: cur.task, weight: cur.weight, artifact: cur.artifact } });
+        return out(`${ev.id} is now ${ev.status}${sub === "reweigh" ? `, weight ${ev.weight}` : ""}: ${ev.text}`, ev);
       }
       if (sub === "check") {
         const cmds = s.canon().filter((k) => k.status === "active" && k.check && (!p.slice(1).length || p.slice(1).includes(k.id)));

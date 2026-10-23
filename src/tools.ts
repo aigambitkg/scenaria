@@ -12,6 +12,9 @@ import { Scenaria } from "./core/engine.js";
 import { optionLabel } from "./core/context.js";
 import { recall, renderRecall } from "./core/recall.js";
 import { projectMetrics, renderMetrics } from "./core/analysis.js";
+import { progressForAgents, projectProgress, renderProgress } from "./core/progress.js";
+import { renderWindows, windowsForAgents, windowStatus } from "./core/window.js";
+import { prepareHandover } from "./core/windowact.js";
 import { SECTIONS, checkExpectations, referenceCapsule, renderExpectations, renderWorkspace, resolveRefs, stringPayload, workspace } from "./core/workspace.js";
 import { renderCanon } from "./core/canon.js";
 import { baselineReport, listReports } from "./core/expert.js";
@@ -58,6 +61,7 @@ Use it like a quicksave, on your own:
 - Taking over work from another agent or session: scenaria_workspace {reader: "<your name>"} gives only what you do not know yet; scenaria_expect with your assumptions returns only the deviations.
 - Give facts a confidence when you are not sure ({text, confidence}); low-confidence items are flagged for checking.
 - Canon events (k1, …) are the project's fixed points. Check every decision against them (respectsCanon); breaking one needs breaksCanon + a rationale. New fixed point noticed → scenaria_canon {action: "propose"} — only the user can approve it.
+- Progress: a task's completion criteria are future fixed points with that task and a weight (propose them with task, weight, artifact). When a checkpoint implements one, list it in fulfills. scenaria_progress shows the percent and what is missing — it is computed from evidence, you cannot claim it.
 Keep entries short; never record facts you did not verify.`;
 
 export function brief(n: ScenariaNode): string {
@@ -192,8 +196,13 @@ export const TOOLS: ToolDef[] = [
       onlyIfChanged: z.boolean().optional().describe("Skip if no file changed since HEAD"),
       taskDone: z.boolean().optional().describe("The current task is finished"),
       summary: str.optional().describe("With taskDone: 1–2 sentences on the task's result (what later sessions will read)"),
+      fulfills: list.describe("Completion criteria (approved future fixed points, k3) this step implements — a claim; progress counts it only with evidence (changed files, checks, the person's acceptance)"),
     },
     run(s, a, c) {
+      if (a.fulfills?.length) {
+        const known = new Set(s.canon().filter((k) => k.status === "active" && k.kind === "future").map((k) => k.id));
+        for (const id of a.fulfills) if (!known.has(id)) throw new Error(`Unknown or not approved completion criterion "${id}". Approved future fixed points: ${[...known].join(", ") || "none"}`);
+      }
       const n = s.checkpoint({ ...a, ...actor(c) });
       const done = a.taskDone ? " Task marked done." : "";
       return { text: n ? `Checkpoint saved.${done}\n${brief(n)}` : `No file changes since HEAD — nothing saved.${done}`, data: n };
@@ -370,7 +379,7 @@ export const TOOLS: ToolDef[] = [
     name: "scenaria_canon",
     title: "Canon events (fixed points)",
     description:
-      "The project's fixed points: past constraints every decision must respect and future milestones the work must survive. list = active + proposed; suggest = the archivist's candidates from the history (nothing stored); propose = suggest a new fixed point — it stays a proposal until the USER approves it in the dashboard.",
+      "The project's fixed points: past constraints every decision must respect and future milestones the work must survive. list = active + proposed; suggest = the archivist's candidates from the history (nothing stored); propose = suggest a new fixed point — it stays a proposal until the USER approves it in the dashboard. A future fixed point with a task is a completion criterion of that task: give it a weight (1–100, how much of the task it is) and, if it produces a file, the artifact; progress (scenaria_progress) is computed from evidence about these criteria.",
     input: {
       action: z.enum(["list", "suggest", "propose"]),
       kind: z.enum(["past", "future"]).optional(),
@@ -378,6 +387,9 @@ export const TOOLS: ToolDef[] = [
       due: str.optional().describe("future: YYYY-MM-DD"),
       check: str.optional().describe("Shell command that proves it (exit 0); runs only when the user starts it"),
       evidence: list.describe("Node references, e.g. [\"n12\"]"),
+      task: str.optional().describe("future: the task (goal node, e.g. n12) this criterion completes"),
+      weight: z.number().int().min(1).max(100).optional().describe("future with task: how much of the task this criterion is (1–100); the person may change it on approval"),
+      artifact: str.optional().describe("future with task: the file it produces, a path or simple pattern inside the project (e.g. docs/report.md, test/**/*.test.mjs)"),
     },
     run(s, a, c) {
       if (a.action === "list") {
@@ -391,7 +403,7 @@ export const TOOLS: ToolDef[] = [
         return { text: sug.length ? sug.map((x) => `- (${x.kind}) ${x.text} — ${x.why}`).join("\n") : "No candidates found in the history.", data: sug };
       }
       if (!a.kind || !a.text) throw new Error("propose needs kind and text");
-      const ev = s.proposeCanon({ kind: a.kind, text: a.text, due: a.due, check: a.check, evidence: a.evidence }, actor(c));
+      const ev = s.proposeCanon({ kind: a.kind, text: a.text, due: a.due, check: a.check, evidence: a.evidence, task: a.task, weight: a.weight, artifact: a.artifact }, actor(c));
       return { text: `${ev.id} ${ev.status === "proposed" ? "proposed — the user approves it in the dashboard (Kanon)" : `already exists (${ev.status})`}: ${ev.text}`, data: ev };
     },
   },
@@ -446,6 +458,47 @@ export const TOOLS: ToolDef[] = [
       const m = projectMetrics(s);
       // The counts' id lists stay out of an agent's context; the health derivation is short and goes along.
       return { text: renderMetrics(m), data: { ...m, decisions: undefined, why: { health: m.why.health } } };
+    },
+  },
+  {
+    name: "scenaria_progress",
+    title: "Progress",
+    description:
+      "How far along the work is, in percent — per task and for the project — computed only from evidence about the task's completion criteria (approved future fixed points with a weight): files, claims (checkpoint fulfills), check results, the person's acceptance. Gates cap the value; 90 and 100 % need the person or an audit agent. Shows what is missing for the next gate. Read-only; you cannot set progress.",
+    input: { task: str.optional().describe("A task id (e.g. n12); default: all tasks and the project") },
+    annotations: { readOnlyHint: true },
+    run(s, a) {
+      const pr = projectProgress(s);
+      if (a.task && !pr.tasks.some((t) => t.task === a.task) && !pr.without.some((w) => w.task === a.task)) throw new Error(`${a.task} is not a task`);
+      const data = progressForAgents(pr);
+      return { text: renderProgress(pr, "en", a.task), data: a.task ? { ...data, tasks: data.tasks.filter((t) => t.task === a.task) } : data };
+    },
+  },
+  {
+    name: "scenaria_window",
+    title: "Context window",
+    description:
+      "How full the context window is, in percent of C_eff = min(C_max, A_model) — measured from the provider's token counts (Claude Code transcripts, the LLM proxy), never estimated. Shows the zone (green / yellow / orange / red / emergency), the next line and how each number is computed. Without token counts (MCP alone) it says so and shows no number. Read-only: the fill comes only from the provider's counts; records changed outside Scenaria show and then count for nothing.",
+    input: { window: str.optional().describe("A window id (e.g. w3); default: the newest windows") },
+    annotations: { readOnlyHint: true },
+    run(s, a) {
+      const ws = windowStatus(s);
+      if (a.window && !ws.windows.some((w) => w.id === a.window)) throw new Error(`${a.window} is not a window`);
+      const data = windowsForAgents(ws);
+      return { text: renderWindows(ws, "en", a.window), data: a.window ? { ...data, windows: data.windows.filter((w) => w.id === a.window) } : data };
+    },
+  },
+  {
+    name: "scenaria_handover",
+    title: "Handover to a new window",
+    description:
+      "The prepared handover for a new context window: whose window it is and how full (measured), the last step Scenaria saved before the window change, the task's progress and the resume capsule of the current state — the new window continues from the current state. Read-only — computed from the records when asked. Use it when the window is yellow or fuller, then ask the person to open a new window.",
+    input: { window: str.optional().describe("A window id (e.g. w3); default: your own newest window") },
+    annotations: { readOnlyHint: true },
+    run(s, a, c) {
+      // Without a window id: the asking agent's newest window (another session may be fuller or emptier).
+      const h = prepareHandover(s, { window: a.window, agent: c.agent });
+      return { text: `${h.markdown}\n\n(≈ ${h.tokens} tokens)`, data: h };
     },
   },
   {

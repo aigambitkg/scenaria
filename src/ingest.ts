@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import type { Scenaria } from "./core/engine.js";
 import type { MessageInput } from "./core/conversations.js";
+import { claudeCodeWindowEvents, recordWindowEvents, type StartReason } from "./core/window.js";
 
 const TOOL_TEXT_MAX = 4000;
 
@@ -57,7 +58,7 @@ export function claudeCodeEntryToMessages(e: any): MessageInput[] {
  * Read new lines of a Claude Code transcript since the last call (byte offset kept in
  * the hook session scratch) and log them. Returns the number of new messages.
  */
-export function ingestClaudeTranscript(s: Scenaria, transcriptPath: string | undefined, sessionId: string | undefined): number {
+export function ingestClaudeTranscript(s: Scenaria, transcriptPath: string | undefined, sessionId: string | undefined, opts: { startReason?: StartReason } = {}): number {
   if (!transcriptPath || !existsSync(transcriptPath)) return 0;
   // Offset read, parsing, logging and offset write happen under one lock: parallel hooks must not double-ingest.
   return s.store.withLock(() => {
@@ -78,13 +79,22 @@ export function ingestClaudeTranscript(s: Scenaria, transcriptPath: string | und
     const lastNl = buf.lastIndexOf(10);
     if (lastNl < 0) return 0; // no complete line yet
     const msgs: MessageInput[] = [];
+    const entries: any[] = [];
     for (const line of buf.subarray(0, lastNl + 1).toString("utf8").split("\n")) {
       if (!line.trim()) continue;
       try {
-        msgs.push(...claudeCodeEntryToMessages(JSON.parse(line)));
+        const e = JSON.parse(line);
+        entries.push(e);
+        msgs.push(...claudeCodeEntryToMessages(e));
       } catch {
         /* skip malformed line */
       }
+    }
+    // Batch E3a-1: how full the context window is (provider usage of each answer, compaction boundaries).
+    try {
+      recordWindowEvents(s, { source: "transcript", key: `claude-code:${sessionId ?? transcriptPath}`, agent: "claude-code", startReason: opts.startReason }, claudeCodeWindowEvents(entries));
+    } catch {
+      /* measuring must never break recording the conversation */
     }
     const { added } = s.logMessagesUnlocked(
       { externalId: `claude-code:${sessionId ?? transcriptPath}`, source: "transcript", provider: "anthropic", agent: "claude-code" },

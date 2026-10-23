@@ -183,7 +183,7 @@ export class Store {
    * The lock file holds "pid:token"; it is only treated as stale when its
    * process is gone (or it is very old), and only its owner removes it.
    */
-  withLock<T>(fn: () => T): T {
+  withLock<T>(fn: () => T, opts: { waitMs?: number } = {}): T {
     // Re-entrant within this Store instance (a locked operation may call another one that locks).
     if (this.lockDepth > 0) {
       this.lockDepth++;
@@ -196,7 +196,8 @@ export class Store {
     const lock = this.path("lock");
     mkdirSync(this.dir, { recursive: true });
     const token = `${process.pid}:${randomUUID()}`;
-    const deadline = Date.now() + 20_000;
+    // A caller that must not hold anything up (a hook after every tool) waits less and gives up instead.
+    const deadline = Date.now() + Math.max(0, Math.min(20_000, opts.waitMs ?? 20_000));
     for (;;) {
       try {
         const fd = openSync(lock, "wx");

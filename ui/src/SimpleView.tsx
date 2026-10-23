@@ -8,7 +8,8 @@
  */
 import { useContext, useEffect, useMemo, useState } from "react";
 import { ReadOnlyContext } from "./Approval";
-import { api, type ConversationMessage, type Fidelity, type ScenariaNode } from "./api";
+import { api, type ConversationMessage, type Fidelity, type ProjectProgress, type ScenariaNode } from "./api";
+import { ProgressCard } from "./Progress";
 import type { Dict, Lang } from "./i18n";
 import { verdictView } from "../../src/core/verdict";
 import { Modal } from "./Dialogs";
@@ -124,6 +125,8 @@ export function SimpleView(props: {
   fidelity: Fidelity | null;
   /** The integrity check failed to load: nothing counts as checked, and the person is warned. */
   fidelityError?: boolean;
+  /** E2: progress (computed on the server from evidence); the card shows the current task only. */
+  progress?: ProjectProgress | null;
   onEditGoal: () => void;
   onRewound: () => Promise<void>;
   onDiff: (from: string, to: string) => void;
@@ -192,6 +195,7 @@ export function SimpleView(props: {
     return line.filter((n) => !keep.has(n.id)).flatMap((n) => n.irreversible ?? []);
   }, [confirm, nodes, line]);
   const lastStep = line.filter(isStep).at(-1) ?? null;
+  const currentTask = [...line].reverse().find((n) => n.type === "goal")?.id ?? null;
 
   return (
     <div className="simple">
@@ -221,6 +225,8 @@ export function SimpleView(props: {
           </p>
         )}
       </section>
+
+      {lastStep && <ProgressCard p={props.progress ?? null} task={currentTask} t={t} lang={lang} />}
 
       {!lastStep ? (
         <section className="sv-empty">

@@ -314,7 +314,8 @@ test("ready-made prompts for MCP agents, shell agents and plain chats (DE/EN)", 
 
 test("tool registry: 17 tools incl. recall, health, workspace, expect; start_mission never creates a second root", () => {
   const names = TOOLS.map((t) => t.name);
-  assert.equal(names.length, 22);
+  assert.equal(names.length, 25);
+  assert.ok(names.includes("scenaria_progress") && names.includes("scenaria_window") && names.includes("scenaria_handover"));
   assert.ok(names.includes("scenaria_auditor_request") && names.includes("scenaria_auditor_submit"));
   assert.ok(names.includes("scenaria_recall") && names.includes("scenaria_health"));
   const p = tempProject();

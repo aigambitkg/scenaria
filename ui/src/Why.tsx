@@ -17,8 +17,15 @@ const fmtNum = (v: number, lang: "de" | "en") => {
   return lang === "de" ? s.replace(".", ",") : s;
 };
 
-/** Internal finding codes ("tampered: n3") in plain words; unknown codes stay as they are. */
+/** Internal finding codes ("tampered: n3") and progress inputs (E2b review M6) in plain words; unknown items stay as they are. */
 function item(x: string, t: Dict): string {
+  const lang = t.langCode;
+  const crit = /^(k\d+) w=(\d+) s=(0|0\.25|0\.5|0\.75|1) (\S+)( \(no weight\))?$/.exec(x);
+  if (crit) return t.pgWhyCrit(crit[1], crit[5] ? `${crit[2]} (${t.pgNoWeight})` : crit[2], `${fmtNum(Number(crit[3]), lang)} = ${t.pgLevels[crit[3]] ?? crit[3]}`, t.pgHow[crit[4]] ?? crit[4]);
+  const gate = /^(\d{1,3}) (met|open)$/.exec(x);
+  if (gate) return `${gate[1]} %: ${gate[2] === "met" ? t.pgGateMet : t.pgGateOpen}`;
+  const task = /^(n\d+) p=(\d{1,3})$/.exec(x);
+  if (task) return `${task[1]}: ${task[2]} %`;
   const m = /^([a-z_]+): (.*)$/.exec(x);
   if (!m || !t.whyCode[m[1]]) return x;
   return `${t.whyCode[m[1]]}: ${m[2]}`;
@@ -34,7 +41,8 @@ function Value({ v, t, lang }: { v: InputValue; t: Dict; lang: "de" | "en" }) {
     // Every item, so the count can be recounted (review E1b K6); long lists scroll.
     return (
       <span className="why-items">
-        <b>{v.length}</b>: {v.map((x) => item(String(x), t)).join(", ")}
+        {/* "; " between items: an item can hold commas of its own (a criterion's weight, level and evidence). */}
+        <b>{v.length}</b>: {v.map((x) => item(String(x), t)).join("; ")}
       </span>
     );
   }

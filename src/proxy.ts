@@ -8,12 +8,14 @@
  * the conversation (deduplicated, linked to the current decision-tree node) and, after
  * each answer, checkpoints the project if files changed. API keys are never stored.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Scenaria } from "./core/engine.js";
 import { DEFAULT_PROXY } from "./core/engine.js";
 import type { MessageInput } from "./core/conversations.js";
 import { applyBlocks } from "./core/blocks.js";
+import { recordWindowEvents, windowKeyFor } from "./core/window.js";
+import { contextAdvice, cutIfDue } from "./core/windowact.js";
 
 type ApiKind = "openai-chat" | "openai-responses" | "anthropic" | "other";
 
@@ -165,6 +167,81 @@ export function streamMessage(kind: ApiKind, sse: string): MessageInput | null {
   return text || toolCalls.length ? { role: "assistant", text, toolCalls: toolCalls.length ? toolCalls : undefined, model } : null;
 }
 
+/**
+ * Batch E3a-1: the tokens of the request as the provider counted them (what is in the context window), from a JSON
+ * answer or a stream. Anthropic: input + cache write + cache read. OpenAI chat (and Ollama, Mistral … in that format):
+ * `prompt_tokens` (streams only carry it with `stream_options.include_usage`). OpenAI responses: `input_tokens`.
+ * Null when the answer carries no usage.
+ */
+export function usageTokens(kind: ApiKind, payload: string, isStream: boolean): number | null {
+  const n = (x: unknown) => (typeof x === "number" && Number.isFinite(x) && x >= 0 ? x : null);
+  const anth = (u: any) => {
+    if (!u || typeof u !== "object" || n(u.input_tokens) === null) return null;
+    return (n(u.input_tokens) ?? 0) + (n(u.cache_creation_input_tokens) ?? 0) + (n(u.cache_read_input_tokens) ?? 0);
+  };
+  const fromJson = (j: any): number | null => {
+    if (!j || typeof j !== "object") return null;
+    if (kind === "anthropic") return anth(j.usage);
+    if (kind === "openai-chat") return n(j.usage?.prompt_tokens);
+    if (kind === "openai-responses") return n(j.usage?.input_tokens);
+    return null;
+  };
+  if (!isStream) {
+    try {
+      return fromJson(JSON.parse(payload));
+    } catch {
+      return null;
+    }
+  }
+  let found: number | null = null;
+  for (const line of payload.split("\n")) {
+    if (!line.startsWith("data:")) continue;
+    const data = line.slice(5).trim();
+    if (!data || data === "[DONE]") continue;
+    let ev: any;
+    try {
+      ev = JSON.parse(data);
+    } catch {
+      continue;
+    }
+    if (kind === "anthropic") {
+      // message_start carries the input side; a later message_delta may repeat it (then it wins).
+      const v = ev.type === "message_start" ? anth(ev.message?.usage) : ev.type === "message_delta" ? anth(ev.usage) : null;
+      if (v) found = v;
+    } else if (kind === "openai-chat") {
+      const v = n(ev.usage?.prompt_tokens);
+      if (v) found = v;
+    } else if (kind === "openai-responses" && ev.type === "response.completed") {
+      const v = n(ev.response?.usage?.input_tokens);
+      if (v) found = v;
+    }
+  }
+  return found;
+}
+
+/** The id of an OpenAI Responses answer: a later request names it in `previous_response_id` (same conversation). */
+export function responseId(kind: ApiKind, payload: string, isStream: boolean): string | null {
+  if (kind !== "openai-responses") return null;
+  const ok = (x: unknown) => (typeof x === "string" && /^[\w-]{1,100}$/.test(x) ? x : null);
+  if (!isStream) {
+    try {
+      return ok(JSON.parse(payload)?.id);
+    } catch {
+      return null;
+    }
+  }
+  for (const line of payload.split("\n")) {
+    if (!line.startsWith("data:")) continue;
+    try {
+      const ev = JSON.parse(line.slice(5).trim());
+      if (ev?.type === "response.completed") return ok(ev.response?.id);
+    } catch {
+      /* not an event */
+    }
+  }
+  return null;
+}
+
 function header(req: IncomingMessage, name: string): string | undefined {
   const v = req.headers[name];
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
@@ -264,8 +341,23 @@ export async function handleProxy(
 
   const outHeaders: Record<string, string> = {};
   upstream.headers.forEach((v, k) => {
-    if (!BLOCKED_RESPONSE.has(k) && !k.startsWith("access-control-")) outHeaders[k] = v;
+    // x-scenaria-*: only Scenaria sets these towards the client (an upstream cannot pass off a zone).
+    if (!BLOCKED_RESPONSE.has(k) && !k.startsWith("access-control-") && !k.startsWith("x-scenaria-")) outHeaders[k] = v;
   });
+  // E3a-2: the conversation's window as measured after its previous answer (the headers go out before this answer
+  // is complete). Only from the yellow zone on and only for a checked measurement; the answer's body is never touched.
+  // The window's key: a Responses call that names an earlier answer (previous_response_id) belongs to that
+  // conversation, exactly as recordWindowEvents files it (review M2).
+  const prevResponse = typeof body?.previous_response_id === "string" ? body.previous_response_id.slice(0, 100) : "";
+  const windowKey = sessionInfo ? windowKeyFor(s, { source: "proxy", key: sessionInfo.externalId, agent, ...(prevResponse ? { continues: `r:${prevResponse}` } : {}) }) : "";
+  if (sessionInfo && kind !== "other" && !override) {
+    const adv = contextAdvice(s, windowKey);
+    if (adv) {
+      outHeaders["x-scenaria-context-zone"] = adv.zone;
+      outHeaders["x-scenaria-context-fill"] = String(adv.fill);
+      outHeaders["x-scenaria-context-window"] = adv.window.id;
+    }
+  }
   res.writeHead(upstream.status, outHeaders);
 
   const decoder = new TextDecoder();
@@ -315,6 +407,22 @@ export async function handleProxy(
         answer = null;
       }
     }
+    // Batch E3a-1: how full this conversation's context window is, as the provider counted it.
+    try {
+      const tokens = usageTokens(kind, captured, isStream);
+      // Only from a configured provider: an upstream named by the client itself could report any number (review 2, N4).
+      if (tokens && !override) {
+        const at = new Date().toISOString();
+        const rid = responseId(kind, captured, isStream);
+        recordWindowEvents(s, { source: "proxy", key: sessionInfo.externalId, agent, ...(prevResponse ? { continues: `r:${prevResponse}` } : {}) }, [
+          { kind: "sample", at, tokens, model: answer?.model ?? model, ref: rid ? `r:${rid}` : `p:${at}:${randomUUID().slice(0, 8)}` },
+        ]);
+      }
+    } catch {
+      /* measuring must never break the call */
+    }
+    // E3a-2: an answer is the end of a turn — from orange on, a cut checkpoint (once per zone and window).
+    if (!override) cutIfDue(s, windowKey, "answer", { task, source: "api" });
     if (answer) {
       // Stored in the lineage of THIS request: a regenerated answer becomes a sibling, not a duplicate.
       s.logMessages(
