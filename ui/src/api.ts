@@ -3,8 +3,9 @@ import type { AnalysisRecord, Metrics } from "../../src/core/analysis";
 import type { FidelityPoint } from "../../src/core/fidelity";
 import type { CanonEvent, CanonExpect, CanonSuggestion } from "../../src/core/canon";
 import type { ProjectProgress, TaskProgress, CriterionProgress } from "../../src/core/progress";
-import type { WindowStatus, WindowInfo, WindowCut } from "../../src/core/window";
-import type { ContextSettings, ContextValues, LocalModel } from "../../src/core/contextsettings";
+import type { WindowStatus as CoreWindowStatus, WindowInfo, WindowCut } from "../../src/core/window";
+import type { ContextSettings, ContextValues, LocalModel, ProgressValues } from "../../src/core/contextsettings";
+import type { WindowProgressStatus, WindowAssessment, WindowStop, HandoverCheck } from "../../src/core/windowprogress";
 import type { Handover } from "../../src/core/windowact";
 import type { StringPayload } from "../../src/core/workspace";
 import type { SettingsView, LlmRole } from "../../src/core/settings";
@@ -137,8 +138,17 @@ export class ApiError extends Error {
   }
 }
 export type { AuditFile, AuditAccess, CopyPlan, OrgEvidence, OrgEvidenceInput, OrgEvidenceState };
-export type { WindowStatus, WindowInfo, WindowCut, ContextSettings, ContextValues, LocalModel, Handover };
-export type ContextSettingsView = ContextSettings & { text: { de: string; en: string }; defaults: ContextValues; bounds: Record<keyof ContextValues, [number, number]>; approval: boolean };
+export type { WindowInfo, WindowCut, ContextSettings, ContextValues, LocalModel, Handover, ProgressValues, WindowProgressStatus, WindowAssessment, WindowStop, HandoverCheck };
+/** E4: the windows with progress per window (the stop, the handover checks) as the server computes them. */
+export type WindowStatus = CoreWindowStatus & { progress?: WindowProgressStatus };
+export type ContextSettingsView = ContextSettings & {
+  text: { de: string; en: string };
+  defaults: ContextValues;
+  bounds: Record<keyof ContextValues, [number, number]>;
+  progressDefaults: ProgressValues;
+  progressBounds: Record<keyof ProgressValues, [number, number]>;
+  approval: boolean;
+};
 /** What removing would do, and the digest of the entry concerned (sent back so nothing unseen is signed). */
 export type RemovePlanView = RemovePlan & { digest: string };
 export interface AuditPackageResult {
@@ -189,7 +199,9 @@ export const api = {
   handover: (window?: string) => req<Handover>(`/api/handover${window ? `?window=${encodeURIComponent(window)}` : ""}`),
   /** E3b-1: the values of the context-window rule; setting them is the person's (approval session). */
   contextSettings: () => req<ContextSettingsView>("/api/context-settings"),
-  setContextSettings: (body: { values?: Partial<ContextValues>; models?: LocalModel[]; reset?: boolean }) => req<ContextSettingsView>("/api/context-settings", body),
+  setContextSettings: (body: { values?: Partial<ContextValues>; progress?: Partial<ProgressValues>; models?: LocalModel[]; reset?: boolean }) => req<ContextSettingsView>("/api/context-settings", body),
+  /** E4: lifting a stop after two full windows without progress is the person's (approval session). */
+  liftStop: (why: string) => req<WindowProgressStatus>("/api/window-stop/lift", { why }),
   canon: () => req<{ events: CanonEvent[]; suggestions: CanonSuggestion[]; error: string | null; missing?: string[]; letGo?: { id: string; text: string }[]; approval: boolean }>("/api/canon"),
   approval: () => req<{ granted: boolean; mode: "local" | "team" | "disabled"; auditView?: boolean | "stale" }>("/api/approval"),
   /** The ISO/IEC 42001 audit file (C2): the person's (or the auditor mode's), unless the person opened it. */

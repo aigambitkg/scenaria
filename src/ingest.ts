@@ -7,7 +7,8 @@ import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import type { Scenaria } from "./core/engine.js";
 import type { MessageInput } from "./core/conversations.js";
-import { claudeCodeWindowEvents, recordWindowEvents, type StartReason } from "./core/window.js";
+import { claudeCodeWindowEvents, recordWindowEvents, windowJustStarted, type StartReason } from "./core/window.js";
+import { evaluateStop } from "./core/windowprogress.js";
 
 const TOOL_TEXT_MAX = 4000;
 
@@ -92,7 +93,8 @@ export function ingestClaudeTranscript(s: Scenaria, transcriptPath: string | und
     }
     // Batch E3a-1: how full the context window is (provider usage of each answer, compaction boundaries).
     try {
-      recordWindowEvents(s, { source: "transcript", key: `claude-code:${sessionId ?? transcriptPath}`, agent: "claude-code", startReason: opts.startReason }, claudeCodeWindowEvents(entries));
+      const key = `claude-code:${sessionId ?? transcriptPath}`;
+      if (recordWindowEvents(s, { source: "transcript", key, agent: "claude-code", startReason: opts.startReason }, claudeCodeWindowEvents(entries)) && windowJustStarted(s, key)) evaluateStop(s);
     } catch {
       /* measuring must never break recording the conversation */
     }

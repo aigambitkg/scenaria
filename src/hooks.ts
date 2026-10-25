@@ -1,16 +1,17 @@
 import { appendFileSync, existsSync, readFileSync, statSync } from "node:fs";
 import { Scenaria } from "./core/engine.js";
-import { findRoot } from "./core/store.js";
+import { findRoot, Store } from "./core/store.js";
 import { ingestClaudeTranscript } from "./ingest.js";
-import { windowsHead, type StartReason } from "./core/window.js";
+import { recordProgressSnapshot, windowSamples, windowsHead, type StartReason } from "./core/window.js";
 import { isPlausibleProject, readGlobalConfig } from "./core/global.js";
 import { promptReminder } from "./core/prompts.js";
 import { applyBlocks } from "./core/blocks.js";
-import { agentNotice, cutBullet, cutIfDue, cutMeta, cutOnce, personNotice, sessionStartLine, tellsPerson } from "./core/windowact.js";
+import { agentNotice, cutBullet, cutIfDue, cutMeta, cutOnce, personNotice, sessionStartLine, sessionStartNote, tellsPerson, windowNotices, type Told } from "./core/windowact.js";
+import { stopAgentText, stopState } from "./core/windowprogress.js";
 import type { TaskHint } from "./core/engine.js";
 
 /**
- * Claude Code hook handlers. Contract: never block the agent, never fail
+ * Claude Code hook handlers. Contract: never block the agent (one exception: the E4 stop, below), never fail
  * loudly — every error is logged to .scenaria/hook-errors.log and we exit 0.
  *
  *   user-prompt   (UserPromptSubmit)  remember the prompt as the session's task; add a one-line reminder
@@ -22,6 +23,10 @@ import type { TaskHint } from "./core/engine.js";
  * Context window (E3a-2, core/windowact.ts): from the yellow zone on the prompt reminder carries a notice; from orange
  * the end of a turn is saved as a checkpoint; from red a checkpoint is saved at once after a tool (mid-turn) and the
  * person sees a system message. None of this ever blocks: every error is caught like any other.
+ *
+ * The one exception (E4, Kev 2026-10-17 answer 3 and 2026-10-24): after two full context windows in a row without
+ * progress on one task, Scenaria STOPS the work — the PreToolUse hook refuses every tool except reading and Scenaria's
+ * own tools until the person lifts the stop. Nothing else ever blocks; an error never does (it lets the tool run).
  */
 
 interface HookInput {
@@ -47,6 +52,10 @@ interface Session {
   startSource?: string;
   /** The transcript this session first named (E3a-2): a different path for the same session is not read. */
   transcriptPath?: string;
+  /** E4: the notices about progress per window this session has had (not repeated). */
+  told?: Told;
+  /** E4: this session's window is recorded (the hook before a tool reads the first answer only until then). */
+  windowSeen?: boolean;
 }
 
 const AGENT = "claude-code";
@@ -171,6 +180,53 @@ const startReasonOf = (session: Session): StartReason => ({ clear: "clear", resu
 const windowKeyOf = (input: HookInput, transcript?: string) => `claude-code:${input.session_id ?? transcript}`;
 const langOf = (): "de" | "en" => (readGlobalConfig().ui?.lang === "en" ? "en" : "de");
 
+/**
+ * What the agent may still do during a stop (Kev 2026-10-24: read and use Scenaria): reading tools, the task list,
+ * asking the person, and Scenaria's own MCP tools. Everything else is refused — the shell too, also for `scenaria …`
+ * (some of its commands write files: review 2, H1/H2/M6) — and tools this list does not know.
+ */
+const READ_TOOLS = new Set(["Read", "Glob", "Grep", "LS", "NotebookRead", "WebFetch", "WebSearch", "TodoWrite", "TodoRead", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "ToolSearch", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "ListMcpResourcesTool", "ReadMcpResourceTool"]);
+/** Scenaria's own tools (kept equal to tools.ts by a test; not imported here: the hook before every tool stays light). */
+export const SCENARIA_TOOL_NAMES = new Set([
+  "scenaria_status", "scenaria_start_mission", "scenaria_decide", "scenaria_choose", "scenaria_checkpoint", "scenaria_tree", "scenaria_get_node", "scenaria_context", "scenaria_rewind", "scenaria_fork", "scenaria_diff", "scenaria_verify", "scenaria_recall",
+  "scenaria_workspace", "scenaria_expect", "scenaria_canon", "scenaria_forecast", "scenaria_expert", "scenaria_health", "scenaria_progress", "scenaria_window", "scenaria_handover", "scenaria_last_good", "scenaria_auditor_request", "scenaria_auditor_submit",
+]);
+export function allowedDuringStop(tool: unknown, toolInput: any): boolean {
+  if (typeof tool !== "string") return false;
+  if (READ_TOOLS.has(tool)) return true;
+  // The server as Scenaria's setup names it ("scenaria", Claude Desktop "scenaria-<folder>"), and one of its tools.
+  const m = /^mcp__scenaria(?:-[a-z0-9-]{1,60})?__(scenaria_[a-z_]+)$/.exec(tool);
+  if (m && SCENARIA_TOOL_NAMES.has(m[1])) return true;
+  void toolInput;
+  return false;
+}
+
+/** Is Scenaria's PreToolUse hook wired for every tool (matcher "*") in the project's or the user's Claude Code settings? */
+export function preToolHookWired(root: string, home?: string): boolean {
+  const files = [`${root}/.claude/settings.json`, `${root}/.claude/settings.local.json`, ...(home ? [`${home}/.claude/settings.json`] : [])];
+  for (const f of files) {
+    try {
+      const j = JSON.parse(readFileSync(f, "utf8"));
+      const list: any[] = Array.isArray(j?.hooks?.PreToolUse) ? j.hooks.PreToolUse : [];
+      if (list.some((m) => (m?.matcher === "*" || m?.matcher === undefined || m?.matcher === "") && Array.isArray(m?.hooks) && m.hooks.some((h: any) => /\bhook pre-tool\b/.test(String(h?.command ?? ""))))) return true;
+    } catch {
+      /* not there or not readable */
+    }
+  }
+  return false;
+}
+
+/** The stop for the hook before a tool, read without opening the project (cheap, and nothing in it can fail — review 2, H1). */
+function stopBeforeTool(root: string) {
+  try {
+    return stopState({ store: new Store(root) });
+  } catch {
+    return null;
+  }
+}
+const denyDuringStop = (st: NonNullable<ReturnType<typeof stopState>>) =>
+  JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: stopAgentText(st) } });
+
 /** After an ordinary tool: from red on, a checkpoint at once (Kev n77). Never waits long, never throws. */
 function afterTool(s: Scenaria, input: HookInput, session: Session, upd: (fn: (cur: Session) => void) => Session): string | null {
   const given = givenTranscript(input);
@@ -220,6 +276,13 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
       }
     } else return null;
   }
+  const evName = event || input.hook_event_name || "";
+  // E4: before a tool, the stop first — read without opening the project, so a project made unreadable can never
+  // switch it off. Refused during a stop: everything but reading and Scenaria's own tools.
+  if (evName === "pre-tool" || evName === "PreToolUse") {
+    const st = stopBeforeTool(root);
+    if (st && !allowedDuringStop(input.tool_name, input.tool_input)) return denyDuringStop(st);
+  }
   try {
     const s = Scenaria.open(root);
     // One scratch entry per Claude Code session (parallel sessions must not overwrite each other).
@@ -251,6 +314,26 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
     // otherwise read and act under the lock, waiting at most 1.5 s (busy → skip: the next tool or the turn's end acts).
     if ((name === "post-tool" || name === "PostToolUse") && input.tool_name !== "AskUserQuestion" && input.tool_name !== "ExitPlanMode") {
       return afterTool(s, input, readSession(), (fn) => updSession(fn));
+    }
+    // E4: before every tool (the hook runs before EVERY tool since 0.9.21). The stop was checked above. The first tool
+    // of a session's new window: its first answer is read now, so a stop from the window that just ended holds from
+    // this first tool on (later tools: the after-tool hook has read it already). Then only a risky shell command goes
+    // on below; everything else returns at once.
+    if (name === "pre-tool" || name === "PreToolUse") {
+      const cur = readSession();
+      if (!cur.windowSeen) {
+        const given = boundTranscript(givenTranscript(input), cur);
+        const key = windowKeyOf(input, given);
+        try {
+          s.store.withLock(() => ingestClaudeTranscript(s, given, input.session_id, { startReason: startReasonOf(cur) }), { waitMs: 1500 });
+        } catch {
+          /* busy: the after-tool hook reads it */
+        }
+        if (windowSamples(s, key) !== null) updSession((x) => (x.windowSeen = true));
+        const st = stopState(s);
+        if (st && !allowedDuringStop(input.tool_name, input.tool_input)) return denyDuringStop(st);
+      }
+      if (input.tool_name !== "Bash" || !classifyCommand(String(input.tool_input?.command ?? ""))) return null;
     }
     // E3a-2 (review M5): a session's transcript is the one it named first. Someone calling the hook with the same
     // session and a transcript of their own cannot feed that session's window (the numbers become actions now).
@@ -296,10 +379,14 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
         // E3a-2: the window's state after the last turn. A cut the last turn's end missed (interrupted) is made now.
         const { advice: adv, node: savedNode } = cutIfDue(s, windowKey, "turn-end", { task: task(), source: "hook" });
         const saved = savedNode?.id ?? null;
-        const person = adv && saved && tellsPerson(adv) ? personNotice(adv, saved, lang()) : undefined;
+        const zonePerson = adv && saved && tellsPerson(adv) ? personNotice(adv, saved, lang()) : undefined;
         const notice = adv ? agentNotice(adv, saved) : "";
+        // E4: progress per window — a stop, a problem note, an escalation, a lossy handover (each once, a stop always).
+        const n4 = windowNotices(s, windowKey, readSession().told ?? {}, lang());
+        if (JSON.stringify(n4.told) !== JSON.stringify(readSession().told ?? {})) updSession((cur) => (cur.told = n4.told));
+        const person = [zonePerson, ...n4.person].filter(Boolean).join("\n") || undefined;
         const reminder = s.config().promptReminder !== false ? promptReminder(s) : "";
-        const additionalContext = [reminder, notice].filter(Boolean).join(" ");
+        const additionalContext = [reminder, notice, ...n4.agent].filter(Boolean).join(" ");
         if (additionalContext || person) {
           return JSON.stringify({ ...(person ? { systemMessage: person } : {}), hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext } });
         }
@@ -441,10 +528,20 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
           updSession((cur) => {
             cur.startSource = String(input.source).slice(0, 20);
           });
+        // E4: the progress at the window change, before the new window does any work (a resumed session goes on in
+        // its window: nothing changes there).
+        if (input.source !== "resume") recordProgressSnapshot(s, windowKey);
+        // A new window begins: its first answer is read before its first tool (above).
+        updSession((cur) => (cur.windowSeen = false));
         if (!s.config().injectContextOnSessionStart || !s.head()) break;
         const c = s.context();
         const handover = sessionStartLine(s, AGENT);
-        const additionalContext = `${c.markdown}${handover ? `\n\n${handover}` : ""}\n\n(Scenaria is active: ONE project tree. New work → scenaria_start_mission (task); real choices → scenaria_decide with context, rationale, servesGoal; steps → scenaria_checkpoint; older details → scenaria_recall.)`;
+        // E4: what the previous window left — a stop, or a problem note (seen as ended now; a resumed session goes on).
+        const note = input.source !== "resume" ? sessionStartNote(s, AGENT) : null;
+        // During a stop: is the hook before every tool still wired? (A restored older state of .claude/ could have put
+        // it back to the shell only — review 3, M3.) Scenaria says it; it never rewrites the person's settings here.
+        const wiring = stopState(s) && !preToolHookWired(root, process.env.HOME) ? " [Scenaria stop] Warning: the hook before every tool (PreToolUse, matcher \"*\") is not set up in this project's or your Claude Code settings — the stop is not enforced. Ask the person to run \"scenaria start\" again." : "";
+        const additionalContext = `${c.markdown}${handover ? `\n\n${handover}` : ""}${note ? `\n\n${note}` : ""}${wiring}\n\n(Scenaria is active: ONE project tree. New work → scenaria_start_mission (task); real choices → scenaria_decide with context, rationale, servesGoal; steps → scenaria_checkpoint; older details → scenaria_recall.)`;
         return JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext } });
       }
     }

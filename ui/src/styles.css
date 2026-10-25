@@ -1085,6 +1085,18 @@ table.gate tr.current td:first-child { box-shadow: inset 4px 0 0 var(--marker-so
 .cw-history code { word-break: break-all; }
 .cw-handover { white-space: pre-wrap; word-break: break-word; max-height: 55vh; overflow: auto; background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; padding: 10px; font-family: var(--mono); font-size: 0.82rem; }
 .cw-confirm p { margin: 4px 0; }
+/* E4: progress per window, the stop and lifting it. */
+.cw-stop p { margin: 4px 0; }
+.cw-lift fieldset { border: 1px solid var(--rule); border-radius: 6px; padding: 8px 10px; margin: 6px 0; min-width: 0; }
+.cw-lift legend { padding: 0 4px; font-weight: 600; }
+.cw-radio { display: flex; align-items: flex-start; gap: 8px; margin: 4px 0; text-align: left; }
+.cw-radio input { width: auto; margin: 3px 0 0; flex: 0 0 auto; }
+.cw-other { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
+.cw-other input { box-sizing: border-box; width: 100%; font: inherit; padding: 6px 8px; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); color: var(--ink); min-width: 0; }
+.cw-progress { min-width: 0; max-width: 100%; }
 @media (max-width: 480px) {
   .cw-table th:nth-child(3), .cw-table td:nth-child(3), .cw-table th:nth-child(5), .cw-table td:nth-child(5) { display: none; }
+  /* Progress per window: the points stay; the AI and the task give way on a phone. */
+  .cw-ptable th:nth-child(3), .cw-ptable td:nth-child(3) { display: table-cell; }
+  .cw-ptable th:nth-child(2), .cw-ptable td:nth-child(2) { display: none; }
 }

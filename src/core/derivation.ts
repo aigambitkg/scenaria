@@ -470,6 +470,170 @@ const CONTEXT_FILL: Formula = {
   },
 };
 
+// ------------------------------------------------------------------ progress per window, handover check (Batch E4)
+
+/**
+ * The rule for progress per window and the handover check, version 1.0 (Kev 2026-10-17, answer 2: at least 10 points
+ * of progress per window, 5 points tolerance for a handover; adjustable only by the person, E3b-1). `k` = how many
+ * first steps of the new window the handover check compares (Kev 2026-10-24: 3).
+ */
+export const WINDOW_PROGRESS_RULE = "v1.0 min=10 tolerance=5 k=3";
+export interface WindowProgressRule {
+  version: string;
+  min: number;
+  tolerance: number;
+  k: number;
+}
+export function parseWindowProgressRule(x: InputValue): WindowProgressRule {
+  const s = typeof x === "string" ? x : WINDOW_PROGRESS_RULE;
+  const get = (k: string, d: number) => {
+    const m = new RegExp(`(?:^|\\s)${k}=(\\d{1,3})(?=\\s|$)`).exec(s);
+    return m ? Number(m[1]) : d;
+  };
+  return { version: /^v\d+(?:\.\d+)*(?:-p\d+)?/.exec(s)?.[0] ?? "v1.0", min: get("min", 10), tolerance: get("tolerance", 5), k: Math.max(1, get("k", 3)) };
+}
+
+/** What became of a window (shared by window-progress/1 and windowprogress.ts). */
+export type WindowVerdict = "progress" | "none" | "not-full" | "no-fill" | "no-criteria" | "waiting";
+/** "n1 p=40" lists → task → value (the first entry of a task counts). */
+function taskValues(x: InputValue): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const s of Array.isArray(x) ? x : []) {
+    const id = typeof s === "string" ? /^(\S+)\s/.exec(s)?.[1] : undefined;
+    const p = parseTask(s);
+    if (id && p !== null && !m.has(id)) m.set(id, p);
+  }
+  return m;
+}
+function windowPoints(v: Values): { points: number; tasks: { task: string; from: number; best: number | null; to: number }[] } {
+  const a = taskValues(v.start);
+  const best = taskValues(v.best);
+  const b = taskValues(v.end);
+  const tasks = [...b].map(([task, to]) => ({ task, from: a.get(task) ?? 0, best: best.has(task) ? best.get(task)! : null, to }));
+  // Only progress above the best level the task had before (with the same criteria) counts: going back and doing the
+  // same work again is no progress (E4a review H4).
+  return { points: tasks.reduce((s, t) => s + (t.to - Math.max(t.from, t.best ?? 0)), 0), tasks };
+}
+/** Is the window full: its highest fill reached the yellow line, or it ended by compaction? Null: not measurable. */
+export function windowFull(v: Values): boolean | null {
+  if (bool(v.compacted)) return true;
+  if (v.peak === null || v.peak === undefined || typeof v.peak !== "number" || !Number.isFinite(v.peak)) return null;
+  return v.peak >= num(v.yellow);
+}
+/**
+ * The verdict for one window: progress from `min` points on (always — also a short window). Below it only a FULL window
+ * (Kev 2026-10-24) on a task WITH criteria, whose next step is not the person's, counts as "none".
+ */
+export function windowVerdict(v: Values, points: number): WindowVerdict {
+  const r = parseWindowProgressRule(v.rule);
+  if (points >= r.min) return "progress";
+  if (typeof v.focus !== "string" || !v.focus) return "no-criteria";
+  if (bool(v.waiting)) return "waiting";
+  const full = windowFull(v);
+  if (full === null) return "no-fill";
+  if (!full) return "not-full";
+  return "none";
+}
+const pts = (x: number, lang: "de" | "en") => `${x > 0 ? `+${x}` : x} ${lang === "de" ? (Math.abs(x) === 1 ? "Punkt" : "Punkte") : Math.abs(x) === 1 ? "point" : "points"}`;
+
+const WINDOW_PROGRESS: Formula = {
+  id: "window-progress/1",
+  expression: {
+    de: "Σ über die Aufgaben mit Kriterien am Ende des Fensters (Fortschritt am Ende − max(Fortschritt am Anfang; bisher bester Fortschritt mit denselben Kriterien)), in Punkten; ohne Kriterien am Anfang zählt der Anfang 0. Ab der Mindestzahl laut der Eingabe „Regel“ ist es Fortschritt (Startwert v1.0: 10 Punkte). Darunter zählt nur ein volles Fenster (höchste Füllung ab der Gelb-Linie, oder komprimiert) an einer Aufgabe mit Kriterien, deren nächster Schritt nicht bei der Person liegt, als „ohne Fortschritt“",
+    en: "Σ over the tasks with criteria at the window's end (progress at the end − max(progress at the start; best progress so far with the same criteria)), in points; without criteria at the start the start counts 0. From the minimum per the input \"rule\" on it is progress (start value v1.0: 10 points). Below it only a full window (highest fill at or above the yellow line, or compacted) on a task with criteria whose next step is not the person's counts as \"no progress\"",
+  },
+  inputs: [
+    { name: "start", label: { de: "Fortschritt am Anfang des Fensters (Aufgabe p = %, progress/1)", en: "progress at the window's start (task p = %, progress/1)" } },
+    { name: "best", label: { de: "bisher bester Fortschritt vor dem Fenster, mit denselben Kriterien (Aufgabe p = %)", en: "best progress before the window, with the same criteria (task p = %)" } },
+    { name: "end", label: { de: "Fortschritt am Ende des Fensters (Aufgabe p = %, progress/1)", en: "progress at the window's end (task p = %, progress/1)" } },
+    { name: "focus", label: { de: "Aufgabe, an der das Fenster zuletzt arbeitete (leer: keine mit Kriterien)", en: "task the window worked on last (empty: none with criteria)" } },
+    { name: "waiting", label: { de: "der nächste Schritt dieser Aufgabe liegt bei der Person (Freigabe, Gewicht, Prüfung, Bestätigung, Abnahme)", en: "the next step of this task is the person's (approval, weight, check, confirmation, acceptance)" } },
+    { name: "peak", label: { de: "höchste Füllung des Fensters in % (context-fill/1; leer: nicht messbar)", en: "highest fill of the window in % (context-fill/1; empty: not measurable)" } },
+    { name: "yellow", label: { de: "Gelb-Linie in % (Regel des Kontextfensters)", en: "yellow line in % (context-window rule)" } },
+    { name: "compacted", label: { de: "das Fenster endete mit einer Komprimierung", en: "the window ended with a compaction" } },
+    { name: "running", label: { de: "das Fenster läuft noch (Ende = jetzt)", en: "the window is still running (end = now)" } },
+    { name: "rule", label: { de: "Regel (Version, Mindestzahl, Toleranz)", en: "rule (version, minimum, tolerance)" } },
+  ],
+  compute(v) {
+    return windowPoints(v).points;
+  },
+  sentence(v, value) {
+    const r = parseWindowProgressRule(v.rule);
+    const { tasks } = windowPoints(v);
+    const list = (lang: "de" | "en") =>
+      tasks.length
+        ? ` (${tasks.map((t) => `${t.task} ${t.from} → ${t.to} %${t.best !== null && t.best > t.from ? (lang === "de" ? `, bisher bestes ${t.best} %` : `, best so far ${t.best} %`) : ""}`).join("; ")})`
+        : "";
+    const verdict = windowVerdict(v, value);
+    const pk = (lang: "de" | "en") => (typeof v.peak === "number" ? (lang === "de" ? String(v.peak).replace(".", ",") : String(v.peak)) : "–");
+    const why: Record<WindowVerdict, Lang2> = {
+      progress: { de: `mindestens ${r.min} Punkte: Fortschritt`, en: `at least ${r.min} points: progress` },
+      none: {
+        de: `weniger als ${r.min} Punkte in einem vollen Fenster (${bool(v.compacted) ? "komprimiert" : `höchste Füllung ${pk("de")} %, Gelb ab ${num(v.yellow)} %`}): ohne Fortschritt`,
+        en: `fewer than ${r.min} points in a full window (${bool(v.compacted) ? "compacted" : `highest fill ${pk("en")} %, yellow from ${num(v.yellow)} %`}): no progress`,
+      },
+      "not-full": { de: `weniger als ${r.min} Punkte, aber das Fenster war nicht voll (höchste Füllung ${pk("de")} %, Gelb ab ${num(v.yellow)} %): wird nicht bewertet`, en: `fewer than ${r.min} points, but the window was not full (highest fill ${pk("en")} %, yellow from ${num(v.yellow)} %): not assessed` },
+      "no-fill": { de: `weniger als ${r.min} Punkte, die Füllung des Fensters ist nicht messbar: wird nicht bewertet`, en: `fewer than ${r.min} points, the window's fill cannot be measured: not assessed` },
+      "no-criteria": { de: "die Aufgabe hat keine Fertig-Kriterien: wird nicht bewertet", en: "the task has no completion criteria: not assessed" },
+      waiting: { de: `weniger als ${r.min} Punkte, aber der nächste Schritt liegt bei der Person: wird nicht bewertet`, en: `fewer than ${r.min} points, but the next step is the person's: not assessed` },
+    };
+    if (bool(v.running))
+      return {
+        de: `${pts(value, "de")} bisher${list("de")}; das Fenster läuft noch – bewertet wird es, wenn es endet (mindestens ${r.min} Punkte). Regel ${r.version}.`,
+        en: `${pts(value, "en")} so far${list("en")}; the window is still running – it is assessed when it ends (at least ${r.min} points). Rule ${r.version}.`,
+      };
+    return {
+      de: `${pts(value, "de")}${list("de")}; ${why[verdict].de}. Regel ${r.version}.`,
+      en: `${pts(value, "en")}${list("en")}; ${why[verdict].en}. Rule ${r.version}.`,
+    };
+  },
+};
+
+/** One step as an input of handover-loss/1: "n12 a=0.8 c=0.6" (a = line to the goal, "-" without a goal; c = connection). */
+function parseStep(x: unknown): { id: string; h: number } | null {
+  const m = typeof x === "string" ? /^(\S+)\s+a=(-|0(?:\.\d{1,2})?|1(?:\.0{1,2})?)\s+c=(0(?:\.\d{1,2})?|1(?:\.0{1,2})?)$/.exec(x) : null;
+  if (!m) return null;
+  const c = Number(m[3]);
+  const h = m[2] === "-" ? c : (Number(m[2]) + c) / 2;
+  return { id: m[1], h: Math.round(h * 100) };
+}
+function handoverParts(v: Values) {
+  const before = (Array.isArray(v.before) ? v.before : []).map(parseStep).filter((x): x is { id: string; h: number } => x !== null)[0] ?? null;
+  const r = parseWindowProgressRule(v.rule);
+  const after = (Array.isArray(v.after) ? v.after : []).map(parseStep).filter((x): x is { id: string; h: number } => x !== null).slice(0, r.k);
+  const mean = after.length ? after.reduce((a, s) => a + s.h, 0) / after.length : null;
+  return { r, before, after, mean, loss: before && mean !== null ? Math.round(before.h - mean) : 0 };
+}
+
+const HANDOVER_LOSS: Formula = {
+  id: "handover-loss/1",
+  expression: {
+    de: "round(T(letzter Schritt im alten Fenster) − Mittelwert T(erste k Schritte im neuen Fenster)), in Punkten; T = round(100 × (Luftlinie + Anschluss) / 2), ohne Ziel nur der Anschluss (Kontext-Treue, fidelity/1); k und die Toleranz laut der Eingabe „Regel“ (Startwerte v1.0: 3 Schritte, 5 Punkte); über der Toleranz: Übergabe verbessern",
+    en: "round(T(last step in the old window) − mean T(first k steps in the new window)), in points; T = round(100 × (line to the goal + connection) / 2), without a goal the connection alone (context fidelity, fidelity/1); k and the tolerance per the input \"rule\" (start values v1.0: 3 steps, 5 points); above the tolerance: improve the handover",
+  },
+  inputs: [
+    { name: "before", label: { de: "letzter Schritt im alten Fenster (a = Luftlinie, c = Anschluss)", en: "last step in the old window (a = line to the goal, c = connection)" } },
+    { name: "after", label: { de: "erste Schritte im neuen Fenster (a = Luftlinie, c = Anschluss)", en: "first steps in the new window (a = line to the goal, c = connection)" } },
+    { name: "rule", label: { de: "Regel (Version, Mindestzahl, Toleranz, k)", en: "rule (version, minimum, tolerance, k)" } },
+  ],
+  compute(v) {
+    return handoverParts(v).loss;
+  },
+  sentence(v, value) {
+    const x = handoverParts(v);
+    if (!x.before || x.mean === null)
+      return { de: `${value}: nicht messbar – ${!x.before ? "kein Schritt im alten Fenster" : "noch kein Schritt im neuen Fenster"}. Regel ${x.r.version}.`, en: `${value}: not measurable – ${!x.before ? "no step in the old window" : "no step in the new window yet"}. Rule ${x.r.version}.` };
+    const n = x.after.length;
+    const partial = n < x.r.k;
+    const ok = value <= x.r.tolerance;
+    const m = Math.round(x.mean * 10) / 10;
+    return {
+      de: `${Math.abs(value)} ${Math.abs(value) === 1 ? "Punkt" : "Punkte"} ${value < 0 ? "Gewinn" : "Verlust"}: ${x.before.id} (${x.before.h}) → ${n === 1 ? `${x.after[0].id} (${x.after[0].h})` : `${x.after.map((s) => s.id).join(", ")} (Mittel ${String(m).replace(".", ",")})`}${partial ? `, erst ${n} von ${x.r.k} Schritten` : ""}; ${ok ? `höchstens ${x.r.tolerance} Punkte: Übergabe in Ordnung` : `mehr als ${x.r.tolerance} Punkte: Übergabe verbessern`}. Regel ${x.r.version}.`,
+      en: `${Math.abs(value)} ${Math.abs(value) === 1 ? "point" : "points"} ${value < 0 ? "gained" : "lost"}: ${x.before.id} (${x.before.h}) → ${n === 1 ? `${x.after[0].id} (${x.after[0].h})` : `${x.after.map((s) => s.id).join(", ")} (mean ${m})`}${partial ? `, only ${n} of ${x.r.k} steps so far` : ""}; ${ok ? `at most ${x.r.tolerance} points: the handover is fine` : `more than ${x.r.tolerance} points: improve the handover`}. Rule ${x.r.version}.`,
+    };
+  },
+};
+
 export const FORMULAS: Record<string, Formula> = {
   [FIDELITY.id]: FIDELITY,
   [HEALTH.id]: HEALTH,
@@ -478,7 +642,16 @@ export const FORMULAS: Record<string, Formula> = {
   [PROGRESS_PROJECT.id]: PROGRESS_PROJECT,
   [CONTEXT_SOFT.id]: CONTEXT_SOFT,
   [CONTEXT_FILL.id]: CONTEXT_FILL,
+  [WINDOW_PROGRESS.id]: WINDOW_PROGRESS,
+  [HANDOVER_LOSS.id]: HANDOVER_LOSS,
 };
+
+/** Only the value of a formula (no texts): for many numbers at once, e.g. the hook on every tool call (E4a review H3). */
+export function formulaValue(formula: string, values: Values): number {
+  const f = Object.prototype.hasOwnProperty.call(FORMULAS, formula) ? FORMULAS[formula] : undefined;
+  if (!f) throw new Error(`unknown formula ${formula}`);
+  return f.compute({ ...values });
+}
 
 /** Build a derivation: the value is computed by the formula from the inputs, never passed in. */
 export function derive(key: string, formula: string, values: Values, rule?: Lang2): Derivation {

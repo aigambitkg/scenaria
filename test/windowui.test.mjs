@@ -131,3 +131,50 @@ test("E3b-2 review 2: 'already saved' only with a save on the line; neutral line
   const dialogs = read("Dialogs.tsx");
   assert.match(dialogs, /if \(!idRef\.current\) idRef\.current = \+\+modalSeq;/);
 });
+
+// ---------------------------------------------------------------- E4c: progress per window and the stop
+
+test("E4c the stop is shown in every view; only the person lifts it (approval session), never as an auditor", () => {
+  // Simple view: the card shows the stop (also before the first step of this session) and opens the dialog.
+  assert.match(simple, /\(lastStep \|\| props\.windows\?\.progress\?\.stop\) && <WindowCard[\s\S]{0,160}onOpenWindow=\{props\.onOpenWindow\}/);
+  assert.match(app, /onOpenWindow=\{\(\) => setWindowOpen\(true\)\}/);
+  assert.match(app, /windows\?\.progress\?\.stop && <span className="hchip z-red">\{t\.wpStopChip\}<\/span>/);
+  // The lift form appears only with the approval session and outside the auditor mode.
+  assert.match(app, /canAct=\{!auditView\}/);
+  assert.match(win, /canAct && approved && !readOnly \? <LiftForm/);
+  assert.match(win, /<LockedNote t=\{t\} text=\{t\.wpLiftLocked\} small \/>/);
+  // What is signed is shown first; no browser dialog; a reason is required.
+  assert.doesNotMatch(win, /window\.confirm|alert\(|prompt\(/);
+  assert.match(win, /\{t\.wpLiftConfirm\(st\.task, why\)\}/);
+  assert.match(win, /if \(!why\) \{\s*setMsg\(\{ ok: false, text: t\.wpErr\.why \}\)/);
+});
+
+test("E4c every window's points and every handover loss carry their derivation", () => {
+  assert.match(win, /<Why d=\{a\.points\} shown=\{a\.value\}/);
+  assert.match(win, /<Why d=\{h\.loss!\} shown=\{h\.loss!\.value\}/);
+  assert.match(win, /t\.wpWhy\[a\.why\]/);
+});
+
+test("E4c the person's values for progress per window are in the form and in the confirmation", () => {
+  assert.match(win, /const PKEYS: \(keyof ProgressValues\)\[\] = \["minProgress", "tolerance"\];/);
+  assert.match(win, /\.\.\.PKEYS\.map\(\(k\) => pText\(t, k, r\.progress\[k\]\)\)/);
+  assert.match(win, /pv\.minProgress < cs\.progressDefaults\.minProgress/);
+});
+
+test("E4c texts in both languages; help says when Scenaria holds the AI up", () => {
+  const keys = ["wpTitle", "wpIntro", "wpStop", "wpStopRecorded", "wpStopWhat", "wpOpenStop", "wpLiftConfirm", "wpLiftLocked", "wpWarning", "wpEscalation", "wpParallel", "wpErr", "pFields", "pFieldsHint"];
+  for (const k of keys) assert.equal(i18n.split(`\n  ${k}:`).length - 1, 2, `${k} in English and German`);
+  assert.match(help, /Zwei hintereinander an derselben Aufgabe: Stopp/);
+  assert.match(help, /Two in a row on the same task: stop/);
+  assert.doesNotMatch(help, /blockiert die KI nie|never blocks the AI/);
+  assert.doesNotMatch(i18n, /Es blockiert die KI nie|It never blocks the AI/);
+});
+
+test("E4c review 3: no reason is chosen for the person; after the lift the section says so and takes the focus; errors are alerts", () => {
+  assert.match(win, /const \[choice, setChoice\] = useState<number \| null>\(null\);/);
+  assert.match(win, /const why = choice === null \? "" :/);
+  assert.match(win, /if \(lifted && !st\) doneRef\.current\?\.focus\(\);/);
+  assert.match(win, /<p ref=\{doneRef\} tabIndex=\{-1\} className="qnote q-info" role="status">\s*\{t\.wpLiftDone\}/);
+  assert.match(win, /role=\{msg\.ok \? "status" : "alert"\}/);
+  assert.match(win, /\{st\.likelyParallel && <p className="small">\{t\.wpLikelyParallel\}<\/p>\}/);
+});

@@ -139,6 +139,8 @@ export function SimpleView(props: {
   progress?: ProjectProgress | null;
   /** E3b-2: how full the AI's context window is (measured on the server); the card shows the newest window. */
   windows?: WindowStatus | null;
+  /** E4: open the context-window dialog (a stop is lifted there). */
+  onOpenWindow?: () => void;
   onEditGoal: () => void;
   onRewound: () => Promise<void>;
   onDiff: (from: string, to: string) => void;
@@ -241,7 +243,7 @@ export function SimpleView(props: {
       </section>
 
       {lastStep && <ProgressCard p={props.progress ?? null} task={currentTask} t={t} lang={lang} />}
-      {lastStep && <WindowCard ws={props.windows ?? null} t={t} lang={lang} onHandover={() => setHandover(true)} />}
+      {(lastStep || props.windows?.progress?.stop) && <WindowCard ws={props.windows ?? null} t={t} lang={lang} onHandover={() => setHandover(true)} onOpenWindow={props.onOpenWindow} />}
       {handover && <HandoverDialog t={t} window={props.windows?.current?.id} onClose={() => setHandover(false)} />}
 
       {!lastStep ? (

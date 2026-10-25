@@ -185,7 +185,8 @@ function setupClaudeTarget(root: string, r: SetupResult, claudeMd: boolean) {
   add("UserPromptSubmit", { hooks: [cmd("user-prompt", 20)] });
   // Every tool (E3a-2): questions and plans become decisions, and from red the context window is saved at once.
   add("PostToolUse", { matcher: "*", hooks: [cmd("post-tool")] });
-  add("PreToolUse", { matcher: "Bash", hooks: [cmd("pre-tool")] });
+  // Every tool (E4): during a stop after two full windows without progress only reading and Scenaria are let through.
+  add("PreToolUse", { matcher: "*", hooks: [cmd("pre-tool")] });
   add("Stop", { hooks: [cmd("stop", 60)] });
   add("SessionStart", { hooks: [cmd("session-start", 20)] });
   settings.permissions ??= {};
@@ -462,7 +463,8 @@ export function setupGlobal(targets: Target[], home = homedir()): SetupResult {
       add("UserPromptSubmit", { hooks: [cmd("user-prompt", 20)] });
       // Every tool (E3a-2): questions and plans become decisions, and from red the context window is saved at once.
       add("PostToolUse", { matcher: "*", hooks: [cmd("post-tool")] });
-      add("PreToolUse", { matcher: "Bash", hooks: [cmd("pre-tool")] });
+      // Every tool (E4): during a stop after two full windows without progress only reading and Scenaria are let through.
+      add("PreToolUse", { matcher: "*", hooks: [cmd("pre-tool")] });
       add("Stop", { hooks: [cmd("stop", 60)] });
       add("SessionStart", { hooks: [cmd("session-start", 20)] });
       settings.permissions ??= {};

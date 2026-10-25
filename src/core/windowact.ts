@@ -24,8 +24,9 @@ import type { Scenaria, TaskHint } from "./engine.js";
 import type { ScenariaNode } from "./types.js";
 import { CONTEXT_ZONES, parseContextRule, type ContextZone } from "./derivation.js";
 import { readContextSettings } from "./contextsettings.js";
-import { quickFill, windowStatus, type ContextCutMeta, type WindowInfo } from "./window.js";
+import { quickFill, windowJustStarted, windowStatus, type ContextCutMeta, type WindowInfo } from "./window.js";
 import { projectProgress, renderProgress } from "./progress.js";
+import { handoverNote, notePersonText, stopAgentText, stopPersonText, stopState, windowProgress, type WindowProgressStatus } from "./windowprogress.js";
 
 export const ZONE_RANK: Record<ContextZone, number> = { green: 0, yellow: 1, orange: 2, red: 3, emergency: 4 };
 export type CutMoment = ContextCutMeta["moment"];
@@ -235,6 +236,13 @@ export function prepareHandover(s: Scenaria, opts: { window?: string; agent?: st
   } catch {
     /* progress is a help here, never a reason to fail the handover */
   }
+  // E4: the problem note (a window without progress, a stop, an escalation) travels with the handover.
+  try {
+    const note = handoverNote(windowProgress(s, { handovers: false }));
+    if (note) parts.push("## Problem note", note);
+  } catch {
+    /* a help here, never a reason to fail the handover */
+  }
   parts.push("## Resume capsule", s.context(head.id).markdown);
   parts.push(
     "## How to continue",
@@ -263,6 +271,106 @@ export function sessionStartLine(s: Scenaria, agent: string): string | null {
     const c = w ? [...w.cuts].reverse().find((x) => x.onLine) : undefined;
     if (!w || !c) return null;
     return `(Handover: the previous window ${w.id} was ${c.fill} % full (${CONTEXT_ZONES[c.zone].en}) when Scenaria saved step ${c.node}. This capsule continues from the current state; the full handover: scenaria_handover.)`;
+  } catch {
+    return null;
+  }
+}
+
+// ------------------------------------------------------------------ E4: notices about progress per window
+
+/** What a conversation was told already (kept in the hook's session scratch: notices are not repeated). */
+export interface Told {
+  stop?: string;
+  warning?: string;
+  escalation?: string;
+  noCriteria?: string;
+  /** The window whose handover check is final (checked once, told when over the tolerance). */
+  handover?: string;
+}
+
+/**
+ * The notices of E4 for one conversation, at a new prompt: during a stop the agent hears it every time, the person
+ * once; a window without progress (problem note), Kev's row 4 (escalation), a task without criteria, and a handover
+ * that lost more than the tolerance (the full handover is given to the agent again) — each once. Progress per window
+ * is computed only when something can be new: the window just started, it is red or fuller, or its handover check is
+ * not final yet. Never throws.
+ */
+export function windowNotices(s: Scenaria, key: string, told: Told, lang: "de" | "en"): { agent: string[]; person: string[]; told: Told } {
+  const out = { agent: [] as string[], person: [] as string[], told: { ...told } };
+  try {
+    const st = stopState(s);
+    if (st) {
+      out.agent.push(stopAgentText(st));
+      if (told.stop !== st.since) {
+        out.person.push(stopPersonText(st, lang));
+        out.told.stop = st.since;
+      }
+      return out;
+    }
+    const cs = readContextSettings(s.store);
+    const q = quickFill(s, key, cs);
+    const red = q !== null && q.fill >= parseContextRule(cs.rule).red;
+    const cur = (() => {
+      const ws = windowStatus(s, { key, settings: cs, limit: 1_000_000 });
+      return ws.windows.find((w) => w.key === key) ?? null;
+    })();
+    const ref = cur ? `${cur.id}@${cur.startedAt}` : "";
+    if (!(windowJustStarted(s, key) || red || (cur && told.handover !== ref))) return out;
+    const wp: WindowProgressStatus = windowProgress(s, { settings: cs });
+    if (wp.stop) {
+      out.agent.push(stopAgentText(wp.stop));
+      out.person.push(stopPersonText(wp.stop, lang));
+      out.told.stop = wp.stop.since;
+      return out;
+    }
+    const line = cur ? `${cur.source}|${cur.agent}` : "";
+    if (wp.warning && wp.warning.line === line) {
+      const w = `${wp.warning.window}@${wp.warning.startedAt}`;
+      if (told.warning !== w) {
+        out.agent.push(
+          `[Scenaria progress] Problem note: the previous window ${wp.warning.window} made ${wp.warning.value ?? 0} points of progress in total (minimum ${wp.min}; it worked last on task ${wp.warning.focus}). Check why before going on (scenaria_progress shows what is missing); if this full window makes too little progress on that task as well, Scenaria stops the work.`,
+        );
+        out.told.warning = w;
+      }
+    }
+    if (wp.escalation && cur && wp.escalation.window === cur.id && told.escalation !== ref) {
+      out.agent.push(`[Scenaria progress] Escalation: window ${wp.escalation.window} is ${wp.escalation.fill} % full and task ${wp.escalation.task} has not passed the 20 % gate (criteria weighted, approach decided) — planning eats the window. Ask the person to split the task.`);
+      const pt = notePersonText(wp, lang);
+      if (pt) out.person.push(pt);
+      out.told.escalation = ref;
+    }
+    if (wp.noCriteria && cur && wp.noCriteria.window === cur.id && told.noCriteria !== ref) {
+      out.agent.push(`[Scenaria progress] Task ${wp.noCriteria.task ?? "(none)"} has no completion criteria: Scenaria cannot measure its progress per window. Propose criteria (future fixed points with this task and a weight); the person approves them.`);
+      out.told.noCriteria = ref;
+    }
+    const h = cur ? wp.handovers.find((x) => x.to === cur.id && x.toStartedAt === cur.startedAt) : undefined;
+    if (cur && (!h || h.final)) out.told.handover = ref;
+    if (h && h.final && h.ok === false && h.loss && told.handover !== ref) {
+      let full = "";
+      try {
+        full = prepareHandover(s, { window: h.from }).markdown;
+      } catch {
+        full = "";
+      }
+      out.agent.push(`[Scenaria handover] ${h.loss.sentence.en} The first steps of this window lost the thread of the previous one (how computed: scenaria_window). Here is the full handover again — read it before going on.${full ? `\n\n${full}` : ""}`);
+      out.person.push(
+        lang === "de"
+          ? `Scenaria: Beim Wechsel ins neue Kontextfenster sank der Anschluss der KI an die bisherige Arbeit um ${h.loss.value} ${h.loss.value === 1 ? "Punkt" : "Punkte"} (erlaubt: ${wp.tolerance}). Sie bekommt die volle Übergabe noch einmal.`
+          : `Scenaria: when the AI moved to the new context window, its connection to the work so far dropped by ${h.loss.value} ${h.loss.value === 1 ? "point" : "points"} (allowed: ${wp.tolerance}). It gets the full handover again.`,
+      );
+    }
+  } catch {
+    /* notices never cost the turn */
+  }
+  return out;
+}
+
+/** The E4 line at a session start: a stop, or what the agent's previous window left (seen as ended now). Never throws. */
+export function sessionStartNote(s: Scenaria, agent: string): string | null {
+  try {
+    const wp = windowProgress(s, { handovers: false, pending: { source: "transcript", agent } });
+    // Only this agent's line: another agent's window is not this session's problem note.
+    return handoverNote({ ...wp, warning: wp.warning && wp.warning.line === `transcript|${agent}` ? wp.warning : null, escalation: null, noCriteria: null });
   } catch {
     return null;
   }

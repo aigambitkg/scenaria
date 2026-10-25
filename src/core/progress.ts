@@ -515,6 +515,47 @@ export function projectProgress(s: Scenaria): ProjectProgress {
   return { value: derivation.value, derivation, tasks, without, abandoned: tasks.filter((t) => t.status === "abandoned").map((t) => t.task) };
 }
 
+/**
+ * Batch E4: the progress at one moment, as recorded at a window change (windows.jsonl). Only the inputs of each task's
+ * progress/1 are kept — the value is computed again from them whenever it is read (never a bare number). `focus` is
+ * the task of HEAD (the task the work is on).
+ */
+export interface ProgressSnapshot {
+  /** Only tasks with approved criteria (others have no progress to measure). `waiting`: the next step is the person's. */
+  tasks: { task: string; criteria: string[]; gates: string[]; waiting?: boolean }[];
+  focus: string | null;
+}
+
+/**
+ * Is the task's next step the person's (E4a review M5)? Gate 20 while an approved criterion waits for its weight;
+ * gates 80, 90 and 100 (the person starts the checks, confirms, accepts). A window then cannot show progress by
+ * itself. A proposal of the agent's own does not count: the agent could otherwise switch the rule off (review 2, H3).
+ */
+export function waitsForPerson(t: TaskProgress): boolean {
+  const blocked = t.gates.find((g) => !g.met)?.cap ?? null;
+  if (blocked === 20) return t.criteria.some((c) => c.weight === null);
+  return blocked === 80 || blocked === 90 || blocked === 100;
+}
+
+export function progressSnapshot(s: Scenaria): ProgressSnapshot {
+  const p = projectProgress(s);
+  const list = (x: unknown) => (Array.isArray(x) ? x.filter((v): v is string => typeof v === "string") : []);
+  const tasks = p.tasks
+    .filter((t) => t.criteria.length > 0)
+    .map((t) => {
+      const inp = Object.fromEntries(t.derivation.inputs.map((i) => [i.name, i.value]));
+      return { task: t.task, criteria: list(inp.criteria), gates: list(inp.gates), ...(waitsForPerson(t) ? { waiting: true } : {}) };
+    });
+  let focus: string | null = null;
+  try {
+    const head = s.head();
+    focus = head ? (s.currentTask(head.id)?.id ?? null) : null;
+  } catch {
+    focus = null;
+  }
+  return { tasks, focus };
+}
+
 /** For agents and the API: the derivations in the short form. */
 export function progressForAgents(p: ProjectProgress): { value: number; why: CompactDerivation; tasks: (Omit<TaskProgress, "derivation"> & { why: CompactDerivation })[]; without: ProjectProgress["without"] } {
   return {

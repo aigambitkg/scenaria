@@ -68,7 +68,7 @@ test("E3b-1 the person's values: signed, versioned, logged; every number names t
   assert.equal(w2.zone, "emergency");
   const ev = s.store.readEvents().filter((e) => e.data?.contextSettings);
   assert.deepEqual(ev.map((e) => e.data.contextSettings.rev), [1, 2]);
-  assert.match(ev[1].data.message, /v1\.0-p2 by kev via terminal/);
+  assert.match(ev[1].data.message, /v1\.0-p2 \(min=10 tolerance=5\) by kev via terminal/);
   // The text for people names what differs from the start values.
   assert.match(windowStatus(s).settings.text.de, /^Regel v1\.0-p2, von kev gesetzt: Rot ab 60 %, Notsicherung ab 80 %, A_modell 100\.000 Tokens\.$/);
   assert.match(renderWindows(windowStatus(s), "en"), /Rule v1\.0-p2, set by kev: red from 60 %, emergency from 80 %, A_model 100,000 tokens\./);
@@ -281,6 +281,9 @@ test("E3b-1 review: a signed entry with an edited model size, another channel or
   // the person's lines stay, and it is said plainly.
   const cs = edit((e) => {
     e.models = [{ id: "gpt-5", cMax: 50_000 }, { id: "llama3", cMax: 8192 }];
+    // As a revision signed before E4 (context-settings/v1, without the E4 values).
+    delete e.minProgress;
+    delete e.tolerance;
     const folder = realpathSync(p.dir);
     const sg = signRecord(s.store, ["context-settings/v1", folder, e.yellow, e.red, e.emergency, e.p95start, e.margin, e.aModel, e.models.map((m) => [m.id, m.cMax]), null, e.rev, e.at, e.by, e.via]);
     e.pub = sg.pub;

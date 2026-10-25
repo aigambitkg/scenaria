@@ -238,7 +238,8 @@ test("E3 hooks: SessionStart after /clear names the start; the end-of-turn check
   assert.equal(ws.current.start, "clear");
   assert.equal(ws.current.fill.value, 25);
   const cp = s.head();
-  assert.equal(cp.meta.windows.lines, 2);
+  // E4: the session start records the progress (one line); the window's opening adds none (nothing answered since).
+  assert.equal(cp.meta.windows.lines, 3);
   assert.match(cp.meta.windows.head, /^[0-9a-f]{32}$/);
   // A broken transcript line or a missing file never makes the hook fail.
   writeFileSync(tr, readFileSync(tr, "utf8") + "{not json\n");
@@ -415,8 +416,9 @@ test("E3 window records: after a change outside, the next append starts the meas
   const ws = windowStatus(s);
   assert.equal(ws.changed.by, "restarted");
   const lines = readFileSync(f, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-  assert.deepEqual(lines.map((l) => l.t), ["open", "sample", "reset", "open", "sample"], "the already recorded answer m:1 is not taken again");
-  assert.equal(lines[2].why, "rewritten");
+  // E4: each opening records the progress (a "progress" line after the window's first lines).
+  assert.deepEqual(lines.map((l) => l.t), ["open", "sample", "progress", "reset", "open", "sample", "progress"], "the already recorded answer m:1 is not taken again");
+  assert.equal(lines[3].why, "rewritten");
   assert.equal(ws.current.id, "w2");
   assert.equal(ws.current.start, "restart");
   assert.equal(ws.current.fill.value, 76);

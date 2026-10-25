@@ -30,9 +30,10 @@ import { createHash } from "node:crypto";
 import { appendFileSync, closeSync, openSync, readSync, statSync } from "node:fs";
 import type { Scenaria } from "./engine.js";
 import { windowAnchor } from "./canon.js";
-import { compact, CONTEXT_ZONES, contextNextLimit, contextZone, derive, type ContextZone, type Derivation } from "./derivation.js";
+import { compact, CONTEXT_ZONES, contextNextLimit, contextZone, derive, formulaValue, type ContextZone, type Derivation } from "./derivation.js";
 import { lookupModel, MODEL_TABLE_VERSION, normaliseModel } from "./models.js";
 import { describeSettings, readContextSettings, type ContextSettings } from "./contextsettings.js";
+import { progressSnapshot, type ProgressSnapshot } from "./progress.js";
 
 export type WindowSource = "transcript" | "proxy";
 export type StartReason = "new-session" | "clear" | "resume" | "compact" | "drop" | "restart";
@@ -46,7 +47,12 @@ type OpenLine = { t: "open"; w: string; at: string; source: WindowSource; key: s
 type SampleLine = { t: "sample"; w: string; at: string; tokens: number; model?: string; ref: string };
 /** Scenaria found the records changed outside and starts the measurement again after this line. */
 type ResetLine = { t: "reset"; at: string; why: "rewritten" | "chain" | "foreign"; lines: number };
-type Bare = OpenLine | SampleLine | ResetLine;
+/**
+ * Batch E4: the progress at a window change — written when a session starts (before its first answer) and when a
+ * window is opened (`w`/`ws`: that window). Only the inputs of progress/1 are kept; the value is computed on reading.
+ */
+type ProgressLine = { t: "progress"; at: string; by: "session-start" | "open"; w?: string; ws?: string; key?: string } & ProgressSnapshot;
+type Bare = OpenLine | SampleLine | ResetLine | ProgressLine;
 type Line = Bare & { c: string };
 
 const FILE = "windows.jsonl";
@@ -82,7 +88,7 @@ function parseInto(p: Parsed, text: string) {
     }
     // An unreadable line (half written when a process was killed) carries no data and is skipped; removing or
     // changing a real line breaks the chain of the next one.
-    if (!l || typeof l !== "object" || (l.t !== "open" && l.t !== "sample" && l.t !== "reset") || typeof l.c !== "string") continue;
+    if (!l || typeof l !== "object" || (l.t !== "open" && l.t !== "sample" && l.t !== "reset" && l.t !== "progress") || typeof l.c !== "string") continue;
     const { c, ...rest } = l;
     if (chainOf(p.prev, rest as Bare) !== c) p.lastBreak = p.lines.length;
     p.prev = c;
@@ -168,15 +174,12 @@ export function recordWindowEvents(
   return s.store.withLock(() => {
     const p = readLines(s);
     if (p.unreadable) throw new Error("windows.jsonl is not a file");
-    const anchors = windowAnchor(s.store);
-    const anchor = anchors.read();
+    const anchor = windowAnchor(s.store).read();
     const lines = p.lines;
     const out: Bare[] = [];
     // Changed outside since the last append (or a break after the last reset): start again after a reset line.
-    const check = anchorCheck(lines, anchor);
-    const lastReset = lastResetOf(lines);
-    if (check === "rewritten" || check === "missing" || check === "foreign" || (p.lastBreak !== null && p.lastBreak > lastReset))
-      out.push({ t: "reset", at: new Date().toISOString(), why: check === "foreign" ? "foreign" : check === "rewritten" || check === "missing" ? "rewritten" : "chain", lines: anchor?.lines ?? lines.length });
+    const reset = resetDue(p, anchor);
+    if (reset) out.push(reset);
 
     const key = resolveKey(lines, who);
     const seen = new Set<string>();
@@ -196,7 +199,7 @@ export function recordWindowEvents(
           lastTokens = null;
           if (l.ref) seen.add(l.ref);
         }
-      } else if (keyOf.get(l.w) === key) {
+      } else if (l.t === "sample" && keyOf.get(l.w) === key) {
         seen.add(l.ref);
         if (cur && l.w === cur.w) lastTokens = l.tokens;
       }
@@ -233,17 +236,109 @@ export function recordWindowEvents(
       samples++;
     }
     if (!samples && !out.some((l) => l.t === "open")) return 0;
-    let prev = p.prev;
-    const text = out.map((l) => {
-      const c = chainOf(prev, l);
-      prev = c;
-      return JSON.stringify({ ...l, c });
+    // E4: a window opened — the progress at its start (the start of a session records it earlier, before any work).
+    const newest = [...out].reverse().find((l): l is OpenLine => l.t === "open");
+    // Not twice for one change: a session start recorded the progress and nothing was answered since (review L11).
+    let lastSample = -1;
+    let lastSnap = -1;
+    lines.forEach((l, i) => {
+      if (l.t === "sample") lastSample = i;
+      else if (l.t === "progress") lastSnap = i;
     });
-    const f = s.store.path(FILE);
-    appendFileSync(f, (endsWithoutNewline(f) ? "\n" : "") + text.join("\n") + "\n", "utf8");
-    anchors.raise((anchor?.count ?? 0) + 1, lines.length + out.length, prev);
+    if (newest && !(reset === null && lastSnap > lastSample)) {
+      const snap = snapshotLine(s, "open", newest);
+      if (snap) out.push(snap);
+    }
+    appendLines(s, p, anchor, out);
     return samples;
   });
+}
+
+/** A progress line for now (null when progress cannot be computed: measuring never fails because of it). */
+function snapshotLine(s: Scenaria, by: ProgressLine["by"], w?: OpenLine, key?: string): ProgressLine | null {
+  try {
+    return { t: "progress", at: new Date().toISOString(), by, ...(w ? { w: w.w, ws: w.at } : {}), ...(key ? { key: key.slice(0, 200) } : {}), ...progressSnapshot(s) };
+  } catch {
+    return null;
+  }
+}
+
+/** The reset line due before appending (the records were changed outside since the last append), or null. */
+function resetDue(p: Parsed, anchor: { lines: number; head: string } | null): ResetLine | null {
+  const check = anchorCheck(p.lines, anchor);
+  const lastReset = lastResetOf(p.lines);
+  if (check === "rewritten" || check === "missing" || check === "foreign" || (p.lastBreak !== null && p.lastBreak > lastReset))
+    return { t: "reset", at: new Date().toISOString(), why: check === "foreign" ? "foreign" : check === "rewritten" || check === "missing" ? "rewritten" : "chain", lines: anchor?.lines ?? p.lines.length };
+  return null;
+}
+
+/** Append lines to the chain and raise the outside anchor (under the caller's lock). */
+function appendLines(s: Scenaria, p: Parsed, anchor: { count: number; lines: number; head: string } | null, out: Bare[]) {
+  let prev = p.prev;
+  const text = out.map((l) => {
+    const c = chainOf(prev, l);
+    prev = c;
+    return JSON.stringify({ ...l, c });
+  });
+  const f = s.store.path(FILE);
+  appendFileSync(f, (endsWithoutNewline(f) ? "\n" : "") + text.join("\n") + "\n", "utf8");
+  windowAnchor(s.store).raise((anchor?.count ?? 0) + 1, p.lines.length + out.length, prev);
+}
+
+/**
+ * E4: record the progress now, at the start of a session (Claude Code SessionStart: before the new window's first
+ * answer, so the window's start is measured before it did any work). Never throws.
+ */
+export function recordProgressSnapshot(s: Scenaria, key?: string): boolean {
+  try {
+    return s.store.withLock(() => {
+      const p = readLines(s);
+      if (p.unreadable) return false;
+      const snap = snapshotLine(s, "session-start", undefined, key);
+      if (!snap) return false;
+      const anchor = windowAnchor(s.store).read();
+      const reset = resetDue(p, anchor);
+      appendLines(s, p, anchor, reset ? [reset, snap] : [snap]);
+      return true;
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * E4: did this conversation's newest window just start (at most 3 answers)? Then a window has just ended, and the stop
+ * is computed (windowprogress.ts evaluateStop) — rarely, not on every tool call.
+ */
+export function windowJustStarted(s: Scenaria, key: string): boolean {
+  const n = windowSamples(s, key);
+  return n !== null && n > 0 && n <= 3;
+}
+
+/** How many answers the conversation's newest window has (counted up to 4), null without a window. */
+export function windowSamples(s: Scenaria, key: string): number | null {
+  try {
+    const p = readLines(s);
+    if (p.unreadable) return null;
+    let w: string | null = null;
+    let samples = 0;
+    for (let i = p.lines.length - 1; i >= 0; i--) {
+      const l = p.lines[i];
+      if (l.t === "open" && l.key === key) {
+        w = l.w;
+        break;
+      }
+    }
+    if (!w) return null;
+    for (let i = p.lines.length - 1; i >= 0 && samples <= 3; i--) {
+      const l = p.lines[i];
+      if (l.t === "sample" && l.w === w) samples++;
+      if (l.t === "open" && l.w === w) break;
+    }
+    return samples;
+  } catch {
+    return null;
+  }
 }
 
 /** The conversation an answer belongs to: its own key, or the conversation of the earlier answer it continues. */
@@ -333,6 +428,8 @@ export interface WindowInfo {
   trigger?: string;
   preTokens?: number;
   startedAt: string;
+  /** The window's first and last answer. */
+  firstAt: string | null;
   lastAt: string | null;
   /** Why the window ended (the start reason of the next window of the same conversation), if known. */
   end?: StartReason;
@@ -347,6 +444,8 @@ export interface WindowInfo {
   modelSource?: { source: string; read: string; table: string };
   fill?: Derivation;
   soft?: Derivation;
+  /** E4: the highest fill the window reached, in % (context-fill/1 of its largest answer). */
+  peak?: number;
   zone?: ContextZone;
   next?: { at: number; zone: ContextZone } | null;
   /** The rule (version and values) this window's numbers are computed with. */
@@ -407,6 +506,19 @@ function cutsByWindow(nodes: { id: string; createdAt: string; meta?: unknown; ta
   return out;
 }
 
+/** A recorded progress measurement (E4). `tasks[].value` is computed from the inputs with progress/1 on reading. */
+export interface ProgressSnapInfo {
+  at: string;
+  by: "session-start" | "open";
+  /** The window it was recorded for (by "open"), with its start. */
+  w?: string;
+  ws?: string;
+  /** The conversation whose session start it was (by "session-start"). */
+  key?: string;
+  tasks: { task: string; value: number; criteria: string[]; gates: string[]; waiting: boolean }[];
+  focus: string | null;
+}
+
 export interface WindowStatus {
   table: string;
   rule: string;
@@ -416,8 +528,32 @@ export interface WindowStatus {
   current: WindowInfo | null;
   /** The values in force (the person's signed setting or the start values) and what they change, in plain words. */
   settings: { trust: ContextSettings["trust"]; why?: ContextSettings["why"]; elsewhere?: string; looser: ContextSettings["looser"]; rule: string; rev: number | null; at: string | null; by: string | null; text: { de: string; en: string } };
+  /** E4: the progress recorded at window changes (confirmed lines only), oldest first; values computed from the inputs. */
+  snapshots: ProgressSnapInfo[];
   /** The records were changed outside Scenaria: what showed it. Windows with unconfirmed lines show no number. */
   changed: { by: "chain" | "anchor" | "checkpoint" | "unreadable" | "restarted"; node?: string; line?: number } | null;
+}
+
+/** A progress line as read: every task's value computed again from its progress/1 inputs (the value only — cheap). */
+function snapInfo(l: ProgressLine): ProgressSnapInfo {
+  const strs = (x: unknown) => (Array.isArray(x) ? x.filter((v): v is string => typeof v === "string").slice(0, 200) : []);
+  const tasks = (Array.isArray(l.tasks) ? l.tasks : [])
+    .filter((t) => t && typeof t === "object" && typeof t.task === "string")
+    .slice(0, 500)
+    .map((t) => {
+      const criteria = strs(t.criteria);
+      const gates = strs(t.gates);
+      return { task: t.task, criteria, gates, waiting: t.waiting === true, value: formulaValue("progress/1", { criteria, gates }) };
+    });
+  return {
+    at: typeof l.at === "string" ? l.at : "",
+    by: l.by === "open" ? "open" : "session-start",
+    ...(typeof l.w === "string" ? { w: l.w } : {}),
+    ...(typeof l.ws === "string" ? { ws: l.ws } : {}),
+    ...(typeof l.key === "string" ? { key: l.key } : {}),
+    tasks,
+    focus: typeof l.focus === "string" ? l.focus : null,
+  };
 }
 
 /** The index of the newest sample at or before time t. */
@@ -480,7 +616,11 @@ export function windowStatus(s: Scenaria, opts: { limit?: number; key?: string; 
 
   const opens: (OpenLine & { idx: number })[] = [];
   const samplesOf = new Map<string, (SampleLine & { idx: number })[]>();
+  // Lines come from a file anyone can write: a line whose fields are not what Scenaria writes is no record (E4a review H1).
+  const str = (x: unknown) => typeof x === "string" && x.length > 0 && x.length <= 300;
   lines.forEach((l, idx) => {
+    if (l.t === "open" && !(str(l.w) && str(l.at) && str(l.key) && str(l.agent) && (l.source === "transcript" || l.source === "proxy") && str(l.start))) return;
+    if (l.t === "sample" && !(str(l.w) && str(l.at) && typeof l.tokens === "number" && Number.isFinite(l.tokens) && (l.model === undefined || typeof l.model === "string"))) return;
     if (l.t === "open") {
       opens.push({ ...l, idx });
       samplesOf.set(l.w, []);
@@ -546,6 +686,7 @@ export function windowStatus(s: Scenaria, opts: { limit?: number; key?: string; 
       ...(o.trigger ? { trigger: o.trigger } : {}),
       ...(o.preTokens !== undefined ? { preTokens: o.preTokens } : {}),
       startedAt: o.at,
+      firstAt: ss[0]?.at ?? null,
       lastAt: last?.at ?? null,
       ...(ends.has(o.w) ? { end: ends.get(o.w) } : {}),
       model: last?.model ?? null,
@@ -575,6 +716,7 @@ export function windowStatus(s: Scenaria, opts: { limit?: number; key?: string; 
       modelSource: { source: row.source, read: row.read, table: MODEL_TABLE_VERSION },
       fill,
       soft,
+      peak: info.maxTokens !== null ? formulaValue("context-fill/1", { tokens: info.maxTokens, cMax: row.cMax, aModel, soft: soft.value, rule: cs.rule }) : fill.value,
       zone: contextZone(fill.value, soft.value, cs.rule),
       next: contextNextLimit(fill.value, soft.value, cs.rule),
     };
@@ -585,6 +727,7 @@ export function windowStatus(s: Scenaria, opts: { limit?: number; key?: string; 
     rule: cs.rule,
     settings: { trust: cs.trust, ...(cs.why ? { why: cs.why } : {}), ...(cs.elsewhere ? { elsewhere: cs.elsewhere } : {}), looser: cs.looser, rule: cs.rule, rev: cs.set?.rev ?? null, at: cs.set?.at ?? null, by: cs.set?.by ?? null, text: describeSettings(cs) },
     windows: windows.slice(0, opts.limit ?? 50),
+    snapshots: lines.flatMap((l, idx): ProgressSnapInfo[] => (l.t === "progress" && trusted(idx) ? [snapInfo(l)] : [])).sort((a, b) => a.at.localeCompare(b.at)),
     current: (opts.key ? windows.find((w) => w.key === opts.key) : windows[0]) ?? null,
     changed,
   };

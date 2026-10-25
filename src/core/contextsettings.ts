@@ -21,7 +21,7 @@ import { dirname, join } from "node:path";
 import { writeJsonAtomic, type Store } from "./store.js";
 import { globalConfigPath } from "./global.js";
 import { projectIdentity, publicKeyId, signRecord, verifyRecord } from "./canon.js";
-import { CONTEXT_RULE, parseContextRule } from "./derivation.js";
+import { CONTEXT_RULE, parseContextRule, parseWindowProgressRule, WINDOW_PROGRESS_RULE } from "./derivation.js";
 import { A_MODEL_DEFAULT, lookupModel, MODEL_TABLE, normaliseModel, type ModelEntry } from "./models.js";
 
 export interface ContextValues {
@@ -38,6 +38,24 @@ export const CONTEXT_DEFAULTS: ContextValues = (() => {
   const r = parseContextRule(CONTEXT_RULE);
   return { yellow: r.yellow, red: r.red, emergency: r.emergency, p95start: r.p95start, margin: r.margin, aModel: A_MODEL_DEFAULT };
 })();
+
+/**
+ * Batch E4: the person's values for progress per window and the handover check (Kev 2026-10-17, answer 2: at least
+ * 10 points per window, 5 points tolerance). Stored in the same signed revision as the zone values (since E4 the
+ * signed parts are "context-settings/v2"; a revision signed before E4 carries the start values for these two).
+ */
+export interface ProgressValues {
+  /** At least this many points of progress per window (else the window had no progress). */
+  minProgress: number;
+  /** At most this many points lost at a handover (else the handover is improved). */
+  tolerance: number;
+}
+export const PROGRESS_DEFAULTS: ProgressValues = (() => {
+  const r = parseWindowProgressRule(WINDOW_PROGRESS_RULE);
+  return { minProgress: r.min, tolerance: r.tolerance };
+})();
+export const PROGRESS_BOUNDS: Record<keyof ProgressValues, [number, number]> = { minProgress: [1, 50], tolerance: [0, 50] };
+const PROGRESS_KEYS: (keyof ProgressValues)[] = ["minProgress", "tolerance"];
 
 /** What a value may be (inclusive); plus yellow < red < emergency. */
 export const CONTEXT_BOUNDS: Record<keyof ContextValues, [number, number]> = {
@@ -57,6 +75,9 @@ export interface LocalModel {
 }
 
 interface Entry extends ContextValues {
+  /** Since E4 (signed as context-settings/v2); absent in a revision signed before: the start values. */
+  minProgress?: number;
+  tolerance?: number;
   models: LocalModel[];
   /** Set when this revision starts the history again after a setting that did not verify (signed with it). */
   restart?: { after: number; why: InvalidWhy } | null;
@@ -75,22 +96,26 @@ export type InvalidWhy = "signature" | "history" | "older" | "values" | "missing
 export interface ContextSettings {
   /** What applies now (the start values unless a verified setting of the person says otherwise). */
   values: ContextValues;
+  /** Progress per window and the handover check (E4). */
+  progress: ProgressValues;
   models: LocalModel[];
   /** The rule string every derivation carries ("v1.0 …" or "v1.0-p<rev> …"). */
   rule: string;
+  /** The same for window-progress/1 and handover-loss/1 ("v1.0 min=10 tolerance=5 k=3" or "v1.0-p<rev> …"). */
+  progressRule: string;
   /** "default": never set for this folder; "verified": the person's, every revision signed; "invalid": does not count. */
   trust: "default" | "verified" | "invalid";
   /** With "invalid": why. */
   why?: InvalidWhy;
   set: { rev: number; at: string; by: string; via: string; keyId?: string } | null;
   /** Every signed revision, oldest first (kept outside the project: which values were in force when, and who set them). */
-  history: { rev: number; at: string; by: string; via: string; rule: string; keyId?: string }[];
+  history: { rev: number; at: string; by: string; via: string; rule: string; progressRule: string; aModel: number; keyId?: string }[];
   /** The history started again at `from` because the earlier one did not verify (`why`); revisions before it cannot be vouched for (kept apart, unverified). */
   restarted: { from: number; after: number; why: InvalidWhy; earlier: number }[];
   /** Entered local models that the documented table now covers: the provider's size applies to them. */
   dropped: string[];
   /** Values looser than the start values (lines higher, A_model larger, no buffer): said plainly to people. */
-  looser: (keyof ContextValues | "buffer")[];
+  looser: (keyof ContextValues | keyof ProgressValues | "buffer")[];
   /** With "default": the same project has a setting in another folder (moved or copied); it is not carried over. */
   elsewhere?: string;
   /** Rows for lookupModel: the person's local models. */
@@ -126,9 +151,11 @@ function entryKey(store: Store, create: boolean): string {
 
 const VALUE_KEYS: (keyof ContextValues)[] = ["yellow", "red", "emergency", "p95start", "margin", "aModel"];
 const parts = (folder: string, e: Omit<Entry, "keyId" | "pub" | "sig">) => [
-  "context-settings/v1",
+  // A revision with the E4 values is signed with them (v2); one signed before E4 keeps its v1 parts.
+  e.minProgress !== undefined || e.tolerance !== undefined ? "context-settings/v2" : "context-settings/v1",
   folder,
   ...VALUE_KEYS.map((k) => e[k]),
+  ...(e.minProgress !== undefined || e.tolerance !== undefined ? [e.minProgress ?? null, e.tolerance ?? null] : []),
   e.models.map((m) => [m.id, m.cMax]),
   e.restart ? [e.restart.after, e.restart.why] : null,
   e.rev,
@@ -142,6 +169,24 @@ export function ruleOf(v: ContextValues, rev?: number): string {
   const base = parseContextRule(CONTEXT_RULE);
   const version = rev ? `${base.version}-p${rev}` : base.version;
   return `${version} yellow=${v.yellow} red=${v.red} emergency=${v.emergency} floor=${v.yellow} p95start=${v.p95start} margin=${v.margin} minSteps=${base.minSteps}`;
+}
+
+/** The rule string of progress per window for a set of values (exactly WINDOW_PROGRESS_RULE for the start values). */
+export function progressRuleOf(p: ProgressValues, rev?: number): string {
+  const base = parseWindowProgressRule(WINDOW_PROGRESS_RULE);
+  return `${rev ? `${base.version}-p${rev}` : base.version} min=${p.minProgress} tolerance=${p.tolerance} k=${base.k}`;
+}
+
+/** Why the E4 values are refused (null: fine): whole points within the bounds. */
+export function checkProgress(p: Partial<Record<keyof ProgressValues, unknown>>): { code: string; key?: string; message: string } | null {
+  for (const k of PROGRESS_KEYS) {
+    const x = p[k];
+    if (typeof x !== "number" || !Number.isFinite(x)) return { code: "not_a_number", key: k, message: `${k} must be a number` };
+    const [lo, hi] = PROGRESS_BOUNDS[k];
+    if (x < lo || x > hi) return { code: "out_of_range", key: k, message: `${k} must be between ${lo} and ${hi}` };
+    if (!Number.isInteger(x)) return { code: "precision", key: k, message: `${k} must be a whole number of points` };
+  }
+  return null;
 }
 
 /** Why a set of values is refused (null: fine). English, for the API; the dashboard translates the codes. */
@@ -190,16 +235,19 @@ const asRows = (models: LocalModel[], at: string, rule: string): ModelEntry[] =>
   models.map((m) => ({ ids: [m.id], provider: "person" as const, cMax: m.cMax, source: `entered by the person (${rule.split(" ")[0]})`, read: at.slice(0, 10) }));
 
 /** Which values are looser than the start values: the person sees them named (an AI manager, an auditor). */
-function looserOf(v: ContextValues): ContextSettings["looser"] {
+function looserOf(v: ContextValues, p: ProgressValues = PROGRESS_DEFAULTS): ContextSettings["looser"] {
   const d = CONTEXT_DEFAULTS;
   const out: ContextSettings["looser"] = [];
   for (const k of ["yellow", "red", "emergency", "aModel"] as const) if (v[k] > d[k]) out.push(k);
   if (v.p95start === 0 && v.margin === 0) out.push("buffer");
+  // Fewer points per window, or more loss at a handover, lets more through (E4).
+  if (p.minProgress < PROGRESS_DEFAULTS.minProgress) out.push("minProgress");
+  if (p.tolerance > PROGRESS_DEFAULTS.tolerance) out.push("tolerance");
   return out;
 }
 
 function fallback(trust: ContextSettings["trust"], extra: Partial<ContextSettings> = {}): ContextSettings {
-  return { values: { ...CONTEXT_DEFAULTS }, models: [], rule: CONTEXT_RULE, trust, set: null, history: [], restarted: [], dropped: [], looser: [], modelRows: [], ...extra };
+  return { values: { ...CONTEXT_DEFAULTS }, progress: { ...PROGRESS_DEFAULTS }, models: [], rule: CONTEXT_RULE, progressRule: WINDOW_PROGRESS_RULE, trust, set: null, history: [], restarted: [], dropped: [], looser: [], modelRows: [], ...extra };
 }
 
 const shapeOk = (e: any): e is Entry =>
@@ -208,6 +256,7 @@ const shapeOk = (e: any): e is Entry =>
   VALUE_KEYS.every((k) => typeof e[k] === "number" && Number.isFinite(e[k])) &&
   Array.isArray(e.models) &&
   e.models.every((m: any) => m && typeof m.id === "string" && Number.isInteger(m.cMax)) &&
+  PROGRESS_KEYS.every((k) => e[k] === undefined || (typeof e[k] === "number" && Number.isFinite(e[k]))) &&
   (e.restart === undefined || e.restart === null || (Number.isInteger(e.restart.after) && typeof e.restart.why === "string")) &&
   Number.isInteger(e.rev) &&
   typeof e.at === "string" &&
@@ -240,6 +289,8 @@ export function readContextSettings(store: Store): ContextSettings {
     if (e.rev < mark) return fallback("invalid", { why: "older" });
     // Bounds of this version for the values in force (a later, tighter version would say so, not crash).
     if (checkValues(e) !== null) return fallback("invalid", { why: "values" });
+    const progress = progressOf(e);
+    if (checkProgress(progress) !== null) return fallback("invalid", { why: "values" });
     const values = Object.fromEntries(VALUE_KEYS.map((k) => [k, e[k]])) as unknown as ContextValues;
     const entered = e.models.map((m) => ({ id: normaliseModel(m.id), cMax: m.cMax }));
     // A model the documented table covers now: the provider's size applies; the person's other values stay.
@@ -247,22 +298,37 @@ export function readContextSettings(store: Store): ContextSettings {
     const rule = ruleOf(values, e.rev);
     return {
       values,
+      progress,
       models,
       rule,
+      progressRule: progressRuleOf(progress, e.rev),
       trust: "verified",
       set: { rev: e.rev, at: e.at, by: e.by, via: e.via, keyId: e.pub ? publicKeyId(e.pub) : undefined },
       restarted: list
         .filter((x) => x.restart)
         .map((x) => ({ from: x.rev, after: x.restart!.after, why: x.restart!.why, earlier: Array.isArray(rec.earlier) ? rec.earlier.reduce((n: number, g: any) => n + (Array.isArray(g?.revisions) ? g.revisions.length : 0), 0) : 0 })),
-      history: list.map((x) => ({ rev: x.rev, at: x.at, by: x.by, via: x.via, ...(x.pub ? { keyId: publicKeyId(x.pub) } : {}), rule: ruleOf(Object.fromEntries(VALUE_KEYS.map((k) => [k, x[k]])) as unknown as ContextValues, x.rev) })),
+      history: list.map((x) => ({
+        rev: x.rev,
+        at: x.at,
+        by: x.by,
+        via: x.via,
+        ...(x.pub ? { keyId: publicKeyId(x.pub) } : {}),
+        rule: ruleOf(Object.fromEntries(VALUE_KEYS.map((k) => [k, x[k]])) as unknown as ContextValues, x.rev),
+        // E4: which values were in force when (a window is judged by the values in force when it ended — review M7).
+        progressRule: progressRuleOf(progressOf(x), x.rev),
+        aModel: x.aModel,
+      })),
       dropped: entered.filter((m) => documentedModel(m.id)).map((m) => m.id),
-      looser: looserOf(values),
+      looser: looserOf(values, progress),
       modelRows: asRows(models, e.at, rule),
     };
   } catch {
     return fallback("invalid", { why: "unreadable" });
   }
 }
+
+/** The E4 values of a revision (one signed before E4: the start values). */
+const progressOf = (e: Partial<ProgressValues>): ProgressValues => ({ minProgress: e.minProgress ?? PROGRESS_DEFAULTS.minProgress, tolerance: e.tolerance ?? PROGRESS_DEFAULTS.tolerance });
 
 /** The revision mark of a project: the highest revision seen here and where its history starts. */
 function markOf(x: unknown): { rev: number; first: number } {
@@ -279,6 +345,11 @@ function pickValues(v: unknown): Partial<ContextValues> {
   if (v && typeof v === "object") for (const k of VALUE_KEYS) if (k in (v as any)) (out as any)[k] = (v as any)[k];
   return out;
 }
+function pickProgress(v: unknown): Partial<ProgressValues> {
+  const out: Partial<ProgressValues> = {};
+  if (v && typeof v === "object") for (const k of PROGRESS_KEYS) if (k in (v as any)) (out as any)[k] = (v as any)[k];
+  return out;
+}
 
 /**
  * The PERSON sets the values (all of them, as shown) and the local models. Callers make sure a person acts. `reset`
@@ -287,18 +358,19 @@ function pickValues(v: unknown): Partial<ContextValues> {
  */
 export function setContextSettings(
   store: Store,
-  input: { values?: Partial<ContextValues>; models?: LocalModel[]; reset?: boolean },
+  input: { values?: Partial<ContextValues>; progress?: Partial<ProgressValues>; models?: LocalModel[]; reset?: boolean },
   who: { by: string; via: "dashboard" | "terminal" },
 ): ContextSettings {
   const cur = readContextSettings(store);
   const values = input.reset ? { ...CONTEXT_DEFAULTS } : { ...cur.values, ...pickValues(input.values) };
+  const progress = input.reset ? { ...PROGRESS_DEFAULTS } : { ...cur.progress, ...pickProgress(input.progress) };
   // Sorted by id: the same models in another order are no change (review 2, N4).
   const models = (input.reset ? [] : (input.models ?? cur.models))
     .map((m) => ({ id: typeof m?.id === "string" ? normaliseModel(m.id) : "", cMax: m?.cMax as number }))
     .sort((a, b) => a.id.localeCompare(b.id));
-  const bad = checkValues(values) ?? checkModels(models);
+  const bad = checkValues(values) ?? checkProgress(progress) ?? checkModels(models);
   if (bad) throw Object.assign(new Error(bad.message), { code: bad.code, key: (bad as { key?: string }).key });
-  const same = cur.trust !== "invalid" && VALUE_KEYS.every((k) => values[k] === cur.values[k]) && JSON.stringify(models) === JSON.stringify([...cur.models].sort((a, b) => a.id.localeCompare(b.id)));
+  const same = cur.trust !== "invalid" && VALUE_KEYS.every((k) => values[k] === cur.values[k]) && PROGRESS_KEYS.every((k) => progress[k] === cur.progress[k]) && JSON.stringify(models) === JSON.stringify([...cur.models].sort((a, b) => a.id.localeCompare(b.id)));
   if (same) throw Object.assign(new Error("nothing changes: these values are already in force"), { code: "unchanged" });
   const by = String(who.by ?? "person").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || "person";
   const key = entryKey(store, true);
@@ -319,6 +391,8 @@ export function setContextSettings(
   const nextEarlier = restart && (stored0.length || cur.why) ? [...earlier, { why: cur.why ?? "unreadable", at: new Date().toISOString(), revisions: stored0 }].slice(-20) : earlier;
   const entry: Omit<Entry, "keyId" | "pub" | "sig"> = {
     ...(values as ContextValues),
+    minProgress: progress.minProgress,
+    tolerance: progress.tolerance,
     models,
     ...(restart ? { restart: { after: rev - 1, why: cur.why ?? "unreadable" } } : {}),
     rev,
@@ -333,11 +407,12 @@ export function setContextSettings(
   writeJsonAtomic(settingsFile(), { version: 2, projects: all });
   writeJsonAtomic(marksFile(), { version: 2, marks: { ...marks, [key]: { rev, first: revisions[0].rev } } });
   const rule = ruleOf(values as ContextValues, stored.rev);
+  const pRule = progressRuleOf(progress, stored.rev);
   store.appendEvent({
     type: "update",
     data: {
-      message: `context-window rule set to ${rule.split(" ")[0]} by ${by} via ${who.via}${input.reset ? " (back to the start values)" : ""}${restart ? ` (the earlier stored setting did not verify: ${cur.why}; the history starts again at p${rev}, the earlier revisions are kept apart, unverified)` : ""}`,
-      contextSettings: { rev: stored.rev, rule, models: models.map((m) => `${m.id}=${m.cMax}`), by, via: who.via, ...(restart ? { restart: cur.why } : {}) },
+      message: `context-window rule set to ${rule.split(" ")[0]} (min=${progress.minProgress} tolerance=${progress.tolerance}) by ${by} via ${who.via}${input.reset ? " (back to the start values)" : ""}${restart ? ` (the earlier stored setting did not verify: ${cur.why}; the history starts again at p${rev}, the earlier revisions are kept apart, unverified)` : ""}`,
+      contextSettings: { rev: stored.rev, rule, progressRule: pRule, models: models.map((m) => `${m.id}=${m.cMax}`), by, via: who.via, ...(restart ? { restart: cur.why } : {}) },
     },
   });
   return readContextSettings(store);
@@ -352,7 +427,9 @@ const WHY_TEXT: Record<InvalidWhy, { de: string; en: string }> = {
   unreadable: { de: "die gespeicherte Einstellung ist nicht lesbar", en: "the stored setting cannot be read" },
 };
 
-const NAME: Record<keyof ContextValues | "buffer", { de: string; en: string }> = {
+const NAME: Record<keyof ContextValues | keyof ProgressValues | "buffer", { de: string; en: string }> = {
+  minProgress: { de: "Mindestfortschritt je Fenster", en: "minimum progress per window" },
+  tolerance: { de: "Toleranz bei der Übergabe", en: "handover tolerance" },
   yellow: { de: "Gelb ab", en: "yellow from" },
   red: { de: "Rot ab", en: "red from" },
   emergency: { de: "Notsicherung ab", en: "emergency from" },
@@ -364,8 +441,12 @@ const NAME: Record<keyof ContextValues | "buffer", { de: string; en: string }> =
 
 /** What applies and what changes compared with the start values, for people (both languages). */
 export function describeSettings(cs: ContextSettings): { de: string; en: string } {
-  const d = CONTEXT_DEFAULTS;
-  const val = (k: keyof ContextValues, x: number, lang: "de" | "en") => {
+  type K = keyof ContextValues | keyof ProgressValues;
+  const isP = (k: K): k is keyof ProgressValues => (PROGRESS_KEYS as string[]).includes(k);
+  const cur = (k: K) => (isP(k) ? cs.progress[k] : cs.values[k]);
+  const def = (k: K) => (isP(k) ? PROGRESS_DEFAULTS[k] : CONTEXT_DEFAULTS[k]);
+  const val = (k: K, x: number, lang: "de" | "en") => {
+    if (isP(k)) return `${x} ${lang === "de" ? (x === 1 ? "Punkt" : "Punkte") : x === 1 ? "point" : "points"}`;
     if (k === "aModel") return `${String(x).replace(/\B(?=(\d{3})+(?!\d))/g, lang === "de" ? "." : ",")} ${lang === "de" ? "Tokens" : "tokens"}`;
     return `${lang === "de" ? String(x).replace(".", ",") : x} %`;
   };
@@ -381,16 +462,16 @@ export function describeSettings(cs: ContextSettings): { de: string; en: string 
           en: `This project has a setting in another folder (${cs.elsewhere}); it is not carried over here. The start values apply (rule ${ver}).`,
         }
       : { de: `Startwerte (Regel ${ver}).`, en: `Start values (rule ${ver}).` };
-  const diff = VALUE_KEYS.filter((k) => cs.values[k] !== d[k]);
-  const list = (lang: "de" | "en") => (diff.length ? `: ${diff.map((k) => `${NAME[k][lang]} ${val(k, cs.values[k], lang)}`).join(", ")}` : "");
+  const diff = ([...VALUE_KEYS, ...PROGRESS_KEYS] as K[]).filter((k) => cur(k) !== def(k));
+  const list = (lang: "de" | "en") => (diff.length ? `: ${diff.map((k) => `${NAME[k][lang]} ${val(k, cur(k), lang)}`).join(", ")}` : "");
   const models = (lang: "de" | "en") => (cs.models.length ? `; ${lang === "de" ? "lokale Modelle" : "local models"}: ${cs.models.map((m) => m.id).join(", ")}` : "");
   const dropped = (lang: "de" | "en") =>
     cs.dropped.length ? (lang === "de" ? ` Jetzt in der Modelltabelle belegt (es gilt die Größe des Anbieters): ${cs.dropped.join(", ")}.` : ` Now documented in the model table (the provider's size applies): ${cs.dropped.join(", ")}.`) : "";
   const looser = (lang: "de" | "en") =>
     cs.looser.length
       ? lang === "de"
-        ? ` Lockerer als die Startwerte: ${cs.looser.map((k) => (k === "buffer" ? NAME.buffer.de : `${NAME[k].de} ${val(k, cs.values[k], "de")} (Start ${val(k, d[k], "de")})`)).join(", ")}.`
-        : ` Looser than the start values: ${cs.looser.map((k) => (k === "buffer" ? NAME.buffer.en : `${NAME[k].en} ${val(k, cs.values[k], "en")} (start ${val(k, d[k], "en")})`)).join(", ")}.`
+        ? ` Lockerer als die Startwerte: ${cs.looser.map((k) => (k === "buffer" ? NAME.buffer.de : `${NAME[k].de} ${val(k, cur(k), "de")} (Start ${val(k, def(k), "de")})`)).join(", ")}.`
+        : ` Looser than the start values: ${cs.looser.map((k) => (k === "buffer" ? NAME.buffer.en : `${NAME[k].en} ${val(k, cur(k), "en")} (start ${val(k, def(k), "en")})`)).join(", ")}.`
       : "";
   const r = cs.restarted[cs.restarted.length - 1];
   const restarted = (lang: "de" | "en") =>

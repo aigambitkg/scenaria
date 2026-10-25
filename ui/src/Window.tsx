@@ -5,9 +5,13 @@
  * provider's token counts) with their derivation, recomputed in the browser by Why.tsx. The automatic saves come from
  * src/core/windowact.ts. The values of the rule are the person's: the form below writes only in the approval session
  * (the server refuses everyone else) and never in the auditor mode.
+ *
+ * Batch E4: progress per window (src/core/windowprogress.ts) — each window's points with their derivation, the
+ * warning, the escalation, the handover checks and the stop after two full windows without progress. Only the person
+ * lifts a stop: the form below sends it only in the approval session (the server refuses everyone else).
  */
 import { useContext, useEffect, useRef, useState } from "react";
-import { api, ApiError, type ContextSettingsView, type ContextValues, type Handover, type LocalModel, type WindowInfo, type WindowStatus } from "./api";
+import { api, ApiError, type ContextSettingsView, type ContextValues, type Handover, type LocalModel, type ProgressValues, type WindowInfo, type WindowProgressStatus, type WindowStatus, type WindowStop } from "./api";
 import type { Dict, Lang } from "./i18n";
 import { Why } from "./Why";
 import { Modal } from "./Dialogs";
@@ -77,8 +81,9 @@ function FillBar({ w, t, lang }: { w: WindowInfo; t: Dict; lang: Lang }) {
 }
 
 /** The Simple view's card: the AI's newest window only, in plain words. */
-export function WindowCard({ ws, t, lang, onHandover }: { ws: WindowStatus | null; t: Dict; lang: Lang; onHandover: () => void }) {
+export function WindowCard({ ws, t, lang, onHandover, onOpenWindow }: { ws: WindowStatus | null; t: Dict; lang: Lang; onHandover: () => void; onOpenWindow?: () => void }) {
   if (!ws) return null;
+  const st = ws.progress?.stop ?? null;
   const w = ws.current;
   const urgent = w?.zone === "red" || w?.zone === "emergency";
   // "Scenaria has saved" only when a save of red or higher is on the current line (not after a rewind, not if it failed).
@@ -86,6 +91,24 @@ export function WindowCard({ ws, t, lang, onHandover }: { ws: WindowStatus | nul
   return (
     <section className="sv-card cw-card" aria-label={t.cwSimpleTitle}>
       <h2>{t.cwSimpleTitle}</h2>
+      {st && (
+        <div className="qnote q-warn cw-stop" role="alert">
+          <p>
+            <strong>{t.wpStop(stopIds(st), st.task, localTime(st.since, lang))}</strong>
+          </p>
+          {st.likelyParallel && <p className="small">{t.wpLikelyParallel}</p>}
+          <p className="small">{t.wpStopWhat}</p>
+          {onOpenWindow && (
+            <p>
+              <button className="btn" onClick={onOpenWindow}>
+                {t.wpOpenStop}
+              </button>
+            </p>
+          )}
+        </div>
+      )}
+      {!st && ws.progress?.warning && <p className="qnote q-info small">{t.wpWarning(ws.progress.warning.window, ws.progress.warning.focus ?? "–")}</p>}
+      {!st && ws.progress?.escalation && <p className="qnote q-warn small">{t.wpEscalation(ws.progress.escalation.window, pct(ws.progress.escalation.fill, lang), ws.progress.escalation.task)}</p>}
       {ws.settings.trust === "invalid" && <p className="qnote q-warn small">{ws.settings.text[lang]}</p>}
       {!w ? (
         <p className="muted">{t.cwSimpleNone}</p>
@@ -153,6 +176,200 @@ function WindowDetail({ w, t, lang, onNode }: { w: WindowInfo; t: Dict; lang: La
   );
 }
 
+const stopIds = (st: WindowStop) => st.windows.map((w) => w.split("@")[0]).join(", ");
+
+/** Lifting a stop: the person names why, sees what would be signed, then confirms (no browser dialog). */
+function LiftForm({ st, t, onLifted }: { st: WindowStop; t: Dict; onLifted: () => void }) {
+  // No reason is chosen for the person: what is signed is what they picked (review 3, L5).
+  const [choice, setChoice] = useState<number | null>(null);
+  const [other, setOther] = useState("");
+  const [confirm, setConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const presets = t.wpLiftPresets as readonly string[];
+  const why = choice === null ? "" : choice < presets.length ? presets[choice] : other.trim();
+  const lift = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.liftStop(why);
+      setConfirm(false);
+      // The form goes away with the stop: the section says it and takes the focus (review 3, L4).
+      onLifted();
+    } catch (e) {
+      const code = e instanceof ApiError ? e.code : undefined;
+      setMsg({ ok: false, text: (code && t.wpErr[code]) || String((e as Error)?.message ?? e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <form
+      className="cw-lift"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!why) {
+          setMsg({ ok: false, text: t.wpErr.why });
+          return;
+        }
+        setMsg(null);
+        setConfirm(true);
+      }}
+    >
+      <fieldset>
+        <legend>{t.wpLiftWhy}</legend>
+        {[...presets, t.wpLiftOther].map((label, i) => (
+          <label key={i} className="cw-radio">
+            <input
+              type="radio"
+              name="cw-lift-why"
+              checked={choice === i}
+              onChange={() => {
+                setChoice(i);
+                setConfirm(false);
+              }}
+            />{" "}
+            {label}
+          </label>
+        ))}
+        {choice === presets.length && (
+          <label className="cw-other">
+            <span>{t.wpLiftOtherText}</span>
+            <input
+              value={other}
+              maxLength={300}
+              onChange={(e) => {
+                setOther(e.target.value);
+                setConfirm(false);
+              }}
+            />
+          </label>
+        )}
+      </fieldset>
+      <p>
+        <button type="submit" className="btn primary" disabled={busy}>
+          {t.wpLiftTitle}
+        </button>
+      </p>
+      {confirm && (
+        <div className="qnote q-info cw-confirm" role="alertdialog" aria-label={t.wpLiftTitle}>
+          <p>{t.wpLiftConfirm(st.task, why)}</p>
+          <p>
+            <button type="button" className="btn primary" disabled={busy} onClick={() => void lift()} autoFocus>
+              {t.wpLiftYes}
+            </button>{" "}
+            <button type="button" className="btn" onClick={() => setConfirm(false)}>
+              {t.cwCancel}
+            </button>
+          </p>
+        </div>
+      )}
+      {msg && (
+        <p className={`qnote ${msg.ok ? "q-info" : "q-warn"}`} role={msg.ok ? "status" : "alert"}>
+          {msg.text}
+        </p>
+      )}
+    </form>
+  );
+}
+
+/** Progress per window: the stop (and lifting it), the warning, each window's points with "How computed?", the handovers. */
+function ProgressSection({ wp, t, lang, canAct, approved, lifted, onLifted }: { wp: WindowProgressStatus; t: Dict; lang: Lang; canAct: boolean; approved: boolean; lifted: boolean; onLifted: () => void }) {
+  const readOnly = useContext(ReadOnlyContext);
+  const st = wp.stop;
+  const doneRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (lifted && !st) doneRef.current?.focus();
+  }, [lifted, st]);
+  const ended = wp.windows.filter((a) => a.state !== "running" || a.value !== null);
+  return (
+    <section className="a-sec cw-progress">
+      <h3>{t.wpTitle}</h3>
+      <p className="hint small">{t.wpIntro(wp.min, wp.tolerance, wp.k)}</p>
+      {wp.changed && wp.changed.by !== "restarted" && <p className="qnote q-warn small">{t.wpChanged}</p>}
+      {st && (
+        <div className="qnote q-warn cw-stop" role="alert">
+          <p>
+            <strong>{t.wpStop(stopIds(st), st.task, localTime(st.since, lang))}</strong>
+          </p>
+          {st.recorded && <p className="small">{t.wpStopRecorded}</p>}
+          {st.likelyParallel && <p className="small">{t.wpLikelyParallel}</p>}
+          <p className="small">{t.wpStopWhat}</p>
+          {canAct && approved && !readOnly ? <LiftForm st={st} t={t} onLifted={onLifted} /> : canAct && !readOnly ? <LockedNote t={t} text={t.wpLiftLocked} small /> : <p className="small muted">{t.wpLiftReader}</p>}
+          {!st.likelyParallel && <p className="small muted">{t.wpParallel}</p>}
+        </div>
+      )}
+      {!st && wp.warning && <p className="qnote q-info small">{t.wpWarning(wp.warning.window, wp.warning.focus ?? "–")}</p>}
+      {wp.escalation && <p className="qnote q-warn small">{t.wpEscalation(wp.escalation.window, pct(wp.escalation.fill, lang), wp.escalation.task)}</p>}
+      {wp.noCriteria && <p className="qnote q-info small">{t.wpNoCriteria(wp.noCriteria.task ?? "–")}</p>}
+      {lifted && !st && (
+        <p ref={doneRef} tabIndex={-1} className="qnote q-info" role="status">
+          {t.wpLiftDone}
+        </p>
+      )}
+      {wp.lift && <p className="small muted">{t.wpLifted(localTime(wp.lift.at, lang), byText(wp.lift.by, t), wp.lift.why)}</p>}
+      {!ended.length ? (
+        <p className="muted small">{t.wpNone}</p>
+      ) : (
+        <div className="cw-table-wrap">
+          <table className="cw-table cw-ptable">
+            <thead>
+              <tr>
+                {(["window", "agent", "points", "state", "task"] as const).map((c) => (
+                  <th key={c} scope="col">
+                    {t.wpCols[c]}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {ended.slice(0, 20).map((a) => (
+                <tr key={`${a.window}@${a.startedAt}`}>
+                  <td>{a.window}</td>
+                  <td>{a.agent}</td>
+                  <td>
+                    {a.value !== null ? (
+                      <>
+                        {t.wpPoints(a.value)} {a.points && <Why d={a.points} shown={a.value} t={t} lang={lang} label={`${a.window}`} />}
+                      </>
+                    ) : (
+                      "–"
+                    )}
+                  </td>
+                  <td>
+                    {t.wpState[a.state] ?? a.state}
+                    {a.why && <span className="muted"> ({t.wpWhy[a.why] ?? a.why})</span>}
+                    {a.lifted && <span className="muted"> · {t.wpBeforeLift}</span>}
+                  </td>
+                  <td>{a.focus ?? "–"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {wp.windows.some((a) => a.source === "proxy") && <p className="small muted">{t.wpProxyNote}</p>}
+      {wp.handovers.some((h) => h.loss) && (
+        <>
+          <h4>{t.wpHandovers}</h4>
+          <ul className="small cw-facts">
+            {wp.handovers
+              .filter((h) => h.loss)
+              .slice(0, 5)
+              .map((h) => (
+                <li key={`${h.to}@${h.toStartedAt}`}>
+                  {t.wpHandoverLine(h.from, h.to)}: {h.loss!.sentence[lang]} <Why d={h.loss!} shown={h.loss!.value} t={t} lang={lang} label={t.wpHandovers} />
+                  {!h.final && <span className="muted"> ({t.wpProvisional})</span>}
+                  {h.final && <span className={h.ok ? "muted" : ""}> · {h.ok ? t.wpHandoverOk : t.wpHandoverBad}</span>}
+                </li>
+              ))}
+          </ul>
+        </>
+      )}
+    </section>
+  );
+}
+
 /** The handover for a new window (read-only, computed by the server when asked). */
 export function HandoverDialog({ t, window, onClose }: { t: Dict; window?: string; onClose: () => void }) {
   const [h, setH] = useState<Handover | null>(null);
@@ -195,6 +412,10 @@ export function HandoverDialog({ t, window, onClose }: { t: Dict; window?: strin
 }
 
 const KEYS: (keyof ContextValues)[] = ["yellow", "red", "emergency", "p95start", "margin", "aModel"];
+/** E4: the person's values for progress per window (whole points). */
+const PKEYS: (keyof ProgressValues)[] = ["minProgress", "tolerance"];
+const pShort = (t: Dict, k: keyof ProgressValues) => t.pFields[k].replace(/\s*\([^)]*\)\s*$/, "");
+const pText = (t: Dict, k: keyof ProgressValues, x: number) => `${pShort(t, k)} ${t.wpPoints(x).replace(/^\+/, "")}`;
 /** "Red from (%)" → "Red from". */
 const short = (t: Dict, k: keyof ContextValues) => t.cwFields[k].replace(/\s*\([^)]*\)\s*$/, "");
 /** "Red from 72 %", "A_model 200,000 tokens". */
@@ -210,14 +431,14 @@ function SettingsSection({ t, lang, approved, editable, onSaved }: { t: Dict; la
   const [msg, setMsg] = useState<{ ok: boolean; text: string; field?: string } | null>(null);
   const [busy, setBusy] = useState(false);
   /** What would be signed, shown first; only "Yes, save" sends it (no browser dialog). Any edit clears it. */
-  const [pending, setPending] = useState<{ body: { values?: Partial<ContextValues>; models?: LocalModel[]; reset?: boolean }; text: string } | null>(null);
+  const [pending, setPending] = useState<{ body: { values?: Partial<ContextValues>; progress?: Partial<ProgressValues>; models?: LocalModel[]; reset?: boolean }; text: string } | null>(null);
   const statusRef = useRef<HTMLParagraphElement>(null);
   const load = () =>
     api
       .contextSettings()
       .then((x) => {
         setCs(x);
-        setForm(Object.fromEntries(KEYS.map((k) => [k, k === "aModel" ? tok(x.values[k], lang) : pct(x.values[k], lang)])));
+        setForm({ ...Object.fromEntries(KEYS.map((k) => [k, k === "aModel" ? tok(x.values[k], lang) : pct(x.values[k], lang)])), ...Object.fromEntries(PKEYS.map((k) => [k, String(x.progress[k])])) });
         setModels(x.models.map((m) => ({ id: m.id, cMax: tok(m.cMax, lang) })));
       })
       .catch(() => setCs(null));
@@ -236,7 +457,7 @@ function SettingsSection({ t, lang, approved, editable, onSaved }: { t: Dict; la
     setPending(null);
     fn();
   };
-  const submit = async (body: { values?: Partial<ContextValues>; models?: LocalModel[]; reset?: boolean }) => {
+  const submit = async (body: { values?: Partial<ContextValues>; progress?: Partial<ProgressValues>; models?: LocalModel[]; reset?: boolean }) => {
     setPending(null);
     setBusy(true);
     setMsg(null);
@@ -249,14 +470,24 @@ function SettingsSection({ t, lang, approved, editable, onSaved }: { t: Dict; la
       const code = e instanceof ApiError ? e.code : undefined;
       const key = e instanceof ApiError ? e.key : undefined;
       const base = (code && t.cwErr[code]) || String((e as Error)?.message ?? e);
-      setMsg({ ok: false, text: key && key in t.cwFields ? `${base} (${short(t, key as keyof ContextValues)})` : base, ...(key && key in t.cwFields ? { field: key } : {}) });
+      const label = key && key in t.cwFields ? short(t, key as keyof ContextValues) : key && key in t.pFields ? pShort(t, key as keyof ProgressValues) : null;
+      setMsg({ ok: false, text: label ? `${base} (${label})` : base, ...(label ? { field: key } : {}) });
     } finally {
       setBusy(false);
     }
   };
   /** Read the form; an empty or unreadable field is named, never sent as 0. */
-  const readForm = (): { values: ContextValues; models: LocalModel[] } | null => {
+  const readForm = (): { values: ContextValues; progress: ProgressValues; models: LocalModel[] } | null => {
     const values: Partial<ContextValues> = {};
+    const progress: Partial<ProgressValues> = {};
+    for (const k of PKEYS) {
+      const x = parsePercent(form[k] ?? "");
+      if (x === null) {
+        setMsg({ ok: false, text: `${t.cwErr.not_a_number} (${pShort(t, k)})`, field: k });
+        return null;
+      }
+      progress[k] = x;
+    }
     for (const k of KEYS) {
       const x = k === "aModel" ? parseTokens(form[k] ?? "") : parsePercent(form[k] ?? "");
       if (x === null) {
@@ -275,13 +506,16 @@ function SettingsSection({ t, lang, approved, editable, onSaved }: { t: Dict; la
       }
       ms.push({ id: m.id.trim(), cMax: n });
     }
-    return { values: values as ContextValues, models: ms };
+    return { values: values as ContextValues, progress: progress as ProgressValues, models: ms };
   };
   /** Looser than the start values, named before signing (an AI manager sees it at once). */
-  const looserText = (v: ContextValues) => {
+  const looserText = (v: ContextValues, pv?: ProgressValues) => {
     const d = cs.defaults;
     const l = (["yellow", "red", "emergency", "aModel"] as const).filter((k) => v[k] > d[k]).map((k) => valueText(t, k, v[k], lang));
     if (v.p95start === 0 && v.margin === 0) l.push(t.cwNoBuffer);
+    // E4: fewer points per window, or more loss at a handover, lets more through.
+    if (pv && pv.minProgress < cs.progressDefaults.minProgress) l.push(pText(t, "minProgress", pv.minProgress));
+    if (pv && pv.tolerance > cs.progressDefaults.tolerance) l.push(pText(t, "tolerance", pv.tolerance));
     return l.length ? ` ${t.cwLooserWarn(l.join(", "))}` : "";
   };
   return (
@@ -298,9 +532,9 @@ function SettingsSection({ t, lang, approved, editable, onSaved }: { t: Dict; la
             e.preventDefault();
             const r = readForm();
             if (!r) return;
-            const shown = [...KEYS.map((k) => valueText(t, k, r.values[k], lang)), ...r.models.map((m) => `${m.id} ${tokens(m.cMax, lang)}`)].join(" · ");
+            const shown = [...KEYS.map((k) => valueText(t, k, r.values[k], lang)), ...PKEYS.map((k) => pText(t, k, r.progress[k])), ...r.models.map((m) => `${m.id} ${tokens(m.cMax, lang)}`)].join(" · ");
             setMsg(null);
-            setPending({ body: r, text: `${t.cwConfirmSave(ver(cs.rule))} ${shown}.${looserText(r.values)}` });
+            setPending({ body: r, text: `${t.cwConfirmSave(ver(cs.rule))} ${shown}.${looserText(r.values, r.progress)}` });
           }}
         >
           <div className="cw-fields">
@@ -317,6 +551,26 @@ function SettingsSection({ t, lang, approved, editable, onSaved }: { t: Dict; la
                 />
                 <small id={`cw-b-${k}`} className="muted">
                   {k === "aModel" ? t.cwBounds(tok(cs.bounds[k][0], lang), tok(cs.bounds[k][1], lang)) : t.cwBounds(pct(cs.bounds[k][0], lang), pct(cs.bounds[k][1], lang))} · {t.cwStartValue(k === "aModel" ? tok(cs.defaults[k], lang) : `${pct(cs.defaults[k], lang)} %`)}
+                </small>
+              </label>
+            ))}
+          </div>
+          <h4>{t.wpTitle}</h4>
+          <p className="hint small">{t.pFieldsHint}</p>
+          <div className="cw-fields">
+            {PKEYS.map((k) => (
+              <label key={k}>
+                <span>{t.pFields[k]}</span>
+                <input
+                  id={`cw-f-${k}`}
+                  inputMode="numeric"
+                  value={form[k] ?? ""}
+                  onChange={(e) => edit(() => setForm({ ...form, [k]: e.target.value }))}
+                  aria-invalid={msg?.field === k ? true : undefined}
+                  aria-describedby={msg?.field === k ? `cw-b-${k} cw-status` : `cw-b-${k}`}
+                />
+                <small id={`cw-b-${k}`} className="muted">
+                  {t.cwBounds(String(cs.progressBounds[k][0]), String(cs.progressBounds[k][1]))} · {t.cwStartValue(String(cs.progressDefaults[k]))}
                 </small>
               </label>
             ))}
@@ -371,6 +625,9 @@ function SettingsSection({ t, lang, approved, editable, onSaved }: { t: Dict; la
             {KEYS.map((k) => (
               <li key={k}>{valueText(t, k, cs.values[k], lang)}</li>
             ))}
+            {PKEYS.map((k) => (
+              <li key={k}>{pText(t, k, cs.progress[k])}</li>
+            ))}
             {cs.models.map((m) => (
               <li key={m.id}>{t.cwLocalModel(m.id, tokens(m.cMax, lang))}</li>
             ))}
@@ -401,7 +658,7 @@ function SettingsSection({ t, lang, approved, editable, onSaved }: { t: Dict; la
 }
 
 /** The whole picture: every window, the automatic saves, the rule's values (Audit: read; Manage: the person edits). */
-export function WindowDialog(props: { t: Dict; lang: Lang; approved: boolean; editable: boolean; onClose: () => void; onNode?: (id: string) => void; onChanged?: () => void }) {
+export function WindowDialog(props: { t: Dict; lang: Lang; approved: boolean; editable: boolean; canAct?: boolean; onClose: () => void; onNode?: (id: string) => void; onChanged?: () => void }) {
   const { t, lang } = props;
   const [ws, setWs] = useState<WindowStatus | null>(null);
   const [err, setErr] = useState(false);
@@ -414,6 +671,22 @@ export function WindowDialog(props: { t: Dict; lang: Lang; approved: boolean; ed
         setErr(false);
       })
       .catch(() => setErr(true));
+  const [lifted, setLifted] = useState(false);
+  const progressSection = (wp: WindowProgressStatus) => (
+    <ProgressSection
+      wp={wp}
+      t={t}
+      lang={lang}
+      canAct={props.canAct ?? props.editable}
+      approved={props.approved}
+      lifted={lifted}
+      onLifted={() => {
+        setLifted(true);
+        void load();
+        props.onChanged?.();
+      }}
+    />
+  );
   useEffect(() => {
     void load();
     // The fill grows with every answer, not only at a step: look again while the dialog is open.
@@ -441,6 +714,8 @@ export function WindowDialog(props: { t: Dict; lang: Lang; approved: boolean; ed
             <>
               {ws.changed && ws.changed.by !== "restarted" && <p className="qnote q-warn">{t.cwChanged}</p>}
               {ws.changed?.by === "restarted" && <p className="qnote q-info small">{t.cwRestarted}</p>}
+              {/* A stop comes first: it is what the person has to act on. */}
+              {ws.progress?.stop && progressSection(ws.progress)}
               {!ws.windows.length && <p className="muted">{t.cwNoWindows}</p>}
               {ws.current && (
                 <>
@@ -453,6 +728,7 @@ export function WindowDialog(props: { t: Dict; lang: Lang; approved: boolean; ed
                   </p>
                 </>
               )}
+              {ws.progress && !ws.progress.stop && progressSection(ws.progress)}
               {ws.windows.length > 1 && (
                 <section className="a-sec">
                   <h3>{t.cwAll}</h3>

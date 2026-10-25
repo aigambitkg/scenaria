@@ -14,6 +14,7 @@ import { recall, renderRecall } from "./core/recall.js";
 import { projectMetrics, renderMetrics } from "./core/analysis.js";
 import { progressForAgents, projectProgress, renderProgress } from "./core/progress.js";
 import { renderWindows, windowsForAgents, windowStatus } from "./core/window.js";
+import { renderWindowProgress, windowProgress, windowProgressForAgents } from "./core/windowprogress.js";
 import { prepareHandover } from "./core/windowact.js";
 import { SECTIONS, checkExpectations, referenceCapsule, renderExpectations, renderWorkspace, resolveRefs, stringPayload, workspace } from "./core/workspace.js";
 import { renderCanon } from "./core/canon.js";
@@ -478,14 +479,20 @@ export const TOOLS: ToolDef[] = [
     name: "scenaria_window",
     title: "Context window",
     description:
-      "How full the context window is, in percent of C_eff = min(C_max, A_model) — measured from the provider's token counts (Claude Code transcripts, the LLM proxy), never estimated. Shows the zone (green / yellow / orange / red / emergency), the next line and how each number is computed. Without token counts (MCP alone) it says so and shows no number. Read-only: the fill comes only from the provider's counts; records changed outside Scenaria show and then count for nothing.",
+      "How full the context window is, in percent of C_eff = min(C_max, A_model) — measured from the provider's token counts (Claude Code transcripts, the LLM proxy), never estimated. Shows the zone (green / yellow / orange / red / emergency), the next line and how each number is computed; also the progress each window made (points, window-progress/1), the handover check (handover-loss/1) and whether Scenaria stopped the work after two full windows without progress (only the person lifts a stop). Without token counts (MCP alone) it says so and shows no number. Read-only: the fill comes only from the provider's counts; records changed outside Scenaria show and then count for nothing.",
     input: { window: str.optional().describe("A window id (e.g. w3); default: the newest windows") },
     annotations: { readOnlyHint: true },
     run(s, a) {
       const ws = windowStatus(s);
       if (a.window && !ws.windows.some((w) => w.id === a.window)) throw new Error(`${a.window} is not a window`);
       const data = windowsForAgents(ws);
-      return { text: renderWindows(ws, "en", a.window), data: a.window ? { ...data, windows: data.windows.filter((w) => w.id === a.window) } : data };
+      // E4: progress per window, the stop and the handover checks.
+      const wp = windowProgress(s);
+      const progress = windowProgressForAgents(wp);
+      return {
+        text: `${renderWindows(ws, "en", a.window)}\n\n${renderWindowProgress(wp, "en")}`,
+        data: a.window ? { ...data, windows: data.windows.filter((w) => w.id === a.window), progress: { ...progress, windows: progress.windows.filter((w) => w.window === a.window) } } : { ...data, progress },
+      };
     },
   },
   {

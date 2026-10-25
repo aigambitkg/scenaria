@@ -14,7 +14,8 @@ import type { Scenaria } from "./core/engine.js";
 import { DEFAULT_PROXY } from "./core/engine.js";
 import type { MessageInput } from "./core/conversations.js";
 import { applyBlocks } from "./core/blocks.js";
-import { recordWindowEvents, windowKeyFor } from "./core/window.js";
+import { recordWindowEvents, windowJustStarted, windowKeyFor } from "./core/window.js";
+import { evaluateStop, stopState } from "./core/windowprogress.js";
 import { contextAdvice, cutIfDue } from "./core/windowact.js";
 
 type ApiKind = "openai-chat" | "openai-responses" | "anthropic" | "other";
@@ -357,6 +358,10 @@ export async function handleProxy(
       outHeaders["x-scenaria-context-fill"] = String(adv.fill);
       outHeaders["x-scenaria-context-window"] = adv.window.id;
     }
+    // E4: a stop after two full windows without progress. The proxy cannot hold a client up (Kev: enforced only where
+    // the provider allows it, else a recommendation): the header says it; the dashboard shows it to the person.
+    const st = stopState(s);
+    if (st) outHeaders["x-scenaria-stop"] = `task=${st.task}; windows=${st.windows.map((w) => w.split("@")[0]).join(",")}`;
   }
   res.writeHead(upstream.status, outHeaders);
 
@@ -414,9 +419,11 @@ export async function handleProxy(
       if (tokens && !override) {
         const at = new Date().toISOString();
         const rid = responseId(kind, captured, isStream);
-        recordWindowEvents(s, { source: "proxy", key: sessionInfo.externalId, agent, ...(prevResponse ? { continues: `r:${prevResponse}` } : {}) }, [
+        const recorded = recordWindowEvents(s, { source: "proxy", key: sessionInfo.externalId, agent, ...(prevResponse ? { continues: `r:${prevResponse}` } : {}) }, [
           { kind: "sample", at, tokens, model: answer?.model ?? model, ref: rid ? `r:${rid}` : `p:${at}:${randomUUID().slice(0, 8)}` },
         ]);
+        // E4: a window just started — another one ended: compute progress per window and note a stop.
+        if (recorded && windowJustStarted(s, windowKey)) evaluateStop(s);
       }
     } catch {
       /* measuring must never break the call */

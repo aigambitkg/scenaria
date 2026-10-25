@@ -266,7 +266,9 @@ const de: HelpTopic[] = [
     notes: [
       "Nur du änderst die Werte der Regel (Steuerung → Kontextfenster, unter dem Schloss, oder „scenaria window settings“ im Terminal). Jede Änderung ist signiert, der Verlauf liegt außerhalb des Projekts. Lockerere Werte als die Startwerte werden ausdrücklich genannt.",
       "Für lokale Modelle (z. B. Ollama) trägst du die Fenstergröße selbst ein; eine belegte Größe eines Anbieters wird nie überschrieben.",
-      "Grenze: Ohne Token-Zahlen (Claude Desktop nur über MCP) ist nichts messbar. Scenaria kann kein neues Fenster erzwingen und blockiert die KI nie.",
+      "Fortschritt pro Fenster: Jedes volle Fenster (ab Gelb oder komprimiert) soll die Aufgabe um mindestens 10 Punkte voranbringen (Startwert, nur du änderst ihn). Ein Fenster ohne Fortschritt gibt eine Warnung, die mit der Übergabe an die KI geht. Zwei hintereinander an derselben Aufgabe: Stopp – in Claude Code darf die KI dann nur noch lesen und Scenaria nutzen, bis du den Stopp aufhebst (Kontextfenster → „Stopp aufheben“, unter dem Schloss, mit Grund; oder „scenaria window stop lift“ im Terminal). Gezählt wird nur Fortschritt über dem bisher besten Stand: zurückspringen und dasselbe noch einmal tun ist kein Fortschritt. Nicht bewertet werden Fenster ohne Fertig-Kriterien und solche, in denen der nächste Schritt bei dir liegt.",
+      "Übergabe-Prüfung: Scenaria vergleicht Anschluss und Zielbezug der ersten 3 Schritte im neuen Fenster mit dem letzten Schritt im alten. Sinkt er um mehr als 5 Punkte, bekommt die KI die volle Übergabe noch einmal.",
+      "Grenze: Ohne Token-Zahlen (Claude Desktop nur über MCP) ist nichts messbar. Scenaria kann kein neues Fenster erzwingen. Es hält die KI nur in einem Fall an: beim Stopp nach zwei vollen Fenstern ohne Fortschritt – und nur, wo der Anbieter es erlaubt (Claude Code); über den Proxy ist es ein Hinweis. Der Stopp hält eine festgefahrene KI auf, nicht eine, die Scenarias Einstellungen außerhalb ändert. Zwei Claude-Code-Sitzungen gleichzeitig im selben Projekt können wie ein Fensterwechsel aussehen – ein falscher Stopp lässt sich aufheben.",
     ],
     open: { action: "window", label: "Kontextfenster öffnen" },
   },
@@ -627,7 +629,9 @@ const en: HelpTopic[] = [
     notes: [
       "Only you change the rule's values (Manage → Context window, under the lock, or \"scenaria window settings\" in a terminal). Every change is signed and its history kept outside the project. Values looser than the start values are named.",
       "For local models (e.g. Ollama) you enter the window size yourself; a provider's documented size is never overridden.",
-      "Limit: without token counts (Claude Desktop over MCP alone) nothing can be measured. Scenaria cannot force a new window and never blocks the AI.",
+      "Progress per window: every full window (yellow or fuller, or compacted) should bring the task forward by at least 10 points (a start value only you change). One window without progress gives a warning that goes to the AI with the handover. Two in a row on the same task: stop — in Claude Code the AI may then only read and use Scenaria until you lift the stop (context window → “Lift the stop”, under the lock, with a reason; or “scenaria window stop lift” in the terminal). Only progress above the best level so far counts: going back and doing the same again is no progress. Windows of tasks without completion criteria, and windows where the next step is yours, are not assessed.",
+      "Handover check: Scenaria compares the connection and goal reference of the first 3 steps in the new window with the last step in the old one. If it drops by more than 5 points, the AI gets the full handover again.",
+      "Limit: without token counts (Claude Desktop over MCP alone) nothing can be measured. Scenaria cannot force a new window. It holds the AI up in one case only: the stop after two full windows without progress — and only where the provider allows it (Claude Code); through the proxy it is a notice. The stop holds up an AI that is stuck, not one that changes Scenaria's settings outside its tools. Two Claude Code sessions at once in one project can look like a change of window — a wrong stop can be lifted.",
     ],
     open: { action: "window", label: "Open the context window" },
   },

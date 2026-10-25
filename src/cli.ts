@@ -15,8 +15,9 @@ import { addAuditor, auditorKeygen, buildAuditorRequest, listAuditors, normalize
 import { dossier, analysisPrompt, projectMetrics, renderMetrics, runAnalysis } from "./core/analysis.js";
 import { progressForAgents, projectProgress, renderProgress } from "./core/progress.js";
 import { renderWindows, windowsForAgents, windowStatus } from "./core/window.js";
+import { liftStop, renderWindowProgress, stopState, windowProgress, windowProgressForAgents } from "./core/windowprogress.js";
 import { prepareHandover } from "./core/windowact.js";
-import { checkModels, checkValues, CONTEXT_BOUNDS, CONTEXT_DEFAULTS, describeSettings, readContextSettings, setContextSettings, type ContextValues } from "./core/contextsettings.js";
+import { checkModels, checkProgress, checkValues, CONTEXT_BOUNDS, CONTEXT_DEFAULTS, describeSettings, PROGRESS_BOUNDS, PROGRESS_DEFAULTS, readContextSettings, setContextSettings, type ContextValues, type ProgressValues } from "./core/contextsettings.js";
 import { normaliseModel } from "./core/models.js";
 import type { ScenariaNode } from "./core/types.js";
 import { isUnconfirmedPass, verdictOrigin } from "./core/verdict.js";
@@ -379,6 +380,30 @@ async function allowPrintedApprovalLink(v: Record<string, unknown>): Promise<boo
   return true;
 }
 
+/**
+ * `scenaria window stop [lift --why "<reason>"]` (E4): show the stop after two full windows without progress; the
+ * PERSON lifts it at an interactive terminal (typed confirmation), with a reason.
+ */
+async function windowStopCommand(s: Scenaria, p: string[], out: (text: string, data?: unknown) => unknown, lang: "de" | "en", whyFlag: string) {
+  const wp = windowProgress(s, { handovers: false });
+  if (!p[0]) {
+    const st = wp.stop ?? stopState(s);
+    return out(st ? renderWindowProgress(wp, lang) : lang === "de" ? "Kein Stopp." : "No stop.", { stop: st, lift: wp.lift });
+  }
+  if (p[0] !== "lift") throw new Error('Usage: scenaria window stop [lift --why "the task was cut smaller"]');
+  const why = whyFlag.trim();
+  if (!wp.stop) throw new Error("There is no stop to lift.");
+  if (!why) throw new Error('Say why the stop is lifted: scenaria window stop lift --why "the task was cut smaller"');
+  const by = process.env.SCENARIA_USER || userInfo().username || "person";
+  await personConfirm(
+    "lift",
+    `Lift the stop on task ${wp.stop.task} (windows ${wp.stop.windows.map((w) => w.split("@")[0]).join(", ")} made too little progress)? Reason: ${why}. The AI may write again; two more full windows without progress stop it again.`,
+    "Lifting a stop is the person's action: run this in an interactive terminal, or use the dashboard (lock → approval mode).",
+  );
+  const after = liftStop(s, { why }, { by, via: "terminal" });
+  return out(renderWindowProgress(after, lang), { stop: after.stop, lift: after.lift });
+}
+
 /** A person's action: an interactive terminal AND typing the confirmation word on it. */
 /** `scenaria window settings …` (E3b-1): show, or — the person, at a terminal — set the context-window rule. */
 async function windowSettingsCommand(s: Scenaria, p: string[], out: (text: string, data?: unknown) => unknown) {
@@ -395,6 +420,7 @@ async function windowSettingsCommand(s: Scenaria, p: string[], out: (text: strin
       head,
       `  yellow from ${v.yellow} %, red from ${v.red} %, emergency from ${v.emergency} % (of C_eff)`,
       `  P95 start value ${v.p95start} %, margin ${v.margin} %, A_model ${v.aModel} tokens`,
+      `  progress per window: at least ${cs.progress.minProgress} points per full window; handover tolerance ${cs.progress.tolerance} points`,
       cs.models.length ? `  local models: ${cs.models.map((m) => `${m.id} ${m.cMax} tokens`).join(", ")}` : "  local models: none entered",
       ...(cs.trust === "verified" && (cs.looser.length || cs.dropped.length) ? [`  ${describeSettings(cs).en.replace(/^[^.]*\.\s*/, "")}`] : []),
     ];
@@ -405,31 +431,48 @@ async function windowSettingsCommand(s: Scenaria, p: string[], out: (text: strin
   const by = process.env.SCENARIA_USER || userInfo().username || "person";
   const cur = readContextSettings(s.store);
   // Checked BEFORE the person is asked: nothing to confirm that would be refused (review E3b-1 L5).
-  const precheck = (values: Partial<ContextValues>, models: { id: string; cMax: number }[]) => {
+  const precheck = (values: Partial<ContextValues>, models: { id: string; cMax: number }[], progress: Partial<ProgressValues> = {}) => {
     const next = { ...cur.values, ...values };
-    const bad = checkValues(next) ?? checkModels(models);
+    const nextP = { ...cur.progress, ...progress };
+    const bad = checkValues(next) ?? checkProgress(nextP) ?? checkModels(models);
     if (bad) throw new Error(bad.message);
-    if (cur.trust !== "invalid" && JSON.stringify(next) === JSON.stringify(cur.values) && JSON.stringify(models.map((m) => ({ id: normaliseModel(m.id), cMax: m.cMax }))) === JSON.stringify(cur.models))
+    if (
+      cur.trust !== "invalid" &&
+      JSON.stringify(next) === JSON.stringify(cur.values) &&
+      JSON.stringify(nextP) === JSON.stringify(cur.progress) &&
+      JSON.stringify(models.map((m) => ({ id: normaliseModel(m.id), cMax: m.cMax }))) === JSON.stringify(cur.models)
+    )
       throw new Error("Nothing changes: these values are already in force.");
-    return next;
+    return { ...next, ...nextP };
   };
   if (p[0] === "reset") {
-    precheck(CONTEXT_DEFAULTS, []);
+    precheck(CONTEXT_DEFAULTS, [], PROGRESS_DEFAULTS);
     await personConfirm("reset", "Go back to the start values v1.0 of the context-window rule (and remove the local models you entered)?", notPerson);
     setContextSettings(s.store, { reset: true }, { by, via: "terminal" });
     return show();
   }
   if (p[0] === "set") {
     const values: Partial<ContextValues> = {};
+    const progress: Partial<ProgressValues> = {};
     for (const a of p.slice(1)) {
-      const m = /^(yellow|red|emergency|p95start|margin|aModel)=(\d+(?:\.\d+)?)$/.exec(a);
-      if (!m) throw new Error(`Usage: scenaria window settings set yellow=50 red=70 emergency=85 p95start=5 margin=2 aModel=200000 (bounds: ${Object.entries(CONTEXT_BOUNDS).map(([k, b]) => `${k} ${b[0]}–${b[1]}`).join(", ")})`);
-      values[m[1] as keyof ContextValues] = Number(m[2]);
+      const m = /^(yellow|red|emergency|p95start|margin|aModel|minProgress|tolerance)=(\d+(?:\.\d+)?)$/.exec(a);
+      if (!m)
+        throw new Error(
+          `Usage: scenaria window settings set yellow=50 red=70 emergency=85 p95start=5 margin=2 aModel=200000 minProgress=10 tolerance=5 (bounds: ${Object.entries({ ...CONTEXT_BOUNDS, ...PROGRESS_BOUNDS })
+            .map(([k, b]) => `${k} ${b[0]}–${b[1]}`)
+            .join(", ")})`,
+        );
+      if (m[1] === "minProgress" || m[1] === "tolerance") progress[m[1]] = Number(m[2]);
+      else values[m[1] as keyof ContextValues] = Number(m[2]);
     }
-    if (!Object.keys(values).length) throw new Error("Name at least one value, e.g. scenaria window settings set red=72");
-    const next = precheck(values, cur.models);
-    await personConfirm("set", `Set the context-window rule to: yellow ${next.yellow} %, red ${next.red} %, emergency ${next.emergency} %, P95 start ${next.p95start} %, margin ${next.margin} %, A_model ${next.aModel} tokens (start values: ${CONTEXT_DEFAULTS.yellow}/${CONTEXT_DEFAULTS.red}/${CONTEXT_DEFAULTS.emergency} %, ${CONTEXT_DEFAULTS.p95start} %, ${CONTEXT_DEFAULTS.margin} %, ${CONTEXT_DEFAULTS.aModel})?`, notPerson);
-    setContextSettings(s.store, { values }, { by, via: "terminal" });
+    if (!Object.keys(values).length && !Object.keys(progress).length) throw new Error("Name at least one value, e.g. scenaria window settings set red=72");
+    const next = precheck(values, cur.models, progress);
+    await personConfirm(
+      "set",
+      `Set the context-window rule to: yellow ${next.yellow} %, red ${next.red} %, emergency ${next.emergency} %, P95 start ${next.p95start} %, margin ${next.margin} %, A_model ${next.aModel} tokens; at least ${next.minProgress} points of progress per full window, handover tolerance ${next.tolerance} points (start values: ${CONTEXT_DEFAULTS.yellow}/${CONTEXT_DEFAULTS.red}/${CONTEXT_DEFAULTS.emergency} %, ${CONTEXT_DEFAULTS.p95start} %, ${CONTEXT_DEFAULTS.margin} %, ${CONTEXT_DEFAULTS.aModel}; ${PROGRESS_DEFAULTS.minProgress} and ${PROGRESS_DEFAULTS.tolerance} points)?`,
+      notPerson,
+    );
+    setContextSettings(s.store, { values, progress }, { by, via: "terminal" });
     return show();
   }
   if (p[0] === "model") {
@@ -1071,10 +1114,14 @@ async function main() {
     case "window": {
       const s = Scenaria.open(v.root);
       if (p[0] === "settings") return await windowSettingsCommand(s, p.slice(1), out);
+      if (p[0] === "stop") return await windowStopCommand(s, p.slice(1), out, v.lang === "de" ? "de" : "en", typeof v.why === "string" ? v.why : "");
       const ws = windowStatus(s);
       if (p[0] && !ws.windows.some((w) => w.id === p[0])) throw new Error(`${p[0]} is not a window`);
       const data = windowsForAgents(ws);
-      return out(renderWindows(ws, v.lang === "de" ? "de" : "en", p[0]), p[0] ? { ...data, windows: data.windows.filter((w) => w.id === p[0]) } : data);
+      const wp = windowProgress(s);
+      const progress = windowProgressForAgents(wp);
+      const lang = v.lang === "de" ? "de" : "en";
+      return out(`${renderWindows(ws, lang, p[0])}\n\n${renderWindowProgress(wp, lang)}`, p[0] ? { ...data, windows: data.windows.filter((w) => w.id === p[0]), progress: { ...progress, windows: progress.windows.filter((w) => w.window === p[0]) } } : { ...data, progress });
     }
     case "handover": {
       const s = Scenaria.open(v.root);

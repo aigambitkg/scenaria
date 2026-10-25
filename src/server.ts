@@ -42,8 +42,9 @@ import { TARGETS, agentStatus, connectionSnippets, setupAgents, writeLauncher, t
 import { callLlm } from "./core/analysis.js";
 import { projectProgress } from "./core/progress.js";
 import { windowStatus } from "./core/window.js";
+import { liftStop, windowProgress } from "./core/windowprogress.js";
 import { prepareHandover } from "./core/windowact.js";
-import { CONTEXT_BOUNDS, CONTEXT_DEFAULTS, describeSettings, readContextSettings, setContextSettings } from "./core/contextsettings.js";
+import { CONTEXT_BOUNDS, CONTEXT_DEFAULTS, describeSettings, PROGRESS_BOUNDS, PROGRESS_DEFAULTS, readContextSettings, setContextSettings } from "./core/contextsettings.js";
 import { adoptRecommendation, expertAnalysis, factSheet, getReport, listPersonalReports, listReports } from "./core/expert.js";
 import { forgetProject, listProjects, registerProject } from "./core/projects.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
@@ -560,12 +561,12 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         // Batch E2: progress per task and for the project, each with its derivation (read-only, computed from evidence).
         if (req.method === "GET" && p === "/api/progress") return send(res, 200, projectProgress(s));
         // Batch E3a-1: how full the agents' context windows are, each number with its derivation (read-only, measured).
-        if (req.method === "GET" && p === "/api/windows") return send(res, 200, windowStatus(s));
+        if (req.method === "GET" && p === "/api/windows") return send(res, 200, { ...windowStatus(s), progress: windowProgress(s) });
         // E3b-1: the values of the context-window rule. Reading is open (rule 10: nothing secret); setting them is the
         // person's (POST under the personOnly prefix: approval session).
         if (req.method === "GET" && p === "/api/context-settings") {
           const cs = readContextSettings(s.store);
-          return send(res, 200, { ...cs, text: describeSettings(cs), defaults: CONTEXT_DEFAULTS, bounds: CONTEXT_BOUNDS, approval: isApprover(req) });
+          return send(res, 200, { ...cs, text: describeSettings(cs), defaults: CONTEXT_DEFAULTS, bounds: CONTEXT_BOUNDS, progressDefaults: PROGRESS_DEFAULTS, progressBounds: PROGRESS_BOUNDS, approval: isApprover(req) });
         }
         if (req.method === "GET" && p === "/api/handover") {
           const w = url.searchParams.get("window") ?? undefined;
@@ -600,7 +601,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         // Binding canon actions, the person's settings, the built-in chat and the relay: only with the
         // approval session (not with the API/agent token) — they act for the person or use the person's keys.
         // (The archivist and the analysis also spend the person's quota with the person's keys.)
-        const personOnly = p.startsWith("/api/auditors") || p.startsWith("/api/integrity") || p.startsWith("/api/canon") || p.startsWith("/api/settings") || p.startsWith("/api/agents") || p === "/api/chat" || p === "/api/relay" || p.startsWith("/api/forecast") || p === "/api/analysis/run" || p === "/api/analysis/config" || p.startsWith("/api/expert") || p.startsWith("/api/projects") || p.startsWith("/api/rules") || p === "/api/analysis/accept" || p.startsWith("/api/audit-file") || p.startsWith("/api/context-settings");
+        const personOnly = p.startsWith("/api/auditors") || p.startsWith("/api/integrity") || p.startsWith("/api/canon") || p.startsWith("/api/settings") || p.startsWith("/api/agents") || p === "/api/chat" || p === "/api/relay" || p.startsWith("/api/forecast") || p === "/api/analysis/run" || p === "/api/analysis/config" || p.startsWith("/api/expert") || p.startsWith("/api/projects") || p.startsWith("/api/rules") || p === "/api/analysis/accept" || p.startsWith("/api/audit-file") || p.startsWith("/api/context-settings") || p.startsWith("/api/window-stop");
         // The person gets the approval mode without copying a link: Scenaria opens a fresh single-use link
         // in the default browser itself. Nothing secret is returned; at most once per 15 s; logged.
         if (req.method === "POST" && p === "/api/approval/open") {
@@ -644,10 +645,19 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         if (req.method === "POST" && p === "/api/context-settings") {
           const b = await readBody(req);
           try {
-            const cs = setContextSettings(s.store, { values: b?.values, models: b?.models, reset: b?.reset === true }, { by: approver, via: "dashboard" });
-            return send(res, 200, { ...cs, text: describeSettings(cs), defaults: CONTEXT_DEFAULTS, bounds: CONTEXT_BOUNDS, approval: true });
+            const cs = setContextSettings(s.store, { values: b?.values, progress: b?.progress, models: b?.models, reset: b?.reset === true }, { by: approver, via: "dashboard" });
+            return send(res, 200, { ...cs, text: describeSettings(cs), defaults: CONTEXT_DEFAULTS, bounds: CONTEXT_BOUNDS, progressDefaults: PROGRESS_DEFAULTS, progressBounds: PROGRESS_BOUNDS, approval: true });
           } catch (err: any) {
             return send(res, 400, { error: err?.message ?? String(err), code: err?.code ?? "invalid", ...(typeof err?.key === "string" ? { key: err.key } : {}) });
+          }
+        }
+        // E4: lifting a stop after two full windows without progress is the person's (personOnly prefix: approval session).
+        if (req.method === "POST" && p === "/api/window-stop/lift") {
+          const b = await readBody(req);
+          try {
+            return send(res, 200, liftStop(s, { why: String(b?.why ?? "") }, { by: approver, via: "dashboard" }));
+          } catch (err: any) {
+            return send(res, 400, { error: err?.message ?? String(err), code: err?.code ?? "invalid" });
           }
         }
         if (req.method === "GET" && p === "/api/audit-file/access") {

@@ -488,6 +488,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
           {view !== "simple" && (
             <button className="btn" onClick={() => setWindowOpen(true)} title={t.cwButtonHint}>
               {t.cwButton}
+              {windows?.progress?.stop && <span className="hchip z-red">{t.wpStopChip}</span>}
               {windows?.current?.fill && windows.current.zone && (
                 <span className={`hchip z-${windows.current.zone}`} aria-label={`${windows.current.fill.value} % · ${t.cwZones[windows.current.zone]}`}>
                   {windows.current.fill.value} % · {t.cwZones[windows.current.zone]}
@@ -650,6 +651,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
                 fidelityError={fidelityError}
                 progress={progress}
                 windows={windows}
+                onOpenWindow={() => setWindowOpen(true)}
                 toast={toast}
                 onEditGoal={() => setEditGoal(root?.goal ?? "")}
                 onRewound={load}
@@ -882,6 +884,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
           lang={lang}
           approved={approved}
           editable={view === "manage" && !auditView}
+          canAct={!auditView}
           onClose={() => setWindowOpen(false)}
           onChanged={() => api.windows().then(setWindows).catch(() => setWindows(null))}
           onNode={(id) => {
