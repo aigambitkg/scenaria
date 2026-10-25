@@ -443,7 +443,7 @@ test("E4 mutation check: through the proxy the stop is computed when a window st
     for await (const _ of req);
     const pct = fills[i++] ?? 20;
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ id: `msg_p${++n}`, model: "claude-sonnet-5-5", content: [{ type: "text", text: "ok" }], usage: { input_tokens: pct * 2000, output_tokens: 5 } }));
+    res.end(JSON.stringify({ id: `msg_p${++n}`, model: "claude-sonnet-5-5", content: [{ type: "text", text: "ok" }, { type: "tool_use", id: `t${n}`, name: "read_file", input: {} }], usage: { input_tokens: pct * 2000, output_tokens: 5 } }));
   });
   await new Promise((r) => up.listen(0, "127.0.0.1", r));
   const cfg = s.config();
@@ -473,4 +473,192 @@ test("E4 mutation check: through the proxy the stop is computed when a window st
     server.close();
     up.close();
   }
+});
+
+// ---------------------------------------------------------------- E5 (Kev 2026-10-25)
+
+test("E5: a new session continues the open task with criteria; a task started under it never ends it (review H1, L7)", async () => {
+  const { s, task } = plainProject();
+  const { progressSnapshot } = await import("../dist/core/progress.js");
+  // An open task with approved criteria: a new session's request does not start a task of its own.
+  assert.equal(s.noteTask("claude-code:S9", "Mach mit dem Bericht weiter", "weiter"), task, "the session continues the open task");
+  assert.ok(!s.store.readState().pendingTask, "no pending task of its own");
+  const cp = s.checkpoint({ title: "weiter am Bericht", task: { key: "claude-code:S9", title: "Mach mit dem Bericht weiter" } });
+  assert.equal(s.currentTask(cp.id).id, task, "the session's work lands in the open task");
+  assert.equal(s.store.listNodes().filter((n) => n.type === "goal").length, 1);
+  // The agent starts a task: it is part of the open task's work — the open task stays open and stays the focus.
+  const t2 = s.startMission({ title: "Notizen", goal: "Notizen führen" }).id;
+  assert.notEqual(t2, task);
+  assert.equal(s.store.readNode(task).status, "active", "the open task is not marked done");
+  assert.equal(progressSnapshot(s).focus, task, "progress per window is measured on the open task");
+  s.checkpoint({ title: "Notiz" });
+  assert.equal(s.noteTask("claude-code:S10", "Etwas anderes", "anders"), task, "a new session continues the open task");
+  assert.ok(!s.store.readState().pendingTask);
+  // A task with criteria is never refined by a second start without work in between (review L7).
+  const p2 = tempProject();
+  p2.write("README.md", "x\n");
+  const s2 = Scenaria.init(p2.dir);
+  const a = s2.startMission({ projectGoal: "G", title: "A", goal: "a" }).id;
+  s2.addCanonAsUser({ kind: "future", text: "A is done", task: a, weight: 100, artifact: "a.md" }, person);
+  const b = s2.startMission({ title: "B", goal: "b" }).id;
+  assert.notEqual(b, a, "a new task, not task A renamed");
+  assert.equal(s2.store.readNode(a).title, "A");
+  // Without criteria nothing holds: a new session starts its own task as before.
+  const p3 = tempProject();
+  p3.write("README.md", "x\n");
+  const s3 = Scenaria.init(p3.dir);
+  s3.startMission({ projectGoal: "G", title: "Plain", goal: "p" });
+  s3.checkpoint({ title: "step" });
+  assert.equal(s3.noteTask("claude-code:S11", "Etwas ganz anderes", "anders"), null);
+  assert.equal(s3.store.readState().pendingTask?.key, "claude-code:S11");
+});
+
+test("E5 review H1: the agent is told once per session that it continues the open task; start_mission says it stays open", async () => {
+  const { p, hook, task } = hookProject();
+  const start = hook("session-start", "S1", { source: "startup" });
+  assert.match(start.hookSpecificOutput.additionalContext, new RegExp(`This session continues task ${task} "Q3 report"`));
+  const first = hook("user-prompt", "S1", { prompt: "Go on" });
+  assert.doesNotMatch(first?.hookSpecificOutput?.additionalContext ?? "", /This session continues task/, "told once per session");
+  // A session that started before the hook told it (or a resumed one): told at its first prompt.
+  const other = hook("user-prompt", "S2", { prompt: "Go on" });
+  assert.match(other.hookSpecificOutput.additionalContext, /This session continues task/);
+  const { TOOLS } = await import("../dist/tools.js");
+  const tool = TOOLS.find((t) => t.name === "scenaria_start_mission");
+  const r = await tool.run(Scenaria.open(p.dir), { title: "Tabellen", goal: "Tabellen bauen" }, {});
+  assert.match(r.text, new RegExp(`task ${task} has approved completion criteria and is not accepted yet — it stays open`));
+});
+
+test("E5 a value set later never changes an ended window's measurement; a model size entered later does not apply to it", async () => {
+  const { p, session } = hookProject();
+  await session("S1", 60);
+  await session("S2", 60);
+  const { windowStatus } = await import("../dist/core/window.js");
+  const { setContextSettings, readContextSettings, settingsAt } = await import("../dist/core/contextsettings.js");
+  const s = Scenaria.open(p.dir);
+  const before = windowStatus(s, { limit: 50 }).windows;
+  const w1 = before.find((w) => w.id === "w1");
+  const w2 = before.find((w) => w.id === "w2");
+  assert.ok(w1 && w2 && w1.cEff === 200000 && w2.cEff === 200000);
+  const t0 = new Date().toISOString();
+  await sleep(5);
+  setContextSettings(s.store, { values: { aModel: 100_000 }, models: [{ id: "my-local-model", cMax: 32_000 }] }, { by: "kev", via: "terminal" });
+  const after = windowStatus(Scenaria.open(p.dir), { limit: 50 }).windows;
+  const a1 = after.find((w) => w.id === "w1");
+  const a2 = after.find((w) => w.id === "w2");
+  assert.equal(a1.cEff, 200000, "an ended window keeps the A_model in force at its last answer");
+  assert.equal(a1.fill.value, w1.fill.value);
+  assert.equal(a2.cEff, 100000, "the running window uses the values in force now");
+  // The values in force before the revision: no model rows entered then.
+  const cs = readContextSettings(s.store);
+  assert.equal(settingsAt(cs, t0).aModel, 200000);
+  assert.equal(settingsAt(cs, t0).modelRows.length, 0);
+  assert.equal(settingsAt(cs, new Date().toISOString()).modelRows.some((m) => m.ids.includes("my-local-model")), true);
+});
+
+test("E5 review M6 + Kev N4: windows of reading, questions and answers only are not assessed — no stop", async () => {
+  const { p, hook, add } = hookProject();
+  const talk = (sid, pct) => {
+    const id = ++n;
+    return line({ isSidechain: false, type: "assistant", uuid: `u-${id}`, timestamp: new Date().toISOString(), requestId: `req_${id}`, message: { id: `msg_${id}`, model: "claude-opus-5-5", role: "assistant", content: [{ type: "text", text: "Here is my answer." }, { type: "tool_use", id: `q${id}`, name: pct === 10 ? "AskUserQuestion" : "Read", input: {} }, { type: "tool_use", id: `g${id}`, name: "mcp__scenaria__scenaria_status", input: {} }], usage: { input_tokens: 2, cache_creation_input_tokens: 0, cache_read_input_tokens: pct * 2000 - 2, output_tokens: 50 } } });
+  };
+  for (const sid of ["Q1", "Q2", "Q3"]) {
+    hook("session-start", sid, { source: "startup" });
+    hook("user-prompt", sid, { prompt: "Explain the report" });
+    for (const pct of [10, 60]) {
+      await sleep(5);
+      add(sid, talk(sid, pct));
+      hook("stop", sid, {});
+    }
+  }
+  const wp = windowProgress(Scenaria.open(p.dir));
+  const ended = wp.windows.filter((a) => a.endedAt);
+  assert.equal(ended.length, 2);
+  assert.ok(ended.every((a) => a.state === "skipped" && a.why === "no-work"), JSON.stringify(ended.map((a) => [a.window, a.state, a.why])));
+  assert.equal(wp.stop, null);
+  assert.equal(wp.warning, null);
+  assert.equal(stopState(Scenaria.open(p.dir)), null);
+});
+
+test("E5 review L11: the dashboard learns whether the hook before every tool is wired; the stop names the title", async () => {
+  const { p, session } = hookProject();
+  await session("S1");
+  await session("S2");
+  await session("S3");
+  const s = Scenaria.open(p.dir);
+  const app = createApp(s, {});
+  const server = createServer(app.handler);
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const get = async () => (await (await fetch(`http://127.0.0.1:${server.address().port}/api/windows`, { headers: { "x-scenaria": "1" } })).json()).progress;
+  try {
+    let wp = await get();
+    assert.ok(wp.stop);
+    assert.equal(wp.stop.title, "Q3 report");
+    assert.equal(wp.hookWired, false, "not wired: the dashboard says the stop is not enforced");
+    setupAgents(p.dir, ["claude"]);
+    wp = await get();
+    assert.equal(wp.hookWired, true);
+  } finally {
+    server.close();
+  }
+  const ui = readFileSync(new URL("../ui/src/Window.tsx", import.meta.url), "utf8");
+  assert.equal((ui.match(/\{HOOK_OFF\([^)]*\) && <p className="small">\{t\.wpNotWired\}<\/p>\}/g) ?? []).length, 2, "both stop banners warn");
+  assert.equal((ui.match(/t\.wpStop\(stopIds\(st\), stopTask\(st, lang\)/g) ?? []).length, 2);
+});
+
+test("E5 re-check N1/N3: only the person closes an open task with criteria; the agent's 'abandoned' changes nothing", async () => {
+  const { s, task } = plainProject();
+  const { progressSnapshot } = await import("../dist/core/progress.js");
+  const app = createApp(s, { approvalCode: "code", approvalSecret: "sess" });
+  const server = createServer(app.handler);
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const upd = (body, cookie) => fetch(`${base}/api/node/update`, { method: "POST", headers: { "content-type": "application/json", "x-scenaria": "1", ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) });
+  try {
+    const r = await upd({ id: task, status: "abandoned" });
+    assert.equal(r.status, 403, "an agent's shell cannot close it");
+    assert.equal((await r.json()).code, "person_only_close");
+    assert.equal(s.store.readNode(task).status, "active");
+    assert.throws(() => s.update(task, { status: "abandoned" }), (e) => e.code === "person_only_close", "also in the core");
+    // Set some other way (an old record, a checkpoint's taskDone): without the person's closing it still holds the focus.
+    const node = s.store.readNode(task);
+    s.store.writeNode({ ...node, status: "abandoned" });
+    assert.equal(progressSnapshot(s).focus, task);
+    assert.equal(s.openTaskWithCriteria(), task, "still the open task a new session continues");
+    s.store.writeNode({ ...node, status: "active" });
+    // The person (approval session) marks it done: new work no longer counts for it.
+    const cookie = "scenaria_approval=sess";
+    const ok = await upd({ id: task, status: "done" }, cookie);
+    assert.equal(ok.status, 200, await ok.clone().text());
+    const { taskCloseOf } = await import("../dist/core/taskclose.js");
+    assert.equal(taskCloseOf(s.store, task)?.status, "done", "signed outside the project");
+    assert.equal(s.openTaskWithCriteria(), null);
+    assert.equal(s.noteTask("claude-code:S20", "CSV export", "csv"), null, "a new session starts its own task again");
+    // Only the person reopens it (re-check, LOW).
+    const back = await upd({ id: task, status: "active" });
+    assert.equal(back.status, 403);
+    assert.equal(s.openTaskWithCriteria(), null);
+    assert.equal((await upd({ id: task, status: "active" }, cookie)).status, 200);
+    assert.equal(s.openTaskWithCriteria(), task, "reopened by the person: open again");
+  } finally {
+    server.close();
+  }
+});
+
+test("E5 re-check 3: a task closed by hand in the project's files stays open — only the person's signed close counts", async () => {
+  const { p, s, task } = plainProject();
+  const node = s.store.readNode(task);
+  // What an agent's shell can do: write the status and any marker into the node's file.
+  s.store.writeNode({ ...node, status: "abandoned", meta: { ...(node.meta ?? {}), closedBy: { status: "abandoned", by: "kev", via: "dashboard", at: new Date().toISOString() } } });
+  assert.equal(Scenaria.open(p.dir).openTaskWithCriteria(), task, "still open");
+  // A signed record changed by hand does not count either.
+  const { recordTaskClose, taskCloseOf } = await import("../dist/core/taskclose.js");
+  recordTaskClose(s.store, { task, status: "done", by: "kev" });
+  assert.equal(s.openTaskWithCriteria(), null);
+  const { globalConfigPath } = await import("../dist/core/global.js");
+  const f = join(globalConfigPath(), "..", "task-closes.json");
+  const j = JSON.parse(readFileSync(f, "utf8"));
+  for (const rec of Object.values(j.projects)) for (const c of rec.closes) c.by = "agent";
+  writeFileSync(f, JSON.stringify(j));
+  assert.equal(taskCloseOf(s.store, task), null);
+  assert.equal(s.openTaskWithCriteria(), task, "an altered record does not count");
 });

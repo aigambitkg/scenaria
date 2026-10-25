@@ -42,11 +42,16 @@ export const MODEL_TABLE: ModelEntry[] = [
 
 /** Lower case, without a provider prefix ("anthropic/", "models/") or a context-size tag ("[1m]"). */
 export function normaliseModel(model: string): string {
-  return String(model)
+  const m = String(model)
     .trim()
     .toLowerCase()
     .replace(/\[[^\]]*\]$/, "")
-    .replace(/^(?:anthropic|openai|google|models)\//, "");
+    .replace(/^(?:anthropic|openai|google|models)\//, "")
+    // Amazon Bedrock ("us.anthropic.claude-sonnet-5-5-v1:0") and Google Vertex ("claude-sonnet-5-5@20261001") name the
+    // same model with a region/vendor prefix and a version suffix (E5 review, M5).
+    .replace(/^(?:(?:us|eu|apac|global|us-gov|jp|au)\.)?anthropic\./, "");
+  // The version suffixes only on Claude names: "deepseek-v2" and "deepseek-v3" stay two models (E5 re-check N5).
+  return m.startsWith("claude-") ? m.replace(/-v\d+(?::\d+)?$/, "").replace(/@[\w.-]+$/, "") : m;
 }
 
 /**

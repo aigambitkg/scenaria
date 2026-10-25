@@ -549,7 +549,8 @@ export function progressSnapshot(s: Scenaria): ProgressSnapshot {
   let focus: string | null = null;
   try {
     const head = s.head();
-    focus = head ? (s.currentTask(head.id)?.id ?? null) : null;
+    // The open task with criteria the work counts for (a task started under it is part of it — E5 review H1).
+    focus = head ? (s.focusTask(head.id)?.id ?? null) : null;
   } catch {
     focus = null;
   }

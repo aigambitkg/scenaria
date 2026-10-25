@@ -675,3 +675,18 @@ export function writeLauncher(root: string, dir?: string, home = homedir()): str
   chmodSync(file, 0o755);
   return file;
 }
+
+/** Is Scenaria's PreToolUse hook wired for every tool (matcher "*") in the project's or the user's Claude Code settings? */
+export function preToolHookWired(root: string, home?: string): boolean {
+  const files = [`${root}/.claude/settings.json`, `${root}/.claude/settings.local.json`, ...(home ? [`${home}/.claude/settings.json`] : [])];
+  for (const f of files) {
+    try {
+      const j = JSON.parse(readFileSync(f, "utf8"));
+      const list: any[] = Array.isArray(j?.hooks?.PreToolUse) ? j.hooks.PreToolUse : [];
+      if (list.some((m) => (m?.matcher === "*" || m?.matcher === undefined || m?.matcher === "") && Array.isArray(m?.hooks) && m.hooks.some((h: any) => /\bhook pre-tool\b/.test(String(h?.command ?? ""))))) return true;
+    } catch {
+      /* not there or not readable */
+    }
+  }
+  return false;
+}

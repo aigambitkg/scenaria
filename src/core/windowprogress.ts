@@ -36,9 +36,8 @@ import type { Scenaria } from "./engine.js";
 import { writeJsonAtomic, type Store } from "./store.js";
 import { globalConfigPath } from "./global.js";
 import { projectIdentity, publicKeyId, signRecord, verifyRecord } from "./canon.js";
-import { compact, CONTEXT_RULE, derive, formulaValue, parseContextRule, parseWindowProgressRule, WINDOW_PROGRESS_RULE, windowFull, windowVerdict, type CompactDerivation, type Derivation, type Lang2 } from "./derivation.js";
-import { readContextSettings, type ContextSettings } from "./contextsettings.js";
-import { A_MODEL_DEFAULT } from "./models.js";
+import { compact, derive, formulaValue, gateLabel, progressParts, parseContextRule, parseWindowProgressRule, windowFull, windowVerdict, type CompactDerivation, type Derivation, type Lang2 } from "./derivation.js";
+import { readContextSettings, settingsAt, type ContextSettings } from "./contextsettings.js";
 import { windowStatus, type ProgressSnapInfo, type WindowInfo, type WindowStatus } from "./window.js";
 import { progressSnapshot } from "./progress.js";
 import type { FidelityPoint } from "./fidelity.js";
@@ -46,7 +45,7 @@ import type { ScenariaNode } from "./types.js";
 
 export type AssessState = "running" | "progress" | "none" | "skipped";
 /** Why a window is not assessed. */
-export type SkipWhy = "not-full" | "no-fill" | "no-criteria" | "waiting" | "no-measure" | "changed-outside";
+export type SkipWhy = "not-full" | "no-fill" | "no-criteria" | "waiting" | "no-measure" | "changed-outside" | "no-work" | "capped";
 
 export interface WindowAssessment {
   window: string;
@@ -71,6 +70,10 @@ export interface WindowAssessment {
   next: string | null;
   /** Ended before the person's newest lift of a stop: does not count for a new stop. */
   lifted: boolean;
+  /** E5: the open gate that held the task's value (cap in %), when the window is not assessed because of it. */
+  gate?: number;
+  /** E5: how much the task rose without the cap (points), with `gate`. */
+  rise?: number;
 }
 
 export interface HandoverCheck {
@@ -99,6 +102,8 @@ export interface WindowStop {
   /** The two windows without progress, oldest first ("w3@<start>"). */
   windows: string[];
   task: string;
+  /** The task's title when the stop was found (E5 review L8: people recognise a task by its title). */
+  title?: string;
   /** When the stop began (the second window's end). */
   since: string;
   /** The line of windows (source and agent). */
@@ -119,6 +124,8 @@ export interface WindowProgressStatus {
   stop: WindowStop | null;
   /** The newest ended window of a line had no progress (and there is no stop): the handover carries a problem note. */
   warning: WindowAssessment | null;
+  /** E5: the newest ended window of a line was held at a gate (no stop, no warning): the agent hears which gate. */
+  capped: WindowAssessment | null;
   /** Kev's row 4: the first window of a task is red or fuller and gate 20 is still open. */
   escalation: { window: string; task: string; fill: number } | null;
   /** A running window at red or fuller works on a task without criteria: progress cannot be measured. */
@@ -129,6 +136,8 @@ export interface WindowProgressStatus {
   handovers: HandoverCheck[];
   /** The records were changed outside: affected windows are not assessed. */
   changed: WindowStatus["changed"];
+  /** E5 review L11 (set by the server): is the hook before every tool wired? Without it a stop is not enforced. */
+  hookWired?: boolean;
 }
 
 const ref = (w: { id: string; startedAt: string }) => `${w.id}@${w.startedAt}`;
@@ -211,7 +220,7 @@ function readNoted(store: Store): (WindowStop & { noted: string })[] {
     const list: any[] = Array.isArray(rec?.stops) ? rec.stops : [];
     return list
       .filter((x) => x && Array.isArray(x.windows) && x.windows.every((w: unknown) => typeof w === "string") && typeof x.task === "string" && typeof x.since === "string" && typeof x.noted === "string")
-      .map((x) => ({ windows: x.windows, task: x.task, since: x.since, line: typeof x.line === "string" ? x.line : "", noted: x.noted }));
+      .map((x) => ({ windows: x.windows, task: x.task, ...(typeof x.title === "string" && x.title ? { title: clean(x.title, 80) } : {}), since: x.since, line: typeof x.line === "string" ? x.line : "", noted: x.noted }));
   } catch {
     return [];
   }
@@ -219,7 +228,7 @@ function readNoted(store: Store): (WindowStop & { noted: string })[] {
 function noteStop(store: Store, st: WindowStop) {
   try {
     if (readNoted(store).some((x) => x.windows.join(" ") === st.windows.join(" "))) return;
-    writeRecord(store, (rec) => rec.stops.push({ windows: st.windows, task: st.task, since: st.since, line: st.line, noted: new Date().toISOString() }));
+    writeRecord(store, (rec) => rec.stops.push({ windows: st.windows, task: st.task, ...(st.title ? { title: st.title } : {}), since: st.since, line: st.line, noted: new Date().toISOString() }));
   } catch {
     /* noting must never cost the reading */
   }
@@ -228,7 +237,7 @@ function noteStop(store: Store, st: WindowStop) {
 function notedInForce(store: Store, lift: StopLift | null): WindowStop | null {
   const n = readNoted(store).filter((x) => !lift || x.noted > lift.at);
   const x = n[0];
-  return x ? { windows: x.windows, task: x.task, since: x.since, line: x.line, recorded: true } : null;
+  return x ? { windows: x.windows, task: x.task, ...(x.title ? { title: x.title } : {}), since: x.since, line: x.line, recorded: true } : null;
 }
 
 const clean = (x: unknown, max: number) => String(x ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
@@ -256,13 +265,6 @@ export function liftStop(s: Scenaria, input: { why: string }, who: { by: string;
 }
 
 // ------------------------------------------------------------------ the assessment
-
-/** The values in force at time t: the person's revision set by then, else the start values (review M7). */
-function valuesAt(cs: ContextSettings, t: string): { rule: string; progressRule: string; aModel: number } {
-  if (cs.trust !== "verified") return { rule: cs.rule, progressRule: cs.progressRule, aModel: cs.values.aModel };
-  const h = [...cs.history].reverse().find((x) => x.at <= t);
-  return h ? { rule: h.rule, progressRule: h.progressRule, aModel: h.aModel } : { rule: CONTEXT_RULE, progressRule: WINDOW_PROGRESS_RULE, aModel: A_MODEL_DEFAULT };
-}
 
 /** The line of windows of one agent and source, oldest first, with each window's successor and predecessor. */
 function lines(ws: WindowInfo[]): { w: WindowInfo; prev: WindowInfo | null; next: WindowInfo | null }[] {
@@ -326,7 +328,7 @@ export function windowProgress(s: Scenaria, opts: { settings?: ContextSettings; 
   const r = parseWindowProgressRule(cs.progressRule);
   const lifts = readLifts(s.store);
   const lift = lifts.length ? lifts[lifts.length - 1] : null;
-  const empty: WindowProgressStatus = { rule: cs.progressRule, min: r.min, tolerance: r.tolerance, k: r.k, windows: [], stop: null, warning: null, escalation: null, noCriteria: null, lift, handovers: [], changed: null };
+  const empty: WindowProgressStatus = { rule: cs.progressRule, min: r.min, tolerance: r.tolerance, k: r.k, windows: [], stop: null, warning: null, capped: null, escalation: null, noCriteria: null, lift, handovers: [], changed: null };
   let ws: WindowStatus;
   try {
     ws = windowStatus(s, { settings: cs, limit: Number.MAX_SAFE_INTEGER });
@@ -401,11 +403,30 @@ function assessAll(s: Scenaria, ws: WindowStatus, cs: ContextSettings, lift: Sto
     if (need.has(x)) bestAt.set(x, new Map(run));
   }
 
+  // E5: the agent's recorded steps per window (decisions, checkpoints, saves, branches) — not clarifying questions and
+  // plans (captured as the person's), not Scenaria's own records.
+  let workAt: string[] | null = null;
+  const stepsIn = (from: string, to: string): number | null => {
+    if (workAt === null) {
+      try {
+        workAt = s.store
+          .listNodes()
+          .filter((n) => ["decision", "checkpoint", "autosave", "branch"].includes(n.type) && n.agent !== "scenaria" && n.agent !== "user" && typeof n.createdAt === "string")
+          .map((n) => n.createdAt)
+          .sort();
+      } catch {
+        return null;
+      }
+    }
+    return workAt.filter((t) => t >= from && t < to).length;
+  };
   const assess = ({ c: { w, next }, start, end: endRec }: (typeof plan)[number]): WindowAssessment => {
-    const at = valuesAt(cs, next?.startedAt ?? now);
+    // The values in force at the window's last answer — the same time point the window list measures it at, so both
+    // show one fill (E5 re-check N2).
+    const at = settingsAt(cs, w.lastAt ?? now, !next);
     const yellow = parseContextRule(at.rule).yellow;
     const compacted = w.end === "compact" || w.end === "drop";
-    const peak = typeof w.maxTokens === "number" && typeof w.cMax === "number" ? formulaValue("context-fill/1", { tokens: w.maxTokens, cMax: w.cMax, aModel: at.aModel, soft: 0, rule: at.rule }) : null;
+    const peak = typeof w.peak === "number" ? w.peak : typeof w.maxTokens === "number" && typeof w.cMax === "number" ? formulaValue("context-fill/1", { tokens: w.maxTokens, cMax: w.cMax, aModel: at.aModel, soft: 0, rule: at.rule }) : null;
     const full = windowFull({ peak, yellow, compacted });
     const base = { window: w.id, startedAt: w.startedAt, key: w.key, agent: w.agent, source: w.source, line: lineOf(w), endedAt: next?.startedAt ?? null, next: next?.id ?? null, full };
     const lifted = Boolean(lift && next && next.startedAt <= lift.at);
@@ -416,6 +437,13 @@ function assessAll(s: Scenaria, ws: WindowStatus, cs: ContextSettings, lift: Sto
     const tasks = withCriteria(end);
     const ft = end.focus ? tasks.find((t) => t.task === end.focus) : undefined;
     const best = bestAt.get(start) ?? new Map<string, number>();
+    // E5: the focus task without the gates' cap — a window held at a gate is not assessed (Kev 2026-10-25).
+    const st = ft ? withCriteria(start).find((t) => t.task === ft.task) : undefined;
+    const pe = ft ? progressParts(ft.criteria, ft.gates) : null;
+    const held = pe && pe.blocked !== null && pe.raw > pe.cap ? pe.blocked : null;
+    // A work step: an answer that used a tool, or a step the agent recorded. Unknown for older records: assessed.
+    const nodesIn = next ? stepsIn(w.startedAt, next.startedAt) : null;
+    const steps = nodesIn === null || typeof w.toolAnswers !== "number" ? (nodesIn ? nodesIn : null) : nodesIn + w.toolAnswers;
     const values = {
       start: start.tasks.map(pText),
       best: tasks.flatMap((t) => (best.has(`${t.task}|${critKey(t)}`) ? [`${t.task} p=${best.get(`${t.task}|${critKey(t)}`)}`] : [])),
@@ -427,6 +455,8 @@ function assessAll(s: Scenaria, ws: WindowStatus, cs: ContextSettings, lift: Sto
       compacted,
       rule: next ? at.progressRule : cs.progressRule,
       ...(next ? {} : { running: true }),
+      ...(steps !== null ? { steps } : {}),
+      ...(held !== null && ft ? { rawStart: st ? `${ft.task} r=${progressParts(st.criteria, st.gates).raw}` : "", rawEnd: `${ft.task} r=${pe!.raw}`, gate: held } : {}),
     };
     const value = formulaValue("window-progress/1", values);
     const points = derive("window.progress", "window-progress/1", values);
@@ -435,6 +465,10 @@ function assessAll(s: Scenaria, ws: WindowStatus, cs: ContextSettings, lift: Sto
     const v = windowVerdict(values, value);
     if (v === "progress") return { ...base, state: "progress", value, points, focus, lifted };
     if (v === "none") return { ...base, state: "none", value, points, focus, lifted };
+    if (v === "capped") {
+      const rise = pe!.raw - (st ? progressParts(st.criteria, st.gates).raw : 0);
+      return { ...skip(v, value, points, focus), gate: held!, rise };
+    }
     return skip(v, value, points, focus);
   };
   const all = plan.map((x) => ({ c: x.c, a: assess(x) }));
@@ -443,6 +477,7 @@ function assessAll(s: Scenaria, ws: WindowStatus, cs: ContextSettings, lift: Sto
   // break a row; the two windows of a stop worked on the same task.
   let stop: WindowStop | null = null;
   let warning: WindowAssessment | null = null;
+  let capped: WindowAssessment | null = null;
   const byLine = new Map<string, WindowAssessment[]>();
   for (const { a } of all) if (a.endedAt && !a.lifted) byLine.set(a.line, [...(byLine.get(a.line) ?? []), a]);
   for (const list of byLine.values()) {
@@ -450,18 +485,24 @@ function assessAll(s: Scenaria, ws: WindowStatus, cs: ContextSettings, lift: Sto
     let row: WindowAssessment[] = [];
     let found: WindowStop | null = null;
     let newest: WindowAssessment | null = null;
+    let newestHeld: WindowAssessment | null = null;
     for (const a of list) {
-      if (a.state === "skipped") continue;
+      if (a.state === "skipped") {
+        newestHeld = a.why === "capped" ? a : a.why === "no-work" ? newestHeld : null;
+        continue;
+      }
       newest = a;
+      newestHeld = null;
       if (found) continue;
       if (a.state === "progress") row = [];
       else if (a.state === "none") {
         row = row.length && row[0].focus === a.focus ? [...row, a] : [a];
-        if (row.length >= 2) found = { windows: row.slice(-2).map((x) => ref({ id: x.window, startedAt: x.startedAt })), task: a.focus!, since: a.endedAt!, line: a.line };
+        if (row.length >= 2) found = { windows: row.slice(-2).map((x) => ref({ id: x.window, startedAt: x.startedAt })), task: a.focus!, ...titleOf(s, a.focus!), since: a.endedAt!, line: a.line };
       }
     }
     if (found && (!stop || found.since < stop.since)) stop = found;
-    if (!found && newest?.state === "none" && (!warning || String(newest.endedAt) > String(warning.endedAt))) warning = newest;
+    if (!found && !newestHeld && newest?.state === "none" && (!warning || String(newest.endedAt) > String(warning.endedAt))) warning = newest;
+    if (!found && newestHeld && (!capped || String(newestHeld.endedAt) > String(capped.endedAt))) capped = newestHeld;
   }
   // Noted outside the project — not from the stand-in view at a session start (review 2, H5): only when the new window
   // has answered. A noted stop stays until the person lifts it, whatever the records show later (review H2; Scenaria
@@ -505,15 +546,16 @@ function assessAll(s: Scenaria, ws: WindowStatus, cs: ContextSettings, lift: Sto
     windows: all.map((x) => x.a).sort((a, b) => b.startedAt.localeCompare(a.startedAt)),
     stop,
     warning,
+    capped: stop ? null : capped,
     escalation,
     noCriteria,
-    handovers: opts.handovers === false ? [] : handoverChecks(s, chain, cs.progressRule, parseWindowProgressRule(cs.progressRule).k),
+    handovers: opts.handovers === false ? [] : handoverChecks(s, chain, cs),
     changed: ws.changed,
   };
 }
 
 /** The handover checks of every window change (newest first). */
-function handoverChecks(s: Scenaria, chain: ReturnType<typeof lines>, rule: string, k: number): HandoverCheck[] {
+function handoverChecks(s: Scenaria, chain: ReturnType<typeof lines>, cs: ContextSettings): HandoverCheck[] {
   const pairs = chain.filter((c) => c.next).map((c) => ({ from: c.w, to: c.next!, after: chain.find((x) => x.w === c.next)?.next ?? null }));
   if (!pairs.length) return [];
   let points: Record<string, FidelityPoint>;
@@ -546,8 +588,10 @@ function handoverChecks(s: Scenaria, chain: ReturnType<typeof lines>, rule: stri
     const p = points[id];
     return `${id} a=${p.anchor === null ? "-" : p.anchor} c=${p.continuity}`;
   };
-  const tol = parseWindowProgressRule(rule).tolerance;
   const out: HandoverCheck[] = pairs.map(({ from, to, after }) => {
+    // The values in force at the window change: a tolerance set later never changes an earlier check (E5 review L9).
+    const rule = settingsAt(cs, to.startedAt).progressRule;
+    const { tolerance: tol, k } = parseWindowProgressRule(rule);
     const before = steps.filter((n) => String(n.createdAt) >= from.startedAt && String(n.createdAt) < to.startedAt).pop();
     // Only the same task: work that moved on to another task is a new start, not a handover (review, note).
     const task = before ? taskOf(before) : null;
@@ -593,20 +637,39 @@ const WHY_TEXT: Record<SkipWhy, Lang2> = {
   waiting: { de: "der nächste Schritt liegt bei der Person – wird nicht bewertet", en: "the next step is the person's – not assessed" },
   "no-measure": { de: "kein Fortschritt beim Wechsel gemessen", en: "no progress measured at the change" },
   "changed-outside": { de: "Messdaten außerhalb geändert – wird nicht bewertet", en: "measurement changed outside – not assessed" },
+  "no-work": { de: "kein Arbeitsschritt im Fenster – wird nicht bewertet", en: "no work step in the window – not assessed" },
+  capped: { de: "von einem offenen Tor gedeckelt – wird nicht bewertet", en: "held by an open gate – not assessed" },
 };
 export const skipText = (why: SkipWhy, lang: "de" | "en") => WHY_TEXT[why][lang];
 const ids = (st: WindowStop) => st.windows.map((w) => w.split("@")[0]).join(", ");
 const when = (t: string) => t.slice(0, 16).replace("T", " ");
 
 /** The agent's notice during a stop (English: agents read hook output in English). */
+/** A task's title for the texts (never throws). */
+function titleOf(s: Scenaria, id: string): { title?: string } {
+  try {
+    const t = s.store.hasNode(id) ? s.store.readNode(id).title : undefined;
+    return typeof t === "string" && t.trim() ? { title: t.trim().slice(0, 80) } : {};
+  } catch {
+    return {};
+  }
+}
+const named = (st: WindowStop, lang: "de" | "en" = "en") => {
+  const t = typeof st.title === "string" && st.title ? st.title.replace(/["“”„]/g, "'") : "";
+  return `${st.task}${t ? (lang === "de" ? ` „${t}“` : ` "${t}"`) : ""}`;
+};
 export function stopAgentText(st: WindowStop): string {
-  return `[Scenaria stop] Two full context windows in a row (${ids(st)}) made less than the minimum progress on task ${st.task} (how computed: scenaria_window). Until the person lifts the stop, only reading and the Scenaria tools are allowed. Do not keep trying: rewind to the last good step (scenaria_last_good, scenaria_rewind) or ask the person — the task is most likely too large or cut wrong.`;
+  return `[Scenaria stop] Two full context windows in a row (${ids(st)}) made less than the minimum progress on task ${named(st)} (how computed: scenaria_window). Until the person lifts the stop, only reading and the Scenaria tools are allowed. Do not keep trying: rewind to the last good step (scenaria_last_good, scenaria_rewind) or ask the person — the task is most likely too large or cut wrong.`;
 }
 /** The person's notice during a stop. */
 export function stopPersonText(st: WindowStop, lang: "de" | "en"): string {
   return lang === "de"
-    ? `Scenaria: Stopp. Zwei volle Kontextfenster hintereinander (${ids(st)}) haben an der Aufgabe ${st.task} zu wenig Fortschritt gebracht. Die KI darf jetzt nur noch lesen und Scenaria nutzen. Bitte schneide die Aufgabe kleiner oder lass die KI zu einem guten Stand zurückspringen. Danach hebst du den Stopp auf (Dashboard → Kontextfenster, oder: scenaria window stop lift).${st.likelyParallel ? " Hinweis: Das sieht nach zwei gleichzeitigen Sitzungen aus – dann ist der Stopp wohl falsch; hebe ihn einfach auf." : ""}`
-    : `Scenaria: stop. Two full context windows in a row (${ids(st)}) made too little progress on task ${st.task}. The AI may now only read and use Scenaria. Please cut the task smaller or have the AI rewind to a good state, then lift the stop (dashboard → context window, or: scenaria window stop lift).${st.likelyParallel ? " Note: this looks like two sessions at once — then the stop is most likely wrong; just lift it." : ""}`;
+    ? `Scenaria: Stopp. Zwei volle Kontextfenster hintereinander (${ids(st)}) haben an der Aufgabe ${named(st, "de")} zu wenig Fortschritt gebracht. Die KI darf jetzt nur noch lesen und Scenaria nutzen. Bitte schneide die Aufgabe kleiner oder lass die KI zu einem guten Stand zurückspringen. Danach hebst du den Stopp auf (Dashboard → Kontextfenster, oder: scenaria window stop lift). Ist die Aufgabe gar nicht mehr die Arbeit, schließe sie im Dashboard (entsperrt: erledigt oder verworfen).${st.likelyParallel ? " Hinweis: Das sieht nach zwei gleichzeitigen Sitzungen aus – dann ist der Stopp wohl falsch; hebe ihn einfach auf." : ""}`
+    : `Scenaria: stop. Two full context windows in a row (${ids(st)}) made too little progress on task ${named(st)}. The AI may now only read and use Scenaria. Please cut the task smaller or have the AI rewind to a good state, then lift the stop (dashboard → context window, or: scenaria window stop lift). If the task is no longer the work at all, close it in the dashboard (unlocked: done or abandoned).${st.likelyParallel ? " Note: this looks like two sessions at once — then the stop is most likely wrong; just lift it." : ""}`;
+}
+/** E5: a window held at a gate — the agent hears which gate holds the work (English, for agents). */
+export function cappedAgentText(a: WindowAssessment): string {
+  return `Note: in the previous window ${a.window} task ${a.focus} rose by ${a.rise ?? 0} points, but the open gate "${gateLabel(a.gate ?? 0, "en")}" (${a.gate} %) holds its progress — that work only counts once the gate is met (scenaria_progress shows what the gate needs).`;
 }
 /** The problem note for the next window (warning), the escalation and the hint without criteria — for agents. */
 export function noteAgentText(wp: WindowProgressStatus): string | null {
@@ -615,6 +678,7 @@ export function noteAgentText(wp: WindowProgressStatus): string | null {
     parts.push(
       `Problem note: the previous window ${wp.warning.window} made ${wp.warning.value ?? 0} points of progress in total (minimum ${wp.min}; it worked last on task ${wp.warning.focus}). Check why before going on (scenaria_progress shows what is missing); if the next full window makes too little progress on this task as well, Scenaria stops the work.`,
     );
+  if (wp.capped) parts.push(cappedAgentText(wp.capped));
   if (wp.escalation) parts.push(`Escalation: window ${wp.escalation.window} is ${wp.escalation.fill} % full and task ${wp.escalation.task} has not passed the 20 % gate (criteria weighted and approach decided) — planning eats the window. Ask the person to split the task.`);
   if (wp.noCriteria) parts.push(`Task ${wp.noCriteria.task ?? "(none)"} has no completion criteria: Scenaria cannot measure its progress per window. Propose criteria (future fixed points with this task and a weight).`);
   return parts.length ? parts.join(" ") : null;
@@ -662,7 +726,7 @@ export function renderWindowProgress(wp: WindowProgressStatus, lang: "de" | "en"
   for (const a of wp.windows.slice(0, 10)) {
     const p = a.value !== null ? sign(a.value, lang) : de ? "keine Zahl" : "no number";
     const state =
-      a.state === "running" ? (de ? "läuft (bisher)" : "running (so far)") : a.state === "progress" ? (de ? "Fortschritt" : "progress") : a.state === "none" ? (de ? "ohne Fortschritt" : "no progress") : skipText(a.why!, lang);
+      a.state === "running" ? (de ? "läuft (bisher)" : "running (so far)") : a.state === "progress" ? (de ? "Fortschritt" : "progress") : a.state === "none" ? (de ? "ohne Fortschritt" : "no progress") : `${skipText(a.why!, lang)}${a.why === "capped" && a.gate ? (de ? ` (Tor „${gateLabel(a.gate, "de")}“, ${a.gate} %)` : ` (gate "${gateLabel(a.gate, "en")}", ${a.gate} %)`) : ""}`;
     out.push(`  ${a.window} · ${a.agent}: ${p} – ${state}${a.lifted ? (de ? " (vor dem Aufheben)" : " (before the lift)") : ""}${a.points ? `\n    ${a.points.sentence[lang]}` : ""}`);
   }
   for (const h of wp.handovers.slice(0, 5)) {
@@ -682,10 +746,11 @@ export function windowProgressForAgents(wp: WindowProgressStatus) {
     k: wp.k,
     stop: wp.stop,
     warning: wp.warning ? { window: wp.warning.window, focus: wp.warning.focus, points: wp.warning.value } : null,
+    capped: wp.capped ? { window: wp.capped.window, focus: wp.capped.focus, gate: wp.capped.gate, rise: wp.capped.rise } : null,
     escalation: wp.escalation,
     noCriteria: wp.noCriteria,
     lift: wp.lift,
-    windows: wp.windows.slice(0, 20).map((a) => ({ window: a.window, agent: a.agent, state: a.state, why: a.why, focus: a.focus, full: a.full, endedAt: a.endedAt, lifted: a.lifted, points: c(a.points) })),
+    windows: wp.windows.slice(0, 20).map((a) => ({ window: a.window, agent: a.agent, state: a.state, why: a.why, ...(a.gate ? { gate: a.gate } : {}), focus: a.focus, full: a.full, endedAt: a.endedAt, lifted: a.lifted, points: c(a.points) })),
     handovers: wp.handovers.slice(0, 10).map((h) => ({ from: h.from, to: h.to, final: h.final, ok: h.ok, loss: c(h.loss) })),
     changed: wp.changed,
   };

@@ -94,8 +94,9 @@ export function WindowCard({ ws, t, lang, onHandover, onOpenWindow }: { ws: Wind
       {st && (
         <div className="qnote q-warn cw-stop" role="alert">
           <p>
-            <strong>{t.wpStop(stopIds(st), st.task, localTime(st.since, lang))}</strong>
+            <strong>{t.wpStop(stopIds(st), stopTask(st, lang), localTime(st.since, lang))}</strong>
           </p>
+          {HOOK_OFF(ws.progress) && <p className="small">{t.wpNotWired}</p>}
           {st.likelyParallel && <p className="small">{t.wpLikelyParallel}</p>}
           <p className="small">{t.wpStopWhat}</p>
           {onOpenWindow && (
@@ -176,6 +177,10 @@ function WindowDetail({ w, t, lang, onNode }: { w: WindowInfo; t: Dict; lang: La
   );
 }
 
+/** The task with its title (E5 review L8). */
+const stopTask = (st: WindowStop, lang: Lang) => (st.title ? (lang === "de" ? `${st.task} „${st.title}“` : `${st.task} "${st.title}"`) : st.task);
+/** The hook before every tool is not wired: the stop is shown but not enforced (E5 review L11). */
+const HOOK_OFF = (wp?: { hookWired?: boolean } | null) => wp?.hookWired === false;
 const stopIds = (st: WindowStop) => st.windows.map((w) => w.split("@")[0]).join(", ");
 
 /** Lifting a stop: the person names why, sees what would be signed, then confirms (no browser dialog). */
@@ -290,8 +295,9 @@ function ProgressSection({ wp, t, lang, canAct, approved, lifted, onLifted }: { 
       {st && (
         <div className="qnote q-warn cw-stop" role="alert">
           <p>
-            <strong>{t.wpStop(stopIds(st), st.task, localTime(st.since, lang))}</strong>
+            <strong>{t.wpStop(stopIds(st), stopTask(st, lang), localTime(st.since, lang))}</strong>
           </p>
+          {HOOK_OFF(wp) && <p className="small">{t.wpNotWired}</p>}
           {st.recorded && <p className="small">{t.wpStopRecorded}</p>}
           {st.likelyParallel && <p className="small">{t.wpLikelyParallel}</p>}
           <p className="small">{t.wpStopWhat}</p>
@@ -338,7 +344,7 @@ function ProgressSection({ wp, t, lang, canAct, approved, lifted, onLifted }: { 
                   </td>
                   <td>
                     {t.wpState[a.state] ?? a.state}
-                    {a.why && <span className="muted"> ({t.wpWhy[a.why] ?? a.why})</span>}
+                    {a.why && <span className="muted"> ({t.wpWhy[a.why] ?? a.why}{a.why === "capped" && a.gate ? ` · ${t.wpGate(a.gate)}` : ""})</span>}
                     {a.lifted && <span className="muted"> · {t.wpBeforeLift}</span>}
                   </td>
                   <td>{a.focus ?? "–"}</td>

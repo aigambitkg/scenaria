@@ -261,6 +261,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
   errorTexts.auditor_mode_active = t.afAuditorActive;
   errorTexts.not_normal = t.evErrNotNormal;
   errorTexts.changed = t.evErrChanged;
+  errorTexts.person_only_close = t.errPersonOnlyClose;
   // Every refused change to the fixed points, in the person's language (E2b review M3).
   for (const [code, text] of Object.entries(t.errCanon)) errorTexts[code] = text;
   errorTexts.plan_first = t.evErrPlanFirst;

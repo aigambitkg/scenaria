@@ -336,6 +336,13 @@ test("E4 handover check: the old window's last step against the first 3 steps of
   assert.equal(h.loss.inputs.find((i) => i.name === "after").value.length, 3);
   // Scenaria's own saves and automatic saves are no steps of the work.
   assert.ok(!h.loss.inputs.find((i) => i.name === "after").value.some((x) => /^n\d+ /.test(x) && x.includes("scenaria")));
+
+  // A tolerance set later never changes an earlier check (E5 review L9).
+  await sleep(5);
+  setContextSettings(s.store, { progress: { tolerance: 50 } }, { by: "kev", via: "terminal" });
+  const later = windowProgress(s).handovers[0];
+  assert.equal(later.ok, false, "judged by the tolerance in force at the window change");
+  assert.match(later.loss.inputs.find((i) => i.name === "rule").value, /tolerance=5\b/);
 });
 
 test("E4 Kev's row 4: the first window of a task at red with gate 20 open escalates; without criteria a hint", async () => {
@@ -579,4 +586,95 @@ test("E4 mutation check: a signed setting with min/tolerance out of bounds does 
   writeFileSync(f, JSON.stringify(j));
   const cs = readContextSettings(s.store);
   assert.deepEqual([cs.trust, cs.why, cs.progress.minProgress], ["invalid", "values", 10]);
+});
+
+test("E5 formulas: a window without a work step and a window held at a gate are not assessed (Kev 2026-10-25)", () => {
+  const v = { start: ["n1 p=10"], end: ["n1 p=10"], focus: "n1", waiting: false, peak: 60, yellow: 50, compacted: false, rule: WINDOW_PROGRESS_RULE };
+  assert.equal(windowVerdict(v, 0), "none");
+  assert.equal(windowVerdict({ ...v, steps: 0 }, 0), "no-work");
+  assert.equal(windowVerdict({ ...v, steps: 3 }, 0), "none");
+  assert.equal(windowVerdict({ ...v, steps: 0 }, 12), "progress", "from the minimum on always progress");
+  const held = { ...v, steps: 4, rawStart: "n1 r=25", rawEnd: "n1 r=50", gate: 20 };
+  assert.equal(windowVerdict(held, 0), "capped");
+  const d = derive("w", "window-progress/1", held);
+  assert.match(d.sentence.de, /die Arbeit stieg um 25 Punkte ohne Deckel; das offene Tor „.+“ \(20 %\) hält den Wert: wird nicht bewertet/);
+  assert.match(d.sentence.en, /the open gate ".+" \(20 %\) holds the value: not assessed/);
+  assert.equal(windowVerdict({ ...held, rawEnd: "n1 r=30" }, 0), "none", "a rise below the minimum is no excuse");
+  assert.equal(windowVerdict({ ...held, waiting: true }, 0), "waiting", "the person's turn comes first");
+});
+
+test("E5 review M2: a window whose work a gate holds is not assessed, the gate is named; no stop, no warning", async () => {
+  const { p, s, task } = project({ decided: false });
+  // Window 1: k1 drafted (25 % without the cap) — capped at 10 % (gate 20, approach not decided): +10, progress.
+  await window(s, "claude-code:A");
+  work(p, s);
+  // Window 2: k2 drafted as well (50 % without the cap) — still 10 %: held by gate 20.
+  await window(s, "claude-code:B");
+  p.write("docs/s.md", "# Summary\n");
+  s.checkpoint({ title: "Summary written", outputs: ["`docs/s.md`"], fulfills: ["k2"], agent: "claude-code" });
+  await window(s, "claude-code:C");
+  const wp = windowProgress(s);
+  assert.deepEqual(states(wp), { w1: "progress", w2: "skipped:capped", w3: "running" });
+  const w2 = wp.windows.find((a) => a.window === "w2");
+  assert.equal(w2.gate, 20);
+  assert.equal(w2.rise, 25);
+  assert.equal(w2.focus, task);
+  assert.equal(wp.warning, null);
+  assert.equal(wp.capped?.window, "w2");
+  assert.match(renderWindowProgress(wp, "de"), /von einem offenen Tor gedeckelt – wird nicht bewertet \(Tor „.+“, 20 %\)/);
+  const { noteAgentText } = await import("../dist/core/windowprogress.js");
+  assert.match(noteAgentText(wp), /in the previous window w2 task n1 rose by 25 points, but the open gate ".+" \(20 %\) holds its progress/);
+});
+
+test("E5 review L8: the stop names the task's title, also when read from the note outside the project", async () => {
+  const { s } = project();
+  await window(s, "claude-code:A");
+  await window(s, "claude-code:B");
+  await window(s, "claude-code:C");
+  const wp = windowProgress(s);
+  assert.equal(wp.stop?.title, "Q3 report");
+  const { stopAgentText, stopPersonText } = await import("../dist/core/windowprogress.js");
+  const st = stopState(Scenaria.open(s.store.root));
+  assert.equal(st.title, "Q3 report");
+  assert.match(stopAgentText(st), /on task n1 "Q3 report"/);
+  assert.match(stopPersonText(st, "de"), /an der Aufgabe n1 „Q3 report“/);
+});
+
+test("E5 review M2: after a window without progress, a window held at a gate gives the gate note, not the problem note", async () => {
+  const { p, s } = project({ decided: false });
+  work(p, s); // k1 drafted before: 25 % without the cap, 10 % with it (gate 20 open)
+  await window(s, "claude-code:A"); // nothing: no progress
+  await window(s, "claude-code:B");
+  p.write("docs/s.md", "# Summary\n");
+  s.checkpoint({ title: "Summary written", outputs: ["`docs/s.md`"], fulfills: ["k2"], agent: "claude-code" });
+  await window(s, "claude-code:C");
+  const wp = windowProgress(s);
+  assert.deepEqual(states(wp), { w1: "none", w2: "skipped:capped", w3: "running" });
+  assert.equal(wp.warning, null, "the newest ended window was held at a gate: no problem note");
+  assert.equal(wp.capped?.window, "w2");
+  assert.equal(wp.stop, null);
+});
+
+test("E5 re-check N2: the window list and the assessment measure an ended window at the same time point", async () => {
+  const { s } = project();
+  await window(s, "claude-code:A");
+  await sleep(5);
+  // Seen red, the value changed, then a new session — the change lies between w1's last answer and w2's start.
+  setContextSettings(s.store, { values: { aModel: 400_000, yellow: 65 } }, { by: "kev", via: "terminal" });
+  await window(s, "claude-code:B");
+  await window(s, "claude-code:C");
+  const listed = windowStatus(s, { limit: 50 }).windows.find((w) => w.id === "w1");
+  const a = windowProgress(s).windows.find((x) => x.window === "w1");
+  assert.equal(listed.peak, 60);
+  assert.equal(a.points.inputs.find((i) => i.name === "peak").value, listed.peak, "one fill for both");
+  assert.equal(a.state, "none", "full at its time: judged, not 'not full'");
+});
+
+test("E5 re-check N5: version suffixes are cleaned only on Claude names", async () => {
+  const { normaliseModel } = await import("../dist/core/models.js");
+  assert.equal(normaliseModel("us.anthropic.claude-opus-5-5-v1:0"), "claude-opus-5-5");
+  assert.equal(normaliseModel("claude-opus-5-5@20261001"), "claude-opus-5-5");
+  assert.equal(normaliseModel("deepseek-v2"), "deepseek-v2");
+  assert.notEqual(normaliseModel("deepseek-v3"), normaliseModel("deepseek-v2"));
+  assert.equal(normaliseModel("mymodel@q4"), "mymodel@q4");
 });

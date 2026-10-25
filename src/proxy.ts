@@ -420,7 +420,7 @@ export async function handleProxy(
         const at = new Date().toISOString();
         const rid = responseId(kind, captured, isStream);
         const recorded = recordWindowEvents(s, { source: "proxy", key: sessionInfo.externalId, agent, ...(prevResponse ? { continues: `r:${prevResponse}` } : {}) }, [
-          { kind: "sample", at, tokens, model: answer?.model ?? model, ref: rid ? `r:${rid}` : `p:${at}:${randomUUID().slice(0, 8)}` },
+          { kind: "sample", at, tokens, model: answer?.model ?? model, ref: rid ? `r:${rid}` : `p:${at}:${randomUUID().slice(0, 8)}`, ...(answer ? { tool: Boolean(answer.toolCalls?.length) } : {}) },
         ]);
         // E4: a window just started — another one ended: compute progress per window and note a stop.
         if (recorded && windowJustStarted(s, windowKey)) evaluateStop(s);

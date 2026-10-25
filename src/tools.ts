@@ -54,7 +54,7 @@ export interface ToolDef {
 export const INSTRUCTIONS = `Scenaria keeps ONE decision tree for the whole project (root n0 = project + main goal), so work can be rewound to any decision point (files + context) and alternatives can be explored.
 Use it like a quicksave, on your own:
 - Start: scenaria_status + scenaria_context. If the main goal is missing, ask the user and store it (scenaria_start_mission {projectGoal}).
-- New piece of work: scenaria_start_mission {title, goal} — adds a task to the existing tree (never a second tree).
+- New piece of work: scenaria_start_mission {title, goal} — adds a task to the existing tree (never a second tree). A task with completion criteria the user approved stays open until the user accepts it; a new session continues it, and a task started under it is part of its work.
 - Before acting on a real choice (or when the user answers a clarifying question): scenaria_decide with question, all options considered, chosen, rationale, context (the situation), servesGoal (link to the main goal), expectedOutcome, confidence.
 - After a meaningful step: scenaria_checkpoint with short factual bullets (files in backticks); when the task is finished add taskDone + summary.
 - Mistake or dead end: scenaria_last_good / scenaria_tree, then scenaria_rewind with a one-line lesson; continue ONLY from the returned context. Other option: scenaria_fork.
@@ -120,7 +120,10 @@ export const TOOLS: ToolDef[] = [
       const n = s.startMission({ ...a, ...actor(c) });
       const root = s.project();
       const note = root?.goal ? "" : "\nNOTE: the project's main goal is not set — ask the user and call scenaria_start_mission {projectGoal}.";
-      return { text: `${n.type === "goal" ? "Task started" : "Project updated"}.\n${brief(n)}${note}`, data: n };
+      // E5: a task with approved completion criteria the person has not accepted stays open; the new one is part of it.
+      const open = n.type === "goal" ? s.openTaskWithCriteria() : null;
+      const keep = open && open !== n.id ? `\nNOTE: task ${open} has approved completion criteria and is not accepted yet — it stays open (not done); this task is part of its work, and progress per window is measured on ${open} until the person accepts it.` : "";
+      return { text: `${n.type === "goal" ? "Task started" : "Project updated"}.\n${brief(n)}${note}${keep}`, data: n };
     },
   },
   {

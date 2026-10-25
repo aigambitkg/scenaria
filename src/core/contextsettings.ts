@@ -109,7 +109,7 @@ export interface ContextSettings {
   why?: InvalidWhy;
   set: { rev: number; at: string; by: string; via: string; keyId?: string } | null;
   /** Every signed revision, oldest first (kept outside the project: which values were in force when, and who set them). */
-  history: { rev: number; at: string; by: string; via: string; rule: string; progressRule: string; aModel: number; keyId?: string }[];
+  history: { rev: number; at: string; by: string; via: string; rule: string; progressRule: string; aModel: number; models: LocalModel[]; keyId?: string }[];
   /** The history started again at `from` because the earlier one did not verify (`why`); revisions before it cannot be vouched for (kept apart, unverified). */
   restarted: { from: number; after: number; why: InvalidWhy; earlier: number }[];
   /** Entered local models that the documented table now covers: the provider's size applies to them. */
@@ -187,6 +187,17 @@ export function checkProgress(p: Partial<Record<keyof ProgressValues, unknown>>)
     if (!Number.isInteger(x)) return { code: "precision", key: k, message: `${k} must be a whole number of points` };
   }
   return null;
+}
+
+/**
+ * The values in force at time t (E4/E5: a window is measured and judged by the values in force then — never by values
+ * set later, review M7 and E5 review M3/M4). `current`: the values in force now.
+ */
+export function settingsAt(cs: ContextSettings, t: string | null | undefined, current = false): { rule: string; progressRule: string; aModel: number; modelRows: ModelEntry[] } {
+  if (current || cs.trust !== "verified" || !t) return { rule: cs.rule, progressRule: cs.progressRule, aModel: cs.values.aModel, modelRows: cs.modelRows };
+  const h = [...cs.history].reverse().find((x) => x.at <= t);
+  if (!h) return { rule: CONTEXT_RULE, progressRule: WINDOW_PROGRESS_RULE, aModel: A_MODEL_DEFAULT, modelRows: [] };
+  return { rule: h.rule, progressRule: h.progressRule, aModel: h.aModel, modelRows: asRows(h.models ?? [], h.at, h.rule) };
 }
 
 /** Why a set of values is refused (null: fine). English, for the API; the dashboard translates the codes. */
@@ -317,6 +328,7 @@ export function readContextSettings(store: Store): ContextSettings {
         // E4: which values were in force when (a window is judged by the values in force when it ended — review M7).
         progressRule: progressRuleOf(progressOf(x), x.rev),
         aModel: x.aModel,
+        models: x.models.map((m) => ({ id: normaliseModel(m.id), cMax: m.cMax })).filter((m) => !documentedModel(m.id)),
       })),
       dropped: entered.filter((m) => documentedModel(m.id)).map((m) => m.id),
       looser: looserOf(values, progress),

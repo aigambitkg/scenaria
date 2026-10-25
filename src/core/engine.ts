@@ -32,6 +32,8 @@ import { ulid, versionLabel } from "./ids.js";
 import { isForbiddenRoot } from "./global.js";
 import { Ledger, checkIntegrity, contentHash, workHash } from "./ledger.js";
 import { fidelityAll } from "./fidelity.js";
+import { taskProgress } from "./progress.js";
+import { closedByPerson, recordTaskClose } from "./taskclose.js";
 import { activeCanon, addCanon, canonLines, canonState, decideCanon, projectIdentity, publicKeyId, rebindProjectId, ruleAnchors, ruleTrustFingerprint, readCanon, runCanonChecks, signRecord, suggestCanon, trustedApproverIdSet, verifyEd25519, type CanonAction, type CanonExpect, type CanonInput, CanonError } from "./canon.js";
 
 export interface Actor {
@@ -1066,15 +1068,25 @@ export class Scenaria {
    * questions without any work leave the map untouched. Also creates the project root
    * (baseline snapshot) on first use.
    */
-  noteTask(key: string, title: string, goal?: string, actor: Actor = {}) {
+  noteTask(key: string, title: string, goal?: string, actor: Actor = {}): string | null {
     const t = title.replace(/\s+/g, " ").trim().slice(0, 120);
-    if (!t) return;
-    this.store.withLock(() => {
+    if (!t) return null;
+    return this.store.withLock(() => {
       this.ensureProject(actor);
-      if (this.boundTask(key)) return;
+      const bound = this.boundTask(key);
+      if (bound) return this.hasOpenCriteria(bound) ? bound : null;
+      // E5 (Kev 2026-10-25): a new session continues the current task while it has approved completion criteria and
+      // is not accepted by the person — progress per window can only be measured on one task across windows. A new
+      // task then starts only when the agent starts one (scenaria_start_mission).
+      const open = this.openTaskWithCriteria();
+      if (open) {
+        this.bindTask(key, open);
+        return open;
+      }
       const st = this.store.readState();
       st.pendingTask = { key, title: t, goal: goal?.replace(/\s+/g, " ").trim().slice(0, 600) || undefined, at: new Date().toISOString() };
       this.store.writeState(st);
+      return null;
     });
   }
 
@@ -1289,6 +1301,61 @@ export class Scenaria {
     return this.head() ?? project;
   }
 
+  /** A task with approved completion criteria that the person has not accepted (gate 100) and that is not abandoned. */
+  hasOpenCriteria(taskId: string): boolean {
+    try {
+      if (!this.store.hasNode(taskId)) return false;
+      const task = this.store.readNode(taskId);
+      if (task.type !== "goal") return false;
+      // Closed only by the person (done or abandoned in the dashboard's approval session), recorded signed outside the
+      // project: a status in the project — an agent's call, a checkpoint's taskDone, a file edited by hand — never ends
+      // the open task, else one step would switch the stop rule off (E5 re-check N1).
+      if (closedByPerson(this.store, task.id)) return false;
+      const p = taskProgress(this, task.id);
+      if (!p || !p.criteria.length) return false;
+      return !p.gates.find((g) => g.cap === 100)?.met;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * The task the work at `id` (default HEAD) counts for (E5, Kev 2026-10-25): the nearest task on the path that has
+   * approved completion criteria and is not accepted yet — a task started under it (scenaria_start_mission) is part of
+   * that work and never ends the open task; else the nearest task.
+   */
+  focusTask(id?: string): ScenariaNode | null {
+    const target = id ?? this.store.readState().head;
+    if (!target) return null;
+    const path = this.path(target);
+    for (let i = path.length - 1; i >= 0; i--) if (path[i].type === "goal" && this.hasOpenCriteria(path[i].id)) return path[i];
+    return nearestGoal(path);
+  }
+
+  /** The open task with criteria the work continues (see focusTask), or null. */
+  openTaskWithCriteria(): string | null {
+    try {
+      const t = this.focusTask();
+      return t && this.hasOpenCriteria(t.id) ? t.id : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Bind a session/conversation key to an existing task (it continues there). */
+  private bindTask(key: string, taskId: string) {
+    const st = this.store.readState();
+    const bindings = { ...(st.taskBindings ?? {}) };
+    delete bindings[key];
+    bindings[key] = taskId;
+    const keys = Object.keys(bindings);
+    for (const k of keys.slice(0, Math.max(0, keys.length - 200))) delete bindings[k];
+    st.taskBindings = bindings;
+    st.currentTask = { key, nodeId: taskId };
+    if (st.pendingTask?.key === key) st.pendingTask = null;
+    this.store.writeState(st);
+  }
+
   /**
    * The task a session/conversation key is bound to — only while that task lies on the
    * HEAD path. After a rewind to before the task (or onto another branch) the binding no
@@ -1319,8 +1386,9 @@ export class Scenaria {
       if (input.projectGoal?.trim()) this.setProjectGoalUnlocked(input.projectGoal, input);
       if (!input.title?.trim()) return this.store.readNode(root.id);
       const head = this.head();
-      // Starting a task twice without any work in between refines it instead of stacking tasks.
-      if (head && head.type === "goal" && !this.children(head.id).length) {
+      // Starting a task twice without any work in between refines it instead of stacking tasks — never a task with
+      // completion criteria (they belong to it; E5 review L7).
+      if (head && head.type === "goal" && !this.children(head.id).length && !(taskProgress(this, head.id)?.criteria.length)) {
         this.remember(head, ["title", "goal", "brief"]);
         head.title = input.title.trim().slice(0, 200);
         if (input.goal?.trim()) head.goal = input.goal.trim();
@@ -1349,9 +1417,10 @@ export class Scenaria {
   private createGoalUnlocked(input: MissionInput, key: string, inherit: boolean): ScenariaNode {
     const root = this.ensureProject(input);
     const parent = this.head() ?? root;
-    // The task being left is finished (unless someone already set its status).
+    // The task being left is finished (unless someone already set its status) — not one with approved completion
+    // criteria the person has not accepted: it stays open, the new task is part of its work (E5 review H1).
     const prev = nearestGoal(this.path(parent.id));
-    if (prev && prev.type === "goal" && (!prev.status || prev.status === "active")) {
+    if (prev && prev.type === "goal" && (!prev.status || prev.status === "active") && !this.hasOpenCriteria(prev.id)) {
       prev.status = "done";
       this.save(prev);
     }
@@ -1752,9 +1821,20 @@ export class Scenaria {
   update(
     id: string,
     patch: Partial<Pick<ScenariaNode, "title" | "facts" | "outputs" | "openQuestions" | "irreversible" | "tags" | "goal" | "brief" | "lessons" | "summary" | "status" | "rationale" | "context" | "servesGoal" | "expectedOutcome">>,
+    by?: { person: boolean; who?: string; via?: string },
   ): ScenariaNode {
     return this.store.withLock(() => {
       const node = this.store.readNode(id);
+      // E5 (re-check N1/N3): a task with approved criteria the person has not accepted is closed only by the person;
+      // their closing is recorded, so new work no longer counts for it. Reopening clears it.
+      if (node.type === "goal" && patch.status !== undefined && patch.status !== node.status) {
+        const closing = patch.status === "done" || patch.status === "abandoned";
+        if (closing && this.hasOpenCriteria(id) && !by?.person) throw Object.assign(new Error("Only the person can close a task with approved completion criteria (unlock the dashboard)."), { code: "person_only_close" });
+        // The person's close is theirs to undo as well (re-check, LOW).
+        if (!closing && closedByPerson(this.store, id) && !by?.person) throw Object.assign(new Error("Only the person can reopen a task they closed (unlock the dashboard)."), { code: "person_only_close" });
+        if (by?.person && (closing || closedByPerson(this.store, id)) && taskProgress(this, id)?.criteria.length)
+          recordTaskClose(this.store, { task: id, status: patch.status as "done" | "abandoned" | "active", by: by.who, via: by.via });
+      }
       const changed = Object.entries(patch).filter(([, v]) => v !== undefined).map(([k]) => k);
       this.remember(node, patch.facts !== undefined ? [...changed, "factInfo"] : changed);
       Object.assign(node, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)));

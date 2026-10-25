@@ -38,7 +38,7 @@ import { benchmarkInWorker, calibrationFor, forecastQuality } from "./core/predi
 import { autoBudget, evaluateForecasts, forecast, listForecasts, markUsed, openWithoutForecast, quickDecision, quickPrompt } from "./core/forecast.js";
 import { auditForecast, auditOverview, auditReportMarkdown, deepAudit, listOracleBacktests, oracleBacktest, oracleQuality, pastDecisions } from "./core/auditor.js";
 import { chat } from "./chat.js";
-import { TARGETS, agentStatus, connectionSnippets, setupAgents, writeLauncher, type Target } from "./setup.js";
+import { TARGETS, agentStatus, connectionSnippets, preToolHookWired, setupAgents, writeLauncher, type Target } from "./setup.js";
 import { callLlm } from "./core/analysis.js";
 import { projectProgress } from "./core/progress.js";
 import { windowStatus } from "./core/window.js";
@@ -561,7 +561,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         // Batch E2: progress per task and for the project, each with its derivation (read-only, computed from evidence).
         if (req.method === "GET" && p === "/api/progress") return send(res, 200, projectProgress(s));
         // Batch E3a-1: how full the agents' context windows are, each number with its derivation (read-only, measured).
-        if (req.method === "GET" && p === "/api/windows") return send(res, 200, { ...windowStatus(s), progress: windowProgress(s) });
+        if (req.method === "GET" && p === "/api/windows") return send(res, 200, { ...windowStatus(s), progress: { ...windowProgress(s), hookWired: preToolHookWired(s.store.root, process.env.HOME) } });
         // E3b-1: the values of the context-window rule. Reading is open (rule 10: nothing secret); setting them is the
         // person's (POST under the personOnly prefix: approval session).
         if (req.method === "GET" && p === "/api/context-settings") {
@@ -1228,7 +1228,12 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           const patch: Record<string, unknown> = {};
           for (const k of ["title", "goal", "summary", "rationale", "context", "servesGoal", "expectedOutcome"]) if (typeof b?.[k] === "string") patch[k] = b[k].slice(0, 2000);
           if (["active", "done", "abandoned"].includes(b?.status)) patch.status = b.status;
-          return send(res, 200, s.update(String(b?.id ?? ""), patch as any));
+          try {
+            return send(res, 200, s.update(String(b?.id ?? ""), patch as any, { person: isApprover(req), via: "dashboard" }));
+          } catch (e: any) {
+            if (e?.code === "person_only_close") return send(res, 403, { error: e.message, code: e.code });
+            throw e;
+          }
         }
 
         if (req.method === "GET" && p === "/api/graph") {

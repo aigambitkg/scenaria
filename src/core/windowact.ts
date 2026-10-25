@@ -26,7 +26,7 @@ import { CONTEXT_ZONES, parseContextRule, type ContextZone } from "./derivation.
 import { readContextSettings } from "./contextsettings.js";
 import { quickFill, windowJustStarted, windowStatus, type ContextCutMeta, type WindowInfo } from "./window.js";
 import { projectProgress, renderProgress } from "./progress.js";
-import { handoverNote, notePersonText, stopAgentText, stopPersonText, stopState, windowProgress, type WindowProgressStatus } from "./windowprogress.js";
+import { cappedAgentText, handoverNote, notePersonText, stopAgentText, stopPersonText, stopState, windowProgress, type WindowProgressStatus } from "./windowprogress.js";
 
 export const ZONE_RANK: Record<ContextZone, number> = { green: 0, yellow: 1, orange: 2, red: 3, emergency: 4 };
 export type CutMoment = ContextCutMeta["moment"];
@@ -283,6 +283,8 @@ export interface Told {
   stop?: string;
   warning?: string;
   escalation?: string;
+  /** E5: the window held at a gate the agent was told about. */
+  capped?: string;
   noCriteria?: string;
   /** The window whose handover check is final (checked once, told when over the tolerance). */
   handover?: string;
@@ -333,6 +335,14 @@ export function windowNotices(s: Scenaria, key: string, told: Told, lang: "de" |
         out.told.warning = w;
       }
     }
+    // E5: the previous window was held at a gate — the agent hears which one (once).
+    if (wp.capped && wp.capped.line === line) {
+      const w = `${wp.capped.window}@${wp.capped.startedAt}`;
+      if (told.capped !== w) {
+        out.agent.push(`[Scenaria progress] ${cappedAgentText(wp.capped)}`);
+        out.told.capped = w;
+      }
+    }
     if (wp.escalation && cur && wp.escalation.window === cur.id && told.escalation !== ref) {
       out.agent.push(`[Scenaria progress] Escalation: window ${wp.escalation.window} is ${wp.escalation.fill} % full and task ${wp.escalation.task} has not passed the 20 % gate (criteria weighted, approach decided) — planning eats the window. Ask the person to split the task.`);
       const pt = notePersonText(wp, lang);
@@ -365,12 +375,26 @@ export function windowNotices(s: Scenaria, key: string, told: Told, lang: "de" |
   return out;
 }
 
+/**
+ * E5 (Kev 2026-10-25): the agent hears once per session that it continues an open task — one with approved completion
+ * criteria the person has not accepted. Never throws.
+ */
+export function continueNote(s: Scenaria, taskId: string | null): string | null {
+  try {
+    if (!taskId || !s.store.hasNode(taskId)) return null;
+    const t = s.store.readNode(taskId);
+    return `[Scenaria] This session continues task ${t.id} "${String(t.title ?? "").slice(0, 80)}": it has approved completion criteria and the person has not accepted it yet. Keep working on it — scenaria_progress shows what is missing. A task you start now (scenaria_start_mission) is part of this work: the open task stays open and progress per window is measured on it until the person accepts it.`;
+  } catch {
+    return null;
+  }
+}
+
 /** The E4 line at a session start: a stop, or what the agent's previous window left (seen as ended now). Never throws. */
 export function sessionStartNote(s: Scenaria, agent: string): string | null {
   try {
     const wp = windowProgress(s, { handovers: false, pending: { source: "transcript", agent } });
     // Only this agent's line: another agent's window is not this session's problem note.
-    return handoverNote({ ...wp, warning: wp.warning && wp.warning.line === `transcript|${agent}` ? wp.warning : null, escalation: null, noCriteria: null });
+    return handoverNote({ ...wp, warning: wp.warning && wp.warning.line === `transcript|${agent}` ? wp.warning : null, capped: wp.capped && wp.capped.line === `transcript|${agent}` ? wp.capped : null, escalation: null, noCriteria: null });
   } catch {
     return null;
   }

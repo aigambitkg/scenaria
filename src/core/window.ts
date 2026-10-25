@@ -32,7 +32,7 @@ import type { Scenaria } from "./engine.js";
 import { windowAnchor } from "./canon.js";
 import { compact, CONTEXT_ZONES, contextNextLimit, contextZone, derive, formulaValue, type ContextZone, type Derivation } from "./derivation.js";
 import { lookupModel, MODEL_TABLE_VERSION, normaliseModel } from "./models.js";
-import { describeSettings, readContextSettings, type ContextSettings } from "./contextsettings.js";
+import { describeSettings, readContextSettings, settingsAt, type ContextSettings } from "./contextsettings.js";
 import { progressSnapshot, type ProgressSnapshot } from "./progress.js";
 
 export type WindowSource = "transcript" | "proxy";
@@ -40,11 +40,12 @@ export type StartReason = "new-session" | "clear" | "resume" | "compact" | "drop
 
 /** What a reader of a transcript or a proxy answer hands in. */
 export type WindowEvent =
-  | { kind: "sample"; at: string; tokens: number; model?: string; ref: string }
+  | { kind: "sample"; at: string; tokens: number; model?: string; ref: string; tool?: boolean }
   | { kind: "boundary"; at: string; ref: string; trigger?: string; preTokens?: number };
 
 type OpenLine = { t: "open"; w: string; at: string; source: WindowSource; key: string; agent: string; start: StartReason; trigger?: string; preTokens?: number; ref?: string };
-type SampleLine = { t: "sample"; w: string; at: string; tokens: number; model?: string; ref: string };
+/** `tool` (E5): 1 when the answer used a tool other than a clarifying question or a plan, 0 when not; absent: unknown. */
+type SampleLine = { t: "sample"; w: string; at: string; tokens: number; model?: string; ref: string; tool?: 0 | 1 };
 /** Scenaria found the records changed outside and starts the measurement again after this line. */
 type ResetLine = { t: "reset"; at: string; why: "rewritten" | "chain" | "foreign"; lines: number };
 /**
@@ -231,7 +232,7 @@ export function recordWindowEvents(
       seen.add(e.ref);
       if (!cur) open(at, restarted ? "restart" : (who.startReason ?? "new-session"));
       else if (who.source === "proxy" && lastTokens !== null && tokens < lastTokens / 2) open(at, "drop");
-      out.push({ t: "sample", w: cur!.w, at, tokens, ...(e.model ? { model: String(e.model).slice(0, 80) } : {}), ref: e.ref.slice(0, 120) });
+      out.push({ t: "sample", w: cur!.w, at, tokens, ...(e.model ? { model: String(e.model).slice(0, 80) } : {}), ref: e.ref.slice(0, 120), ...(typeof e.tool === "boolean" ? { tool: e.tool ? (1 as const) : (0 as const) } : {}) });
       lastTokens = tokens;
       samples++;
     }
@@ -437,6 +438,8 @@ export interface WindowInfo {
   samples: number;
   tokens: number | null;
   maxTokens: number | null;
+  /** E5: answers that used a tool (other than a clarifying question or a plan); null: not known for every answer. */
+  toolAnswers?: number | null;
   measurable: boolean;
   why?: NotMeasurable;
   cMax?: number;
@@ -620,7 +623,7 @@ export function windowStatus(s: Scenaria, opts: { limit?: number; key?: string; 
   const str = (x: unknown) => typeof x === "string" && x.length > 0 && x.length <= 300;
   lines.forEach((l, idx) => {
     if (l.t === "open" && !(str(l.w) && str(l.at) && str(l.key) && str(l.agent) && (l.source === "transcript" || l.source === "proxy") && str(l.start))) return;
-    if (l.t === "sample" && !(str(l.w) && str(l.at) && typeof l.tokens === "number" && Number.isFinite(l.tokens) && (l.model === undefined || typeof l.model === "string"))) return;
+    if (l.t === "sample" && !(str(l.w) && str(l.at) && typeof l.tokens === "number" && Number.isFinite(l.tokens) && (l.model === undefined || typeof l.model === "string") && (l.tool === undefined || l.tool === 0 || l.tool === 1))) return;
     if (l.t === "open") {
       opens.push({ ...l, idx });
       samplesOf.set(l.w, []);
@@ -674,6 +677,12 @@ export function windowStatus(s: Scenaria, opts: { limit?: number; key?: string; 
     line = new Set<string>();
   }
   const cuts = cutsByWindow(nodes, integOf, line);
+  // The newest start per agent and source: a Claude Code window has ended once a later one of its agent started.
+  const latestOfLine = new Map<string, string>();
+  for (const o of opens) {
+    const k = `${o.source}|${o.agent}`;
+    if (!latestOfLine.has(k) || o.at > latestOfLine.get(k)!) latestOfLine.set(k, o.at);
+  }
   const windows: WindowInfo[] = opens.map((o) => {
     const ss = samplesOf.get(o.w) ?? [];
     const last = ss[ss.length - 1];
@@ -693,21 +702,30 @@ export function windowStatus(s: Scenaria, opts: { limit?: number; key?: string; 
       samples: ss.length,
       tokens: last?.tokens ?? null,
       maxTokens: ss.length ? ss.reduce((m, x) => (x.tokens > m ? x.tokens : m), 0) : null,
+      toolAnswers: ss.length && ss.every((x) => x.tool === 0 || x.tool === 1) ? ss.filter((x) => x.tool === 1).length : null,
       measurable: false,
       rule: cs.rule,
       cuts: cuts.get(`${o.w}@${o.at}`) ?? [],
     };
+    // A window still running is measured with the values in force now; an ended one with the values in force at its
+    // last answer — a value set later never changes an old measurement (E5 review M3/M4).
+    const ended = lastOfKey.get(o.key) !== o.w || (o.source !== "proxy" && (latestOfLine.get(`${o.source}|${o.agent}`) ?? "") > (last?.at ?? o.at));
+    const current = !ended;
+    const at = settingsAt(cs, last?.at, current);
+    info.rule = at.rule;
     if (!trusted(o.idx) || ss.some((x) => !trusted(x.idx))) return { ...info, tokens: null, maxTokens: null, why: "changed-outside" };
     if (!last) return { ...info, why: "no-sample" };
-    const row = lookupModel(last.model, cs.modelRows);
+    // The person's sizes in force at the window's last answer (a size entered later does not apply to it).
+    const row = lookupModel(last.model, at.modelRows);
     if (!row) return { ...info, why: "model-unknown" };
-    const aModel = cs.values.aModel;
+    const aModel = at.aModel;
+    const rule = at.rule;
     const cEff = Math.min(row.cMax, aModel);
     const steps = (stepsByModel.get(normaliseModel(last.model ?? "")) ?? []).slice(-MAX_STEPS).map(String);
     // Where C_max comes from goes into the derivation itself (exports carry it, not only the console line).
-    const cMaxSource = row.provider === "person" ? `entered by the person (rule ${cs.rule.split(" ")[0]}, ${row.read})` : `${row.source} (read ${row.read})`;
-    const soft = derive("context.soft", "context-soft/1", { cMax: row.cMax, cMaxSource, aModel, steps, handover, rule: cs.rule });
-    const fill = derive("context.fill", "context-fill/1", { tokens: last.tokens, cMax: row.cMax, cMaxSource, aModel, soft: soft.value, rule: cs.rule });
+    const cMaxSource = row.provider === "person" ? `entered by the person (rule ${rule.split(" ")[0]}, ${row.read})` : `${row.source} (read ${row.read})`;
+    const soft = derive("context.soft", "context-soft/1", { cMax: row.cMax, cMaxSource, aModel, steps, handover, rule });
+    const fill = derive("context.fill", "context-fill/1", { tokens: last.tokens, cMax: row.cMax, cMaxSource, aModel, soft: soft.value, rule });
     return {
       ...info,
       measurable: true,
@@ -716,9 +734,9 @@ export function windowStatus(s: Scenaria, opts: { limit?: number; key?: string; 
       modelSource: { source: row.source, read: row.read, table: MODEL_TABLE_VERSION },
       fill,
       soft,
-      peak: info.maxTokens !== null ? formulaValue("context-fill/1", { tokens: info.maxTokens, cMax: row.cMax, aModel, soft: soft.value, rule: cs.rule }) : fill.value,
-      zone: contextZone(fill.value, soft.value, cs.rule),
-      next: contextNextLimit(fill.value, soft.value, cs.rule),
+      peak: info.maxTokens !== null ? formulaValue("context-fill/1", { tokens: info.maxTokens, cMax: row.cMax, aModel, soft: soft.value, rule }) : fill.value,
+      zone: contextZone(fill.value, soft.value, rule),
+      next: contextNextLimit(fill.value, soft.value, rule),
     };
   });
   windows.sort((a, b) => String(b.lastAt ?? b.startedAt).localeCompare(String(a.lastAt ?? a.startedAt)) || Number(b.id.slice(1)) - Number(a.id.slice(1)));
@@ -735,9 +753,26 @@ export function windowStatus(s: Scenaria, opts: { limit?: number; key?: string; 
 
 // ------------------------------------------------------------------ reading the sources
 
+/**
+ * Claude Code's tools that only read, plan or ask (E4: allowed during a stop; E5, Kev 2026-10-25: no work step — a
+ * window in which the agent only reads, searches or asks is not assessed).
+ */
+export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set(["Read", "Glob", "Grep", "LS", "NotebookRead", "WebFetch", "WebSearch", "TodoWrite", "TodoRead", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "ToolSearch", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "ListMcpResourcesTool", "ReadMcpResourceTool"]);
+
 /** Usage samples and compaction boundaries of Claude Code transcript lines (main line only). */
 export function claudeCodeWindowEvents(entries: any[]): WindowEvent[] {
   const out: WindowEvent[] = [];
+  // E5: which answers did work with a tool — one answer is several lines with the same message id. Reading, searching,
+  // asking and planning are no work steps (Kev 2026-10-25), nor Scenaria's own tools (what they record counts as a
+  // step of its own).
+  const talk = { has: (n: string) => READ_ONLY_TOOLS.has(n) || /^mcp__scenaria(?:-[a-z0-9-]{1,60})?__scenaria_/.test(n) };
+  const used = new Set<string>();
+  for (const e of entries) {
+    const msg = e && typeof e === "object" && e.type === "assistant" && !e.isSidechain ? e.message ?? {} : null;
+    if (!msg || !Array.isArray(msg.content)) continue;
+    const id = typeof msg.id === "string" && msg.id ? msg.id : typeof e.requestId === "string" ? e.requestId : String(e.uuid ?? "");
+    if (msg.content.some((b: any) => b && b.type === "tool_use" && !talk.has(String(b.name)))) used.add(id);
+  }
   for (const e of entries) {
     if (!e || typeof e !== "object" || e.isSidechain) continue;
     if (e.type === "system" && e.subtype === "compact_boundary") {
@@ -754,7 +789,7 @@ export function claudeCodeWindowEvents(entries: any[]): WindowEvent[] {
     // One answer is written as several lines (thinking, text, tool use) with the same message id and the same usage.
     const id = typeof msg.id === "string" && msg.id ? msg.id : typeof e.requestId === "string" ? e.requestId : String(e.uuid ?? "");
     if (!id || !tokens) continue;
-    out.push({ kind: "sample", at: String(e.timestamp ?? ""), tokens, model: typeof msg.model === "string" ? msg.model : undefined, ref: `m:${id}` });
+    out.push({ kind: "sample", at: String(e.timestamp ?? ""), tokens, model: typeof msg.model === "string" ? msg.model : undefined, ref: `m:${id}`, tool: used.has(id) });
   }
   return out;
 }

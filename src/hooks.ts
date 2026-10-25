@@ -1,12 +1,13 @@
+import { preToolHookWired as wiredCheck } from "./setup.js";
 import { appendFileSync, existsSync, readFileSync, statSync } from "node:fs";
 import { Scenaria } from "./core/engine.js";
 import { findRoot, Store } from "./core/store.js";
 import { ingestClaudeTranscript } from "./ingest.js";
-import { recordProgressSnapshot, windowSamples, windowsHead, type StartReason } from "./core/window.js";
+import { recordProgressSnapshot, windowSamples, windowsHead, type StartReason, READ_ONLY_TOOLS } from "./core/window.js";
 import { isPlausibleProject, readGlobalConfig } from "./core/global.js";
 import { promptReminder } from "./core/prompts.js";
 import { applyBlocks } from "./core/blocks.js";
-import { agentNotice, cutBullet, cutIfDue, cutMeta, cutOnce, personNotice, sessionStartLine, sessionStartNote, tellsPerson, windowNotices, type Told } from "./core/windowact.js";
+import { agentNotice, continueNote, cutBullet, cutIfDue, cutMeta, cutOnce, personNotice, sessionStartLine, sessionStartNote, tellsPerson, windowNotices, type Told } from "./core/windowact.js";
 import { stopAgentText, stopState } from "./core/windowprogress.js";
 import type { TaskHint } from "./core/engine.js";
 
@@ -56,6 +57,8 @@ interface Session {
   told?: Told;
   /** E4: this session's window is recorded (the hook before a tool reads the first answer only until then). */
   windowSeen?: boolean;
+  /** E5: the open task this session was told it continues (told once). */
+  toldTask?: string;
 }
 
 const AGENT = "claude-code";
@@ -185,7 +188,7 @@ const langOf = (): "de" | "en" => (readGlobalConfig().ui?.lang === "en" ? "en" :
  * asking the person, and Scenaria's own MCP tools. Everything else is refused — the shell too, also for `scenaria …`
  * (some of its commands write files: review 2, H1/H2/M6) — and tools this list does not know.
  */
-const READ_TOOLS = new Set(["Read", "Glob", "Grep", "LS", "NotebookRead", "WebFetch", "WebSearch", "TodoWrite", "TodoRead", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "ToolSearch", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "ListMcpResourcesTool", "ReadMcpResourceTool"]);
+const READ_TOOLS = READ_ONLY_TOOLS;
 /** Scenaria's own tools (kept equal to tools.ts by a test; not imported here: the hook before every tool stays light). */
 export const SCENARIA_TOOL_NAMES = new Set([
   "scenaria_status", "scenaria_start_mission", "scenaria_decide", "scenaria_choose", "scenaria_checkpoint", "scenaria_tree", "scenaria_get_node", "scenaria_context", "scenaria_rewind", "scenaria_fork", "scenaria_diff", "scenaria_verify", "scenaria_recall",
@@ -201,20 +204,7 @@ export function allowedDuringStop(tool: unknown, toolInput: any): boolean {
   return false;
 }
 
-/** Is Scenaria's PreToolUse hook wired for every tool (matcher "*") in the project's or the user's Claude Code settings? */
-export function preToolHookWired(root: string, home?: string): boolean {
-  const files = [`${root}/.claude/settings.json`, `${root}/.claude/settings.local.json`, ...(home ? [`${home}/.claude/settings.json`] : [])];
-  for (const f of files) {
-    try {
-      const j = JSON.parse(readFileSync(f, "utf8"));
-      const list: any[] = Array.isArray(j?.hooks?.PreToolUse) ? j.hooks.PreToolUse : [];
-      if (list.some((m) => (m?.matcher === "*" || m?.matcher === undefined || m?.matcher === "") && Array.isArray(m?.hooks) && m.hooks.some((h: any) => /\bhook pre-tool\b/.test(String(h?.command ?? ""))))) return true;
-    } catch {
-      /* not there or not readable */
-    }
-  }
-  return false;
-}
+export { preToolHookWired } from "./setup.js";
 
 /** The stop for the hook before a tool, read without opening the project (cheap, and nothing in it can fail — review 2, H1). */
 function stopBeforeTool(root: string) {
@@ -358,7 +348,9 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
         const prompt = (input.prompt ?? "").trim();
         if (!prompt || prompt.startsWith("/")) break;
         // The session's task: titled after the request that leads to work (updated until the task node exists).
-        s.noteTask(taskKey, excerpt(prompt, 80), excerpt(prompt, 600), { agent: "user", source: "hook" });
+        const continued = s.noteTask(taskKey, excerpt(prompt, 80), excerpt(prompt, 600), { agent: "user", source: "hook" });
+        const cont = continued && readSession().toldTask !== continued ? continueNote(s, continued) : null;
+        if (cont) updSession((cur) => (cur.toldTask = continued!));
         const st = s.store.readState();
         const pendingHere = st.pendingTask?.key === taskKey;
         updSession((cur) => {
@@ -386,7 +378,7 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
         if (JSON.stringify(n4.told) !== JSON.stringify(readSession().told ?? {})) updSession((cur) => (cur.told = n4.told));
         const person = [zonePerson, ...n4.person].filter(Boolean).join("\n") || undefined;
         const reminder = s.config().promptReminder !== false ? promptReminder(s) : "";
-        const additionalContext = [reminder, notice, ...n4.agent].filter(Boolean).join(" ");
+        const additionalContext = [reminder, cont, notice, ...n4.agent].filter(Boolean).join(" ");
         if (additionalContext || person) {
           return JSON.stringify({ ...(person ? { systemMessage: person } : {}), hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext } });
         }
@@ -532,7 +524,10 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
         // its window: nothing changes there).
         if (input.source !== "resume") recordProgressSnapshot(s, windowKey);
         // A new window begins: its first answer is read before its first tool (above).
-        updSession((cur) => (cur.windowSeen = false));
+        updSession((cur) => {
+          cur.windowSeen = false;
+          if (input.source !== "resume") delete cur.toldTask;
+        });
         if (!s.config().injectContextOnSessionStart || !s.head()) break;
         const c = s.context();
         const handover = sessionStartLine(s, AGENT);
@@ -540,8 +535,11 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
         const note = input.source !== "resume" ? sessionStartNote(s, AGENT) : null;
         // During a stop: is the hook before every tool still wired? (A restored older state of .claude/ could have put
         // it back to the shell only — review 3, M3.) Scenaria says it; it never rewrites the person's settings here.
-        const wiring = stopState(s) && !preToolHookWired(root, process.env.HOME) ? " [Scenaria stop] Warning: the hook before every tool (PreToolUse, matcher \"*\") is not set up in this project's or your Claude Code settings — the stop is not enforced. Ask the person to run \"scenaria start\" again." : "";
-        const additionalContext = `${c.markdown}${handover ? `\n\n${handover}` : ""}${note ? `\n\n${note}` : ""}${wiring}\n\n(Scenaria is active: ONE project tree. New work → scenaria_start_mission (task); real choices → scenaria_decide with context, rationale, servesGoal; steps → scenaria_checkpoint; older details → scenaria_recall.)`;
+        const wiring = stopState(s) && !wiredCheck(root, process.env.HOME) ? " [Scenaria stop] Warning: the hook before every tool (PreToolUse, matcher \"*\") is not set up in this project's or your Claude Code settings — the stop is not enforced. Ask the person to run \"scenaria start\" again." : "";
+        const open = input.source !== "resume" ? s.openTaskWithCriteria() : null;
+        const cont = open ? continueNote(s, open) : null;
+        if (cont) updSession((cur) => (cur.toldTask = open!));
+        const additionalContext = `${c.markdown}${handover ? `\n\n${handover}` : ""}${note ? `\n\n${note}` : ""}${cont ? `\n\n${cont}` : ""}${wiring}\n\n(Scenaria is active: ONE project tree. New work → scenaria_start_mission (task); real choices → scenaria_decide with context, rationale, servesGoal; steps → scenaria_checkpoint; older details → scenaria_recall.)`;
         return JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext } });
       }
     }

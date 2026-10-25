@@ -231,6 +231,12 @@ function progressRaw(criteria: InputValue): { raw: number; n: number } {
   const sw = list.reduce((a, c) => a + c.w, 0);
   return { raw: sw ? (list.reduce((a, c) => a + c.w * c.s, 0) / sw) * 100 : 0, n: list.length };
 }
+/** E5: a task's progress without the gates' cap (rounded) and the gate that holds it (null: none open). */
+export function progressParts(criteria: InputValue, gates: InputValue): { raw: number; cap: number; blocked: number | null } {
+  const { cap, blocked } = progressCap(gates);
+  return { raw: Math.round(progressRaw(criteria).raw), cap, blocked };
+}
+export const gateLabel = (cap: number, lang: "de" | "en"): string => gateName(cap, lang);
 const gateName = (cap: number, lang: "de" | "en") => PROGRESS_GATES.find((g) => g.cap === cap)?.name[lang] ?? String(cap);
 
 const PROGRESS: Formula = {
@@ -494,7 +500,7 @@ export function parseWindowProgressRule(x: InputValue): WindowProgressRule {
 }
 
 /** What became of a window (shared by window-progress/1 and windowprogress.ts). */
-export type WindowVerdict = "progress" | "none" | "not-full" | "no-fill" | "no-criteria" | "waiting";
+export type WindowVerdict = "progress" | "none" | "not-full" | "no-fill" | "no-criteria" | "waiting" | "no-work" | "capped";
 /** "n1 p=40" lists → task → value (the first entry of a task counts). */
 function taskValues(x: InputValue): Map<string, number> {
   const m = new Map<string, number>();
@@ -504,6 +510,17 @@ function taskValues(x: InputValue): Map<string, number> {
     if (id && p !== null && !m.has(id)) m.set(id, p);
   }
   return m;
+}
+/** E5: how much the focus task's progress without the cap rose in the window ("n1 r=30" inputs), when a gate holds it. */
+function cappedRise(v: Values): number {
+  const raw = (x: InputValue) => {
+    const s = typeof x === "string" ? x : Array.isArray(x) ? x.find((y) => typeof y === "string" && y.startsWith(`${v.focus} `)) : undefined;
+    const m = typeof s === "string" ? /(?:^|\s)r=(\d{1,3})(?=\s|$)/.exec(s) : null;
+    return m ? Number(m[1]) : null;
+  };
+  const to = raw(v.rawEnd);
+  if (to === null || typeof v.gate !== "number") return 0;
+  return to - (raw(v.rawStart) ?? 0);
 }
 function windowPoints(v: Values): { points: number; tasks: { task: string; from: number; best: number | null; to: number }[] } {
   const a = taskValues(v.start);
@@ -528,7 +545,11 @@ export function windowVerdict(v: Values, points: number): WindowVerdict {
   const r = parseWindowProgressRule(v.rule);
   if (points >= r.min) return "progress";
   if (typeof v.focus !== "string" || !v.focus) return "no-criteria";
+  // E5 (Kev 2026-10-25): a window without a single work step (questions and answers only) is not assessed.
+  if (typeof v.steps === "number" && v.steps === 0) return "no-work";
   if (bool(v.waiting)) return "waiting";
+  // E5 (Kev 2026-10-25): held at a gate — the work rose by at least the minimum, the gate's cap kept the value.
+  if (cappedRise(v) >= r.min) return "capped";
   const full = windowFull(v);
   if (full === null) return "no-fill";
   if (!full) return "not-full";
@@ -539,8 +560,8 @@ const pts = (x: number, lang: "de" | "en") => `${x > 0 ? `+${x}` : x} ${lang ===
 const WINDOW_PROGRESS: Formula = {
   id: "window-progress/1",
   expression: {
-    de: "Σ über die Aufgaben mit Kriterien am Ende des Fensters (Fortschritt am Ende − max(Fortschritt am Anfang; bisher bester Fortschritt mit denselben Kriterien)), in Punkten; ohne Kriterien am Anfang zählt der Anfang 0. Ab der Mindestzahl laut der Eingabe „Regel“ ist es Fortschritt (Startwert v1.0: 10 Punkte). Darunter zählt nur ein volles Fenster (höchste Füllung ab der Gelb-Linie, oder komprimiert) an einer Aufgabe mit Kriterien, deren nächster Schritt nicht bei der Person liegt, als „ohne Fortschritt“",
-    en: "Σ over the tasks with criteria at the window's end (progress at the end − max(progress at the start; best progress so far with the same criteria)), in points; without criteria at the start the start counts 0. From the minimum per the input \"rule\" on it is progress (start value v1.0: 10 points). Below it only a full window (highest fill at or above the yellow line, or compacted) on a task with criteria whose next step is not the person's counts as \"no progress\"",
+    de: "Σ über die Aufgaben mit Kriterien am Ende des Fensters (Fortschritt am Ende − max(Fortschritt am Anfang; bisher bester Fortschritt mit denselben Kriterien)), in Punkten; ohne Kriterien am Anfang zählt der Anfang 0. Ab der Mindestzahl laut der Eingabe „Regel“ ist es Fortschritt (Startwert v1.0: 10 Punkte). Darunter zählt nur ein volles Fenster (höchste Füllung ab der Gelb-Linie, oder komprimiert) an einer Aufgabe mit Kriterien, deren nächster Schritt nicht bei der Person liegt, als „ohne Fortschritt“; nicht bewertet wird ein Fenster ohne Arbeitsschritt und eines, dessen Aufgabe ohne Deckel um mindestens die Mindestzahl stieg, während ein offenes Tor den Wert hält",
+    en: "Σ over the tasks with criteria at the window's end (progress at the end − max(progress at the start; best progress so far with the same criteria)), in points; without criteria at the start the start counts 0. From the minimum per the input \"rule\" on it is progress (start value v1.0: 10 points). Below it only a full window (highest fill at or above the yellow line, or compacted) on a task with criteria whose next step is not the person's counts as \"no progress\"; a window without a work step is not assessed, nor one whose task rose by at least the minimum without the cap while an open gate holds the value",
   },
   inputs: [
     { name: "start", label: { de: "Fortschritt am Anfang des Fensters (Aufgabe p = %, progress/1)", en: "progress at the window's start (task p = %, progress/1)" } },
@@ -553,6 +574,10 @@ const WINDOW_PROGRESS: Formula = {
     { name: "compacted", label: { de: "das Fenster endete mit einer Komprimierung", en: "the window ended with a compaction" } },
     { name: "running", label: { de: "das Fenster läuft noch (Ende = jetzt)", en: "the window is still running (end = now)" } },
     { name: "rule", label: { de: "Regel (Version, Mindestzahl, Toleranz)", en: "rule (version, minimum, tolerance)" } },
+    { name: "steps", label: { de: "Arbeitsschritte im Fenster: Antworten der KI mit einem Werkzeug, das etwas tut (nicht Lesen, Suchen, Fragen, Planen), und ihre festgehaltenen Schritte (leer: unbekannt)", en: "work steps in the window: the agent's answers with a tool that does something (not reading, searching, asking, planning) and the steps it recorded (empty: unknown)" } },
+    { name: "rawStart", label: { de: "Fortschritt der Aufgabe ohne Deckel am Anfang (r = %)", en: "the task's progress without the cap at the start (r = %)" } },
+    { name: "rawEnd", label: { de: "Fortschritt der Aufgabe ohne Deckel am Ende (r = %)", en: "the task's progress without the cap at the end (r = %)" } },
+    { name: "gate", label: { de: "das offene Tor, das die Aufgabe am Ende deckelt (Deckel in %)", en: "the open gate capping the task at the end (cap in %)" } },
   ],
   compute(v) {
     return windowPoints(v).points;
@@ -576,6 +601,11 @@ const WINDOW_PROGRESS: Formula = {
       "no-fill": { de: `weniger als ${r.min} Punkte, die Füllung des Fensters ist nicht messbar: wird nicht bewertet`, en: `fewer than ${r.min} points, the window's fill cannot be measured: not assessed` },
       "no-criteria": { de: "die Aufgabe hat keine Fertig-Kriterien: wird nicht bewertet", en: "the task has no completion criteria: not assessed" },
       waiting: { de: `weniger als ${r.min} Punkte, aber der nächste Schritt liegt bei der Person: wird nicht bewertet`, en: `fewer than ${r.min} points, but the next step is the person's: not assessed` },
+      "no-work": { de: "im Fenster gab es keinen Arbeitsschritt (nur Lesen, Fragen und Antworten): wird nicht bewertet", en: "the window had no work step (only reading, questions and answers): not assessed" },
+      capped: {
+        de: `weniger als ${r.min} Punkte, aber die Arbeit stieg um ${cappedRise(v)} Punkte ohne Deckel; das offene Tor „${gateName(num(v.gate), "de")}“ (${num(v.gate)} %) hält den Wert: wird nicht bewertet`,
+        en: `fewer than ${r.min} points, but the work rose by ${cappedRise(v)} points without the cap; the open gate "${gateName(num(v.gate), "en")}" (${num(v.gate)} %) holds the value: not assessed`,
+      },
     };
     if (bool(v.running))
       return {

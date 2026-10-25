@@ -64,7 +64,7 @@ export function agentPrompt(s: Scenaria, opts: { kind?: PromptKind; lang?: Lang;
       ? [
           `1. Zu Beginn: ${call("scenaria_status", "{}")} und ${call("scenaria_context", "{}")}. Es gibt genau EINEN Projektbaum – lege nie einen neuen an.`,
           x.goal ? null : `   Hauptziel fehlt → frag mich und speichere es mit ${call("scenaria_start_mission", '{"projectGoal": "…"}')}.`,
-          `2. Neue Aufgabe → ${call("scenaria_start_mission", '{"title": "…", "goal": "…"}')} (Teilziel im bestehenden Baum).`,
+          `2. Neue Aufgabe → ${call("scenaria_start_mission", '{"title": "…", "goal": "…"}')} (Teilziel im bestehenden Baum). Eine Aufgabe mit von mir freigegebenen Fertig-Kriterien bleibt offen, bis ich sie abnehme: eine neue Sitzung setzt sie fort, und eine darunter begonnene Aufgabe gehört zu ihrer Arbeit.`,
           `3. Vor jeder echten Entscheidung → ${call("scenaria_decide", '{"question", "options" (alle erwogenen), "chosen", "rationale", "context", "servesGoal", "expectedOutcome", "confidence" 0–1}')}. context = Ausgangslage, servesGoal = wie es dem Hauptziel dient.`,
           `4. Nach jedem sinnvollen Schritt → ${call("scenaria_checkpoint", '{"title", "outputs": [2–6 belegte Stichpunkte, Dateien in `Backticks`], "irreversible": [externe Effekte]}')}. Aufgabe fertig → zusätzlich "taskDone": true, "summary": "1–2 Sätze".`,
           `5. Fehler oder Sackgasse → ${call("scenaria_last_good", "{}")}, dann ${call("scenaria_rewind", '{"id", "lesson"}')} und nur ab der zurückgegebenen Kapsel weiterarbeiten. Andere Option probieren → scenaria_fork.`,
@@ -76,7 +76,7 @@ export function agentPrompt(s: Scenaria, opts: { kind?: PromptKind; lang?: Lang;
       : [
           `1. At the start: ${call("scenaria_status", "{}")} and ${call("scenaria_context", "{}")}. There is exactly ONE project tree – never start a new one.`,
           x.goal ? null : `   Main goal missing → ask me and store it with ${call("scenaria_start_mission", '{"projectGoal": "…"}')}.`,
-          `2. New piece of work → ${call("scenaria_start_mission", '{"title": "…", "goal": "…"}')} (a task in the existing tree).`,
+          `2. New piece of work → ${call("scenaria_start_mission", '{"title": "…", "goal": "…"}')} (a task in the existing tree). A task with completion criteria I approved stays open until I accept it: a new session continues it, and a task started under it is part of its work.`,
           `3. Before every real decision → ${call("scenaria_decide", '{"question", "options" (all considered), "chosen", "rationale", "context", "servesGoal", "expectedOutcome", "confidence" 0–1}')}. context = the situation, servesGoal = how it serves the main goal.`,
           `4. After each meaningful step → ${call("scenaria_checkpoint", '{"title", "outputs": [2–6 verified bullets, files in `backticks`], "irreversible": [external effects]}')}. Task finished → also "taskDone": true, "summary": "1–2 sentences".`,
           `5. Mistake or dead end → ${call("scenaria_last_good", "{}")}, then ${call("scenaria_rewind", '{"id", "lesson"}')} and continue only from the returned capsule. Try another option → scenaria_fork.`,
