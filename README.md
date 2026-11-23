@@ -388,7 +388,7 @@ Global flags: `--root`, `--json`, `--agent`, `--model`, `--user`.
 
 ```text
 .scenaria/
-  config.json        settings (snapshot folders, proxy upstreams, mirror, verifyCommand, …)
+  config.json        settings (snapshot folders, proxy upstreams, mirror, verifyCommand — run only by you: scenaria verify --run, …)
   state.json         HEAD, project root, current task, counters
   memory.json        project rules (active ones go to every capsule and prompt; agents' proposals wait for you)
   canon.json         canon events: fixed points, proposals, approvals, last checks (commit it)

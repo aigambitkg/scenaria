@@ -493,7 +493,14 @@ The person's projects are remembered in `~/.config/scenaria/projects.json` (dash
 - a decision has a chosen option and a rationale, and confidence ≥ 0.5,
 - changed files are documented,
 - irreversible effects are flagged,
-- optionally `verifyCommand`, run only if the node is HEAD and the tree is clean.
+- optionally `verifyCommand`, run only if the node is HEAD and the tree is clean — and only when the person starts it at an interactive terminal (`scenaria verify --run`, the command is shown and confirmed by typing). It is a shell command from `.scenaria/config.json`, a file agents can edit, so it never runs for a call over MCP, HTTP or the chat (the result then says "not run").
+
+**Nothing in the project folder runs with the person's rights.** The project folder, including `.scenaria/`, is writable by agents, while the dashboard, the HTTP API and the hooks often run under the person's account. Therefore:
+- every git call on a repository in the project carries `SAFE_GIT` (`core/snapshot.ts`): no hooks, no `core.fsmonitor`, no alternate-refs command, no signing program, no `ext::` transport; comparisons run with `--no-ext-diff --no-textconv`;
+- before git reads it, the config of `.scenaria/shadow.git` is reduced to the plain `[core]` settings `git init` writes (`cleanShadowConfig`); anything else (filter and diff drivers, includes, URL rewrites) is removed and logged (`security: "shadow_config_cleaned"`). This check and git's own read are two steps: a program that rewrites the file at exactly that moment is not stopped (see `SECURITY.md`, known limits);
+- a step's folder name from a step file never leads out of `.scenaria/` (`insideScenaria`), and "open as folder" only shows the folder in the file manager (`showFolderCommand`; on macOS `open -R`, so a folder that is an application bundle is never launched).
+
+Tests: `test/execguard.test.mjs`.
 
 A verdict of the person or a registered audit agent overrides the automatic result; a verifier agent's verdict is a self-report. `lastGood()` is the nearest node on the path whose `passed` is confirmed (`integrity().confirmed`).
 

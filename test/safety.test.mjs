@@ -84,7 +84,7 @@ test("verifyCommand runs without holding the store lock", () => {
   // The command itself writes to the store — it would time out if verify held the lock.
   cfg.verifyCommand = `"${process.execPath}" "${CLI}" status --root "${p.dir}"`;
   s.store.writeConfig(cfg);
-  const v = s.verify(cp.id, { runCommand: true });
+  const v = s.verify(cp.id, { runCommand: true, commandBy: "person" });
   assert.equal(v.verification.checks.find((c) => c.name.startsWith("command")).status, "passed");
 });
 

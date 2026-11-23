@@ -214,10 +214,10 @@ test("verifyCommand runs only on a clean HEAD", () => {
   s.store.writeConfig(cfg);
   p.write("ok.txt", "1");
   const cp = s.checkpoint({ title: "ok" });
-  const v = s.verify(cp.id, { runCommand: true });
+  const v = s.verify(cp.id, { runCommand: true, commandBy: "person" });
   assert.equal(v.verification.checks.find((c) => c.name.startsWith("command")).status, "passed");
   p.write("other.txt", "dirty");
-  const v2 = s.verify(cp.id, { runCommand: true });
+  const v2 = s.verify(cp.id, { runCommand: true, commandBy: "person" });
   assert.equal(v2.verification.checks.find((c) => c.name.startsWith("command")).status, "warning");
 });
 

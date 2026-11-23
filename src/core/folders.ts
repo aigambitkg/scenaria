@@ -1,9 +1,34 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, constants as fsc, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
-import { cleanEnv, type ShadowRepo } from "./snapshot.js";
+import { chmodSync, constants as fsc, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { SAFE_GIT, cleanEnv, type ShadowRepo } from "./snapshot.js";
 import { slugify, versionLabel } from "./ids.js";
 import type { ScenariaNode, SnapshotFolderConfig } from "./types.js";
+
+/** True when `rel` (a path stored in a step file) names a place inside the project's `.scenaria/` folder. */
+export function insideScenaria(root: string, rel: string): boolean {
+  if (typeof rel !== "string" || !rel) return false;
+  const base = resolve(root, ".scenaria") + sep;
+  return resolve(root, rel).startsWith(base);
+}
+
+/**
+ * The program and arguments that SHOW a folder in the file manager and never start anything.
+ * macOS: `open <folder>` would launch a folder that is an application bundle (a step's folder name comes from
+ * project files an agent can edit), so the folder is revealed instead (`open -R`), with a file inside it selected
+ * where there is one — Finder then opens the folder itself. Elsewhere a folder path only opens the file manager.
+ */
+export function showFolderCommand(folder: string, platform: NodeJS.Platform = process.platform): { cmd: string; args: string[] } {
+  if (platform === "darwin") {
+    let inside: string | undefined;
+    try {
+      inside = readdirSync(folder).filter((f) => !f.startsWith(".")).sort()[0];
+    } catch {}
+    return { cmd: "/usr/bin/open", args: ["-R", inside ? join(folder, inside) : folder] };
+  }
+  if (platform === "win32") return { cmd: "explorer", args: [folder] };
+  return { cmd: "xdg-open", args: [folder] };
+}
 
 export const DEFAULT_SNAPSHOT_FOLDERS: SnapshotFolderConfig = { enabled: true, path: ".scenaria/snapshots", maxFiles: 20000 };
 
@@ -66,7 +91,7 @@ export class SnapshotFolders {
     const res = new Map<string, Buffer>();
     for (let i = 0; i < shas.length; i += 400) {
       const chunk = shas.slice(i, i + 400);
-      const r = spawnSync("git", ["cat-file", "--batch"], {
+      const r = spawnSync("git", [...SAFE_GIT, "cat-file", "--batch"], {
         cwd: this.root,
         env: { ...cleanEnv(), GIT_DIR: this.repo.gitDir },
         input: chunk.join("\n") + "\n",

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { showFolderCommand } from "./core/folders.js";
 import { accessSync, constants as fsConstants, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, dirname, extname, isAbsolute, join, normalize, sep } from "node:path";
@@ -101,8 +102,8 @@ async function readRaw(req: IncomingMessage, limit: number): Promise<Buffer> {
 
 /** Reveal a folder in Finder / Explorer / the file manager (local mode only). */
 function openPath(path: string) {
-  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
-  void launch(cmd, [path]);
+  const { cmd, args } = showFolderCommand(path);
+  void launch(cmd, args);
 }
 
 /**
@@ -1273,6 +1274,9 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           if (b?.status && !isApprover(req)) {
             return send(res, 403, { error: "A verdict is the person's: click the lock (Open approval mode) in the dashboard. Without it you can run the automatic checks; agents record self-reported verdicts with scenaria_verify.", code: "approval_required" });
           }
+          // The verify command (a shell command from the project's config, which agents can edit) never runs over
+          // HTTP: `runCommand` is passed on without `commandBy`, so the engine records "not run". The person runs
+          // it at a terminal (scenaria verify --run), where they see its text first.
           return send(res, 200, s.verify(String(b.id), { status: b.status, notes: b.notes, by: b.status ? approver : "dashboard", auto: b.auto !== false, runCommand: Boolean(b.runCommand), ...(b.status ? { origin: "person" as const, via: "dashboard" } : {}) }));
         }
         if (req.method === "POST" && p === "/api/choose") {

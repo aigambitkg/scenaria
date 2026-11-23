@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showFolderCommand } from "./core/folders.js";
 import { parseArgs } from "node:util";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -797,10 +798,10 @@ async function main() {
         return out(`Copied ${p[0]} to ${v["copy-to"]} (writable)`, { folder, copy: v["copy-to"] });
       }
       if (!v.print) {
-        const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
+        const { cmd, args } = showFolderCommand(folder);
         const { spawn } = await import("node:child_process");
         try {
-          spawn(cmd, [folder], { stdio: "ignore", detached: true }).unref();
+          spawn(cmd, args, { stdio: "ignore", detached: true }).unref();
         } catch {}
       }
       return out(folder, { folder });
@@ -1452,12 +1453,18 @@ async function main() {
       // A verdict counts only from the person: an interactive terminal. From an agent's shell it is a self-report.
       const person = Boolean(v.status) && isPersonTerminal();
       if (person) await personConfirm(String(v.status), `Your verdict "${v.status}" on ${p[0] ?? "HEAD"} will count as the person's and is signed with your approver key.`, "");
+      // The verify command is a shell command from the project's config, which agents can edit: it runs only when
+      // the person starts it at an interactive terminal after seeing its text (never from an agent's shell).
+      const verifyCmd = v.run && !v["no-auto"] ? s.config().verifyCommand : undefined;
+      const runByPerson = Boolean(verifyCmd) && isPersonTerminal();
+      if (runByPerson) await personConfirm("run", `This runs the project's verify command in a shell, with your rights:\n\n  ${verifyCmd}\n\nIt comes from .scenaria/config.json, a file agents can edit. Run it only if this is the command you expect.`, "");
       const n = s.verify(p[0] ?? s.head()?.id ?? "", {
         status: v.status as any,
         notes: v.notes,
         by: v.by ?? (person ? v.user ?? "person" : "cli"),
         auto: !v["no-auto"],
         runCommand: v.run,
+        ...(runByPerson ? { commandBy: "person" as const } : {}),
         ...(person ? { origin: "person" as const, via: "terminal" } : {}),
       });
       const note = v.status && !person ? `\n${C.yellow}Recorded as self-reported (not from an interactive terminal): it does not count as verified. The person or a registered audit agent can confirm it.${C.reset}` : "";
