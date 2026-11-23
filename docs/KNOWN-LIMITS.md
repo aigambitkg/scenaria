@@ -11,7 +11,7 @@ What Scenaria does not do, does not detect or does not protect against — writt
 - **The ISO/IEC 42001 mapping is the project's own.** It was not reviewed by an accredited certification body and is no certificate. Scenaria evidences how AI agents worked in a project; it does not evidence how models are developed or trained, nor an organisation's policies.
 - **Team mode is simple:** one shared token for agents and one for approvers, no user accounts or roles, no TLS of its own (put it behind a reverse proxy with HTTPS).
 - **Data at rest is not encrypted.** Recorded conversations, snapshots and the tree are plain files in `.scenaria/` inside the project. Use disk encryption and keep `.scenaria/` out of shared or public repositories (the default `.gitignore` does).
-- **Windows** is built but not yet tested as thoroughly as macOS and Linux.
+- **Windows is experimental.** Scenaria builds there, but in CI (November 2026) 12 of the automated tests failed on Windows and the run did not finish within 25 minutes (audit package paths, setup of agent configs, a few dashboard checks). macOS and Linux are the tested systems.
 
 ## Integrity and verdicts (0.9.2)
 

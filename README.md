@@ -26,7 +26,7 @@ Scenaria needs `git` (on macOS: `xcode-select --install`).
 # macOS / Linux: one file, no Node.js needed
 curl -fsSL https://raw.githubusercontent.com/aigambitkg/scenaria/main/install.sh | sh
 
-# Windows (PowerShell)
+# Windows (PowerShell) — experimental: 12 of the automated tests still fail on Windows
 irm https://raw.githubusercontent.com/aigambitkg/scenaria/main/install.ps1 | iex
 
 # or with Node.js 20 or newer
