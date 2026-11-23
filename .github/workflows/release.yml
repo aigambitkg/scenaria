@@ -1,17 +1,19 @@
 name: Release
 
-# Push a tag like v0.3.0 → tests, npm package, single-file binaries for macOS/Linux/Windows.
+# Push a tag like v0.9.23 → tests, npm package, single-file binaries for macOS/Linux/Windows with SHA256SUMS.
 on:
   push:
     tags: ["v*"]
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 jobs:
   npm:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance
     env:
       NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
@@ -23,6 +25,8 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+      - name: The tag matches the version in package.json
+        run: test "v$(node -p "require('./package.json').version")" = "${GITHUB_REF_NAME}"
       - name: Publish to npm (needs the NPM_TOKEN secret)
         if: ${{ env.NODE_AUTH_TOKEN != '' }}
         run: npm publish --provenance --access public
@@ -32,8 +36,10 @@ jobs:
       matrix:
         include:
           - os: macos-latest
+            name: macos
             targets: darwin-arm64 darwin-x64
           - os: ubuntu-latest
+            name: linux-windows
             targets: linux-x64 linux-arm64 windows-x64
     runs-on: ${{ matrix.os }}
     steps:
@@ -63,6 +69,28 @@ jobs:
               *) gzip -9 "$f" ;;
             esac
           done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.name }}
+          path: release/*
+          if-no-files-found: error
+
+  publish:
+    needs: [npm, binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          path: release
+          merge-multiple: true
+      - name: Checksums (install.sh and install.ps1 check every download against this file)
+        run: |
+          cd release
+          sha256sum scenaria-* > SHA256SUMS
+          cat SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
           files: release/*

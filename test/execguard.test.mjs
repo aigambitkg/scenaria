@@ -178,3 +178,9 @@ test("a step's folder: a name edited by hand never leads out of .scenaria, and s
   assert.ok(mac.args[1].startsWith(folder));
   assert.deepEqual(showFolderCommand("/x/y", "linux"), { cmd: "xdg-open", args: ["/x/y"] });
 });
+
+test("the version the server reports is the package's version", async () => {
+  const { VERSION } = await import("../dist/server.js");
+  const pkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"));
+  assert.equal(VERSION, pkg.version);
+});

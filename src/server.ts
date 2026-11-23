@@ -50,7 +50,7 @@ import { adoptRecommendation, expertAnalysis, factSheet, getReport, listPersonal
 import { forgetProject, listProjects, registerProject } from "./core/projects.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
-export const VERSION = "0.9.17";
+export const VERSION = "0.9.23";
 
 const KEY_ENVS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "AZURE_OPENAI_API_KEY"];
 
@@ -262,7 +262,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
   const AUDIT_VIEW_IDLE_MS = 10 * 60_000;
   const viewKey = (v: string) => createHash("sha256").update(v).digest("hex");
   // Only cookies Scenaria issued count (review C4c-1 R1): "<random>.<valid until, ms>.<HMAC>", the HMAC key kept in
-  // the person's config folder (mode 600; agents run without access to it, HANDOFF §2 rule 6). A cookie planted by
+  // the person's config folder (mode 600; agents run without access to it, docs/DEVELOPMENT.md, security rule 6). A cookie planted by
   // another page on 127.0.0.1 (cookies do not separate ports) is ignored: it neither locks nor reads anything.
   const viewSign = (body: string) => createHmac("sha256", auditViewKey()).update(`scenaria-auditview/v1|${body}`).digest("hex").slice(0, 32);
   const viewValue = (rand: string, until: number) => `${rand}.${until.toString(36)}.${viewSign(`${rand}.${until.toString(36)}`)}`;
@@ -1368,7 +1368,7 @@ function openLocalFile(path: string): Promise<boolean> {
 
 /**
  * The key that signs auditor-mode cookies (C4c, review R1): 32 random bytes in the person's config folder (mode 600),
- * created on first use. Agents run without access to that folder (HANDOFF §2 rule 6), so they cannot make a cookie
+ * created on first use. Agents run without access to that folder (docs/DEVELOPMENT.md, security rule 6), so they cannot make a cookie
  * Scenaria would count. Kept across restarts, so a browser handed to an auditor stays read-only after a restart.
  */
 let auditViewKeyCache: Buffer | null = null;
