@@ -1,0 +1,127 @@
+# Changelog
+
+All notable changes to Scenaria. Versions follow `MAJOR.MINOR.PATCH`; before 1.0 a minor version may change behaviour.
+
+## 0.9.23 — security and release preparation
+
+**Security (update recommended):**
+- The project's `verifyCommand` (a shell command from `.scenaria/config.json`, a file agents can edit) ran for any caller of `POST /api/verify`, the tool `scenaria_verify` or `scenaria verify --run`, with the rights of the Scenaria process. It now runs only when the person starts it at an interactive terminal and confirms its text; for every other caller the result says "not run".
+- Git hooks and git settings placed in `.scenaria/shadow.git` (or, with the mirror on, in the project's own `.git`) ran when Scenaria saved, compared or restored. Every git call now switches off hooks, `core.fsmonitor`, the alternate-refs command, signing programs and the `ext::` transport; the shadow repository's config is reduced to what `git init` writes before git reads it, and a change is logged.
+- A step's folder name read from a step file can no longer lead out of `.scenaria/`; "open as folder" only shows the folder (macOS: `open -R`) and never launches an application bundle.
+- Seven known vulnerabilities in dependencies fixed (`zod` ≥ 4.6.6 and the HTTP packages of the MCP SDK); `npm audit` reports none.
+
+**Release:**
+- Release files come with `SHA256SUMS`; `install.sh` and `install.ps1` check the download against it and stop on a mismatch.
+- CI also builds and runs the tests on Windows (informational until the suite is green there), checks the dashboard's types and fails on a known vulnerability in what users install.
+- The server reported an old version number (0.9.17); it now matches the package, and a test keeps it so.
+- New: `SECURITY.md`, `CONTRIBUTING.md`, `docs/DEVELOPMENT.md`, `docs/KNOWN-LIMITS.md`, `docs/GUIDE.md` (the full reference that used to be the README), automatic dependency updates.
+
+**Changed behaviour:** `scenaria_verify {runCommand: true}` and `POST /api/verify {runCommand: true}` no longer run the command (a check "command: not run" is recorded). Library callers pass `commandBy: "person"` when the person started it.
+
+## 0.9.22
+
+Batch E5: an open task with approved criteria holds across sessions (`openTaskWithCriteria`, `focusTask`, the agent told once), is never marked done by a new task nor refined, and only the person closes it (`core/taskclose.ts`, signed outside the project; `person_only_close`); verdicts `no-work` and `capped`; `tool` on sample lines; ended windows measured and judged with the values at their last answer (`settingsAt`, incl. local model sizes), handover checks at the window change; Bedrock/Vertex names; the task's title in stop texts; `hookWired` in the dashboard
+
+## 0.9.21
+
+Batch E4: progress per window `window-progress/1` (only above the best level so far; per window the person's values in force when it ended), the warning with a problem note, row 4 of the rule table, the stop after two full windows without progress on one task (noted outside the project, the before-tool hook for every tool lets only reading and Scenaria's MCP tools through, lifted only by the person — dashboard or `scenaria window stop lift --why`, signed), `handover-loss/1` (first 3 steps vs. the last; over the tolerance the full handover again), `minProgress`/`tolerance` in the signed settings (`context-settings/v2`), `x-scenaria-stop` from the proxy, the dashboard part
+
+## 0.9.20
+
+Batch E3b-2: the context window in the dashboard — a card in the Simple view (the AI's memory in plain words, the zone as a word, "How computed?", when measured, what to do at red, the handover), "Context window" in Audit and Manage (newest window with fill, soft threshold, next line, saves with their rule version; all windows; the rule's values and their signed history; in Manage the person edits them under the lock, sees what is signed before signing, looser values named); Scenaria's own saves in plain words in the timeline; help topic; dialogs close one at a time with Escape; typed numbers with group separators and a decimal comma
+
+## 0.9.19
+
+Batch E3b-1: the person's values of the context-window rule per project — zone lines, P95 start value, margin, A_model, window sizes of local models; signed, every revision kept outside the project, a restart after an invalid setting keeps the earlier revisions apart and never reuses a number; fall back to the start values with a reason; rule `v1.0-p<rev>` in every derivation (formula texts refer to the rule; `cMaxSource`); `scenaria window settings`, `GET/POST /api/context-settings` (POST person-only)
+
+## 0.9.18
+
+Batch E3a-2: acting on the measured fill — orange: a checkpoint at the end of the turn (also without a file change); red and emergency: a checkpoint at once, also mid-turn (the after-tool hook now runs after every tool); each zone once per window and line of work; notices to the agent (prompt reminder, after-tool context) and from red to the person (Claude Code system message, protocol line); the proxy sends `x-scenaria-context-zone`/`-fill`/`-window` from yellow and cuts after an answer; `scenaria_handover`, `scenaria handover`, `GET /api/handover` (read-only; continues from the current state, names the last save); the new window's start names the previous window's save; quiet cuts never lower progress
+
+## 0.9.17
+
+Batch E3a-1: the context window measured, not estimated — fill from Claude Code transcripts (`message.usage`, sub-agents skipped, compaction starts a new window) and from proxy answers (`usage`, JSON and streams); window records with a chain hash, an anchor outside the project and the chain's head in the end-of-turn checkpoint (a change outside shows; the window then shows no number; the measurement starts again after a reset line); model table v1 with sources; `C_eff = min(C_max, A_model 200,000)`; zones 50 / soft / 70 / 85 %; formulas `context-fill/1`, `context-soft/1`; `scenaria_window`, `scenaria window`, `GET /api/windows`. Measurement only
+
+## 0.9.16
+
+E2 completed (2026-10-18): every refused change to the fixed points carries a code (`CanonError`) and reaches the dashboard in the person's language (E2b M3); the test of C5's child-process output (colour codes) written back
+
+## 0.9.15
+
+Batch E2: progress — completion criteria are milestones with task, weight and file (the agent proposes, the person approves exactly as shown; signed `canon/v3` with the approval time; a new weight is a signed revision; a criterion removed by hand holds its task back until the person retires it); levels from evidence (started, implemented, checked, confirmed; a failed check caps at implemented); gates 10–100 (90 and 100 % only by the person or an audit agent); only the task's current line counts; checkpoints claim with `fulfills`; `scenaria_progress`, `scenaria progress`, `GET /api/progress`; the dashboard: a card in the Simple view, "Fortschritt" in Audit and Manage, criteria in "Regeln & Meilensteine"; help topic
+
+## 0.9.14
+
+Batch E1: the derivation of every number — one format from the core (`core/derivation.ts`: value computed by a versioned formula from the inputs, sentence DE/EN, `recompute`), first for context fidelity (short form per step), the health score and every count of the project check (inputs list what they count), and the audit file's counts (in the signed export; `verify` recomputes them and refuses a file whose numbers contradict them); "ⓘ Wie berechnet?" in the dashboard (hover, tap, keyboard); footnotes with every counted item on the print page and in Markdown; hand-edited step fields of the wrong type never break the project check or the fidelity
+
+## 0.9.13
+
+Batch C5, closing review of Batch C: no hang on looped step links (`step_cycle`); deleting or rolling back the newest step raises the alarm (only the anchor's in-flight record excuses an interrupted write; a lock-free reader checks a flagged step once more); the person's export always verifies (lone surrogates as U+FFFD); the package's note is signed and checked (`audit-copies/v2`), files are hashed as raw bytes, extra files are named, `verify` starts with the overall result; "roles only" also hides audit agents' names; the package waits for "Show"; readers see "signed by the person"; plain labels in the approvals list; read setting shown; contrast; a discarded entry keeps its control; the audit file's own alarms in the project check
+
+## 0.9.12
+
+Batch C4c-2: the organisation's evidence in the dashboard — record at the control (SHA-256 computed in the browser, the file is never uploaded; "Prüfen" shows exactly what is signed), remove/discard (outcome and entry shown, decided again under the lock), confirm (digest of the entry shown), take over from another project (plan first)
+
+## 0.9.11
+
+Batch C4c-1: the audit file in the dashboard (view "Prüfung" → "Prüfakte": integrity, status per control, the organisation's documents, approvals, verdict history, reseals, sources, period), the signed audit package from the dashboard (written to Downloads, print page opened), the auditor mode on site (read only, 8 h, signed cookie, the lock blocked while the auditor's browser checks in), the forecast "Prüfung" renamed "Prognose-Prüfung"
+
+## 0.9.10
+
+Batch C4b: the audit package — `export` writes a folder with the evidence, a print-ready page (opened in the browser; "Print → Save as PDF"; fingerprint in the footer of every page), Markdown and a note on checking; `verify` without a name checks the newest export here and, for a package, that the reading copies carry the same fingerprint
+
+## 0.9.9
+
+Batch C4a: the signed audit file — canonical JSON signed with the person's approver key (meaning stated in the file), `scenaria audit-file verify` for anyone without a project (also checkable with openssl), Markdown reading copy DE/EN with the fingerprint; names by default, "roles only" on request; export person-only (HTTP and CLI)
+
+## 0.9.8
+
+Batch C3: the organisation's evidence per control (`.scenaria/org-evidence.json`, committed): link + SHA-256, owner role + name, date; signed by the person per revision and anchored (edited, rolled back, deleted → alarm); never raises a status (own field `orgEvidence`); bound to the catalogue (re-worded control → confirm); take over from another of the person's projects; HTTP and CLI, person-only
+
+## 0.9.7
+
+Batch C2.1 (third review round K1–K8 and its review R1–R11, all fixed with a test each): a damaged verdict never breaks the integrity check or the audit file — it is `forged` and raises the alarm `verdict_forged`; a verdict counts only as a verdict, never also as an approval; replaced verdicts of the person or an audit agent are archived per step (signed, in the hash chain, not in the work hash) and shown for comparison; every audit file checks that the stored file states still exist (`snapshot_missing`); paths with spaces are scrubbed; an audit agent's reseal marks its unsigned fields; periods: an end to the minute includes that minute, stored times without a zone are UTC
+
+## 0.9.6
+
+Batch C2: the ISO/IEC 42001 audit file computed from the records (status per control, whole project or a period, integrity warnings that lower no status, signed approvals and reseals); who may read it is the person's signed setting outside the project (default: only the person); steps deleted outside Scenaria are detected (`step_missing`); an audit agent's reseal time must match the anchor; the main goal's first time is kept on the root
+
+## 0.9.5
+
+S2: project rules signed like canon (revision, anchor outside the project; tampered, rolled-back and deleted rules detected; older rules need one confirmation); only signed rules reach agents; the approval link is never printed (`--print-approval-link` for a machine without a browser); agents run in a sandbox (documented)
+
+## 0.9.4
+
+S1 (security rule 5 for project rules): agents only propose rules; adding, accepting, rejecting and removing are the person's (approval session, or terminal with typed confirmation); decisions recorded; proposals hidden from agents; ids never reused; accepting needs the text the person saw; two review rounds (K4/K5, S1-1…S1-11)
+
+## 0.9.3
+
+Batch B (office users, two review rounds K1–K21): three views (Simple / Audit / Manage), Simple view with history in plain words, "Back to this state" + Undo, "What did the AI do?", states as folders; plain wording DE/EN incl. help and onboarding; settings with one model and "Advanced"; forecasts, relay and Prüf-Experte under "Extensions"; Claude Desktop per project; start icon; approval mode without copying a link (lock 🔒); a second start reuses the running Scenaria; macOS CI fix (real folder paths in the cross-project report, APFS clones in snapshot folders)
+
+## 0.9.2
+
+Batch A (rule 11): verdict origins; only the person or a registered audit agent can verify or reseal; signed, work-bound verdicts; anchor with high-water mark outside the project; reseal records; audit-agent registry and signed requests; dashboard reseal; two independent review rounds (K1–K11, R1–R7)
+
+## 0.9.1
+
+Simple start (ready check, three paths), progress and stop, plain result, past-decision check, robust oracle for local models, auditor's area and report
+
+## 0.9.0
+
+Forecast core v2 (same quantity as the measurement, retraceable, backtest, quality), traceable oracle v2, Prüf-Experte
+
+## 0.8
+
+Forecasts and the multiverse, expert analyst, project switcher, help and onboarding
+
+## 0.6–0.7
+
+Canon (fixed points) stages 1–3, gate, relay, settings and chat in the dashboard
+
+## 0.4–0.5
+
+One project tree, context capsules, analysis, context integrity (ledger), handoffs
+
+## 0.1–0.3
+
+Core engine, rewind/fork, MCP, hooks, CLI, dashboard, vendor-neutral tools, team server, overlay/proxy

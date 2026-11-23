@@ -83,7 +83,7 @@ test("C4b: verify without a name checks the newest audit file here and says whic
   assert.deepEqual(findNewestExport(out), { path: join(newer, "audit-file.json"), others: 1 });
   r = run(["audit-file", "verify"], out);
   assert.equal(r.status, 0, r.stderr);
-  // The CLI names the real folder (on macOS /var/… is really /private/var/…): compare real paths (HANDOFF §3).
+  // The CLI names the real folder (on macOS /var/… is really /private/var/…): compare real paths (docs/DEVELOPMENT.md §3).
   assert.ok(r.stdout.includes("Checking the newest audit file here") && r.stdout.includes(realpathSync.native(newer)), r.stdout);
   assert.match(r.stdout, /1 other audit file\(s\) here/);
   assert.match(r.stdout, /roles only/);

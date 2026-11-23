@@ -150,7 +150,7 @@ test("C4c dashboard package: person-only, written to Downloads (else home), a va
     assert.match(j.folder, /^audit-package-/);
     assert.ok(!JSON.stringify(j).includes(home), "no machine path in the answer");
     assert.ok(existsSync(join(home, j.folder, "audit-file.json")));
-    // The server opens the real folder path (on macOS /var/… is really /private/var/…): compare real paths (HANDOFF §3).
+    // The server opens the real folder path (on macOS /var/… is really /private/var/…): compare real paths (docs/DEVELOPMENT.md §3).
     assert.ok(browserLog.some((x) => x === join(realpathSync.native(home), j.folder, "audit-file.html")), "the print page is opened by absolute path");
     // With a Downloads folder: there.
     mkdirSync(join(home, "Downloads"));
