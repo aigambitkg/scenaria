@@ -31,6 +31,8 @@ jobs:
       - run: npm run build
       - run: npm run typecheck:ui
       - run: npm test
+      - name: The landing page builds
+        run: npm run build:site
       - name: No known vulnerabilities in what users install
         run: npm audit --omit=dev --audit-level=moderate
 
