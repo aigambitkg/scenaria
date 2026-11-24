@@ -278,7 +278,8 @@ test("C4c-1 K3/K4: the package folder is checked before signing; never a path in
     setHome(".");
     let r = await post("/api/audit-file/package", {}, person);
     assert.equal(r.status, 400);
-    assert.equal((await r.json()).code, "no_home");
+    const noHome = await r.json();
+    assert.equal(noHome.code, "no_home", JSON.stringify(noHome));
     // Downloads is a link into the project: refused, nothing signed.
     const home = mkdtempSync(join(tmpdir(), "auditview-home-"));
     setHome(home);

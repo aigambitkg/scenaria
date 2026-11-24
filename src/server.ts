@@ -722,7 +722,12 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           const lang = b?.lang === "en" ? "en" : "de";
           // The folder is checked BEFORE signing (review C4c-1 K3, K4): an absolute home, a real folder, writable,
           // and never inside a project (a Downloads link into the project would put the package there).
-          const home = homedir();
+          let home = "";
+          try {
+            home = homedir();
+          } catch {
+            /* no home folder known (Windows raises an error for a broken USERPROFILE): the answer below says so */
+          }
           if (!home || !isAbsolute(home)) return send(res, 400, { error: "Your home folder is not known: create the audit package with the CLI (scenaria audit-file export --out-dir <folder>).", code: "no_home" });
           const realDir = (d: string) => {
             try {
