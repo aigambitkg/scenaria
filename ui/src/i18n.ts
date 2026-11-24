@@ -464,6 +464,17 @@ const en = {
   statusBranches: "Other ways",
   statusVerified: "Verified",
   snapshotsOff: "File snapshots off (git missing)",
+  snapshotsOffFolderShort: "Files are not being saved (folder not usable)",
+  snapshotsOffFolder: (dir: string, reason: string, platform: string) =>
+    reason === "inside_project"
+      ? `Files are not being saved right now. Scenaria's own folder "${dir}" lies inside this project, where AI agents can write. Please check: start Scenaria with a settings folder outside the project (SCENARIA_HOME), then restart it.`
+      : `Files are not being saved right now. Scenaria cannot use its own folder "${dir}"${reason ? ` (${({ EACCES: "no permission", EPERM: "no permission", ENOTDIR: "a file is in the way", EEXIST: "a file is in the way", EROFS: "the drive is read-only", ENOSPC: "the drive is full" } as Record<string, string>)[reason] ?? reason})` : ""}. Please check that the folder exists and that your account may write to it. ` +
+        (platform === "win32"
+          ? `On Windows: right-click the folder in the Explorer, then Properties → Security. Or in PowerShell: icacls "${dir}"`
+          : platform === "darwin"
+            ? `On the Mac: select the folder in the Finder, then File → Get Info → Sharing & Permissions. Or in the Terminal: ls -ld "${dir}" shows the owner and the rights, chmod u+rwx "${dir}" gives your account access`
+            : `In a terminal: ls -ld "${dir}" shows the owner and the rights, chmod u+rwx "${dir}" gives your account access`) +
+        `. Then restart Scenaria.`,
   time: "Time",
   event: "Event",
   node: "Step",
@@ -1801,6 +1812,17 @@ const de: typeof en = {
   statusBranches: "Andere Wege",
   statusVerified: "Geprüft",
   snapshotsOff: "Datei-Snapshots aus (git fehlt)",
+  snapshotsOffFolderShort: "Dateien werden nicht gesichert (Ordner nicht nutzbar)",
+  snapshotsOffFolder: (dir: string, reason: string, platform: string) =>
+    reason === "inside_project"
+      ? `Dateien werden im Moment nicht gesichert. Scenarias eigener Ordner „${dir}“ liegt in diesem Projekt, wo KI-Agenten schreiben können. Bitte prüfen: Scenaria mit einem Einstellungsordner außerhalb des Projekts starten (SCENARIA_HOME), dann neu starten.`
+      : `Dateien werden im Moment nicht gesichert. Scenaria kann seinen eigenen Ordner „${dir}“ nicht benutzen${reason ? ` (${({ EACCES: "keine Berechtigung", EPERM: "keine Berechtigung", ENOTDIR: "eine Datei liegt im Weg", EEXIST: "eine Datei liegt im Weg", EROFS: "das Laufwerk ist schreibgeschützt", ENOSPC: "das Laufwerk ist voll" } as Record<string, string>)[reason] ?? reason})` : ""}. Bitte prüfen, ob der Ordner vorhanden ist und dein Benutzerkonto dort schreiben darf. ` +
+        (platform === "win32"
+          ? `Unter Windows: im Explorer Rechtsklick auf den Ordner, dann Eigenschaften → Sicherheit. Oder in der PowerShell: icacls "${dir}"`
+          : platform === "darwin"
+            ? `Auf dem Mac: den Ordner im Finder auswählen, dann Ablage → Informationen → Teilen & Zugriffsrechte. Oder im Terminal: ls -ld "${dir}" zeigt Besitzer und Rechte, chmod u+rwx "${dir}" gibt deinem Konto Zugriff`
+            : `Im Terminal: ls -ld "${dir}" zeigt Besitzer und Rechte, chmod u+rwx "${dir}" gibt deinem Konto Zugriff`) +
+        `. Danach Scenaria neu starten.`,
   time: "Zeit",
   event: "Ereignis",
   node: "Schritt",

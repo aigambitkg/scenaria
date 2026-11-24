@@ -643,7 +643,7 @@ async function main() {
     case "init": {
       const s = Scenaria.init(v.root, { projectName: v.name, force: v.force, newProjectInFolder: await confirmNewProject(v.root) });
       (await import("./core/projects.js")).registerProject(s.root, s.config().projectName);
-      let msg = `${C.green}✔${C.reset} Scenaria initialized in ${s.store.dir}${s.repo ? "" : `\n${C.yellow}! git not found — file snapshots disabled${C.reset}`}`;
+      let msg = `${C.green}✔${C.reset} Scenaria initialized in ${s.store.dir}${s.repo ? "" : `\n${C.yellow}! ${s.status().snapshotIssue?.message ?? "file snapshots are off"}${C.reset}`}`;
       const spec = [v.for, v.claude ? "claude" : ""].filter(Boolean).join(",");
       if (spec) {
         const { setupAgents, parseTargets } = await import("./setup.js");
@@ -673,7 +673,7 @@ async function main() {
     }
     case "watch": {
       const s = Scenaria.open(v.root);
-      if (!s.repo) throw new Error("watch needs git for snapshots");
+      if (!s.repo) throw new Error(s.status().snapshotIssue?.message ?? "watch needs git for snapshots");
       const quiet = Math.max(0, Number(v.quiet ?? 15)) * 1000;
       process.stdout.write(`Watching ${s.root} — auto-save after ${quiet / 1000}s without changes. Ctrl+C to stop.\n`);
       startWatch(s, { interval: Math.max(1, Number(v.interval ?? 3)) * 1000, quiet, agent: v.agent ?? process.env.SCENARIA_AGENT ?? "watch", model: v.model, user: v.user, log: true });
@@ -717,6 +717,8 @@ async function main() {
         }
       }
       const s = new Store(resolveRoot(startRoot)).exists ? Scenaria.open(startRoot) : Scenaria.init(startRoot, { force: v.force, newProjectInFolder: await confirmNewProject(startRoot) });
+      const issue = s.status().snapshotIssue;
+      if (issue) process.stderr.write(`${C.yellow}! ${issue.message}${C.reset}\n`);
       const targets = v.for ? parseTargets(v.for) : detectAgents();
       const r = setupAgents(s.root, [...targets, "generic"].filter((t, i, a) => a.indexOf(t) === i) as any, { rulesFiles: !v["no-rules"] });
       // Baseline AFTER wiring, so agent config files are part of the starting state.
@@ -1401,7 +1403,7 @@ async function main() {
         `task:    ${st.task ? `${st.task.id} ${st.task.title}` : "—"}`,
         `HEAD:    ${h ? `${h.id} [${h.type}${h.scenarioId ? ` ${h.scenarioId}/v${h.version}` : ""}] ${h.title}` : "—"}${st.dirty ? `  ${C.yellow}(unsaved changes)${C.reset}` : ""}`,
         `tasks ${st.counts.tasks} · decisions ${st.counts.decisions} · checkpoints ${st.counts.checkpoints} · branches ${st.counts.branches} · verified ${st.counts.verified} · failed ${st.counts.failed} · rules ${st.rules}`,
-        st.snapshots ? "" : `${C.yellow}file snapshots disabled (git not found)${C.reset}`,
+        st.snapshots ? "" : `${C.yellow}${st.snapshotIssue?.message ?? "file snapshots are off"}${C.reset}`,
       ].filter(Boolean);
       return out(human.join("\n"), st);
     }

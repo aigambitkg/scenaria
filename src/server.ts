@@ -50,7 +50,7 @@ import { adoptRecommendation, expertAnalysis, factSheet, getReport, listPersonal
 import { forgetProject, listProjects, registerProject } from "./core/projects.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
-export const VERSION = "0.9.24";
+export const VERSION = "0.9.25";
 
 const KEY_ENVS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "AZURE_OPENAI_API_KEY"];
 
@@ -1243,7 +1243,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
 
         if (req.method === "GET" && p === "/api/graph") {
           const g = s.graph();
-          return send(res, 200, { ...g, version: s.store.version(), snapshots: Boolean(s.repo) });
+          return send(res, 200, { ...g, version: s.store.version(), snapshots: Boolean(s.repo), snapshotIssue: s.snapshotIssue });
         }
         if (req.method === "GET" && p === "/api/status") return send(res, 200, s.status());
         if (req.method === "GET" && p === "/api/events") {

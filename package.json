@@ -1,6 +1,6 @@
 {
   "name": "scenaria",
-  "version": "0.9.24",
+  "version": "0.9.25",
   "description": "Quicksave & checkpoints for AI agents \u2014 any LLM, any framework. A decision tree you can rewind, fork and verify via MCP, HTTP, CLI, function calling and a visual scenario map.",
   "type": "module",
   "bin": {

@@ -2,6 +2,19 @@
 
 All notable changes to Scenaria. Versions follow `MAJOR.MINOR.PATCH`; before 1.0 a minor version may change behaviour.
 
+## 0.9.25 — the snapshot repository's settings leave the project folder
+
+**Security (update recommended):**
+- The settings of the snapshot repository (config, exclude list, refs) now live in Scenaria's own folder (`~/.config/scenaria/shadow`), outside the project, and git reads them only from there. This closes the limit named in `SECURITY.md` up to 0.9.24 (settings in `.scenaria/shadow.git` that an agent can write). The saved file states stay in the project.
+
+**For existing projects:** nothing to do. On first use the small control folder is created; every saved state stays readable, and a project that is moved or copied keeps its states. Update every installation that works on a project, also the one an agent uses.
+
+**Changed:**
+- If Scenaria cannot use its own folder, nothing is saved, and it says so clearly instead of working on quietly: a notice at the top of the dashboard (German and English) with what to check on Windows, macOS or Linux, and the same in `scenaria status`, `scenaria start` and the agents' status.
+- `scenaria mirror` writes the refs anew from the steps when some are missing on this machine.
+
+**For developers:** `ShadowRepo.controlDir` / `dataDir` / `objectDir` / `readEnv()` replace `gitDir`; `cleanShadowConfig` and the log entry `shadow_config_cleaned` are gone; `Scenaria.snapshotIssue`, `Scenaria.syncRefs()`; tests in `test/execguard.test.mjs`. New limits: [docs/KNOWN-LIMITS.md](docs/KNOWN-LIMITS.md).
+
 ## 0.9.24 — a dashboard without loose ends
 
 For people who open Scenaria for the first time. Checked by clicking through every view in a browser.

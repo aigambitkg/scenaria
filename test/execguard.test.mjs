@@ -3,13 +3,14 @@
 // often run under the person's account. Each test plants what an agent could plant and checks that it never runs.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { createServer, request } from "node:http";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { Scenaria } from "../dist/core/index.js";
-import { cleanShadowConfig, SAFE_GIT } from "../dist/core/snapshot.js";
+import { fileSystemFacts, SAFE_GIT, ShadowControlError, ShadowRepo, shadowControlDir } from "../dist/core/snapshot.js";
 import { insideScenaria, showFolderCommand } from "../dist/core/folders.js";
 import { createApp } from "../dist/server.js";
 import { callTool } from "../dist/tools.js";
@@ -120,29 +121,202 @@ test("shadow repository: planted hooks and fsmonitor never run when Scenaria sav
   assert.equal(existsSync(hookMark), false, "a program planted in .scenaria/shadow.git ran");
 });
 
-test("shadow repository: a filter driver planted in its config is removed before git runs, and the change is logged", { skip: !posix }, () => {
+/** Runs `fn` with another Scenaria home (the folder outside the project), then puts the old one back. */
+function withHome(home, fn) {
+  const before = process.env.SCENARIA_HOME;
+  process.env.SCENARIA_HOME = home;
+  try {
+    return fn();
+  } finally {
+    process.env.SCENARIA_HOME = before;
+  }
+}
+
+const inside = (dir, root) => realpathSync.native(dir).startsWith(realpathSync.native(root) + sep);
+
+test("shadow repository: its control files live outside the project folder", () => {
   const { p, s } = project();
-  const git = join(p.dir, ".scenaria", "shadow.git");
-  const mark = join(p.dir, "..", `filter-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
-  writeFileSync(join(git, "config"), `${readFileSync(join(git, "config"), "utf8")}\n[filter "x"]\n\tclean = sh -c 'echo ran >> "${mark}"; cat'\n\tsmudge = sh -c 'echo ran >> "${mark}"; cat'\n[include]\n\tpath = ../evil.cfg\n`);
-  p.write(".gitattributes", "* filter=x\n");
-  const s2 = Scenaria.open(p.dir);
-  p.write("a.txt", "3");
-  s2.checkpoint({ title: "c3" });
-  assert.equal(existsSync(mark), false, "a filter driver from the shadow repository's config ran");
-  const cfg = readFileSync(join(git, "config"), "utf8");
-  assert.doesNotMatch(cfg, /filter|include/);
-  assert.match(cfg, /bare = true/);
-  assert.ok(s2.store.readEvents().some((e) => e.data?.security === "shadow_config_cleaned"));
+  const control = s.repo.controlDir;
+  assert.equal(control, shadowControlDir(p.dir));
+  assert.equal(inside(control, p.dir), false, "the control folder lies in the project");
+  assert.equal(inside(control, process.env.SCENARIA_HOME), true, "the control folder is not in Scenaria's own folder");
+  for (const f of ["HEAD", "config", join("info", "exclude")]) assert.equal(existsSync(join(control, f)), true, `${f} missing in the control folder`);
+  assert.equal(existsSync(join(control, "hooks")), false, "the control folder got sample hooks");
+  // The file states stay in the project: nothing but the pointer to them is stored outside.
+  assert.deepEqual(readdirSync(join(control, "objects"), { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => e.name), ["alternates"]);
+  assert.ok(readdirSync(join(p.dir, ".scenaria", "shadow.git", "objects")).length > 2);
+  assert.match(readFileSync(join(control, "info", "exclude"), "utf8"), /node_modules/);
 });
 
-test("cleanShadowConfig keeps what git init writes and drops everything else", () => {
-  assert.equal(cleanShadowConfig("[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n\tignorecase = true\n\tprecomposeunicode = true\n"), null);
-  assert.equal(cleanShadowConfig("[core]\n\tbare = true\n\tfsmonitor = /tmp/x\n"), "[core]\n\tbare = true\n");
-  assert.equal(cleanShadowConfig("[core] bare = true\n"), "[core]\n");
-  assert.equal(cleanShadowConfig('[core]\n\tbare = true\n[url "ext::sh -c x"]\n\tinsteadOf = /\n'), "[core]\n\tbare = true\n");
-  assert.equal(cleanShadowConfig("[core]\n\tbare = true \\\n\tfsmonitor = x\n"), "[core]\n");
-  assert.equal(cleanShadowConfig("[CORE]\n\tbare = true\n[include]\n\tpath = x\n"), "[core]\n\tbare = true\n");
+test("shadow repository: a filter driver planted in the project never runs, also not in a process that is already running", { skip: !posix }, () => {
+  const { p, s, cp } = project();
+  const git = join(p.dir, ".scenaria", "shadow.git");
+  const mark = join(p.dir, "..", `filter-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
+  const planted = `[core]\n\tbare = true\n[filter "x"]\n\tclean = sh -c 'echo ran >> "${mark}"; cat'\n\tsmudge = sh -c 'echo ran >> "${mark}"; cat'\n\tprocess = sh -c 'echo ran >> "${mark}"'\n[include]\n\tpath = ../evil.cfg\n`;
+  const plant = () => {
+    writeFileSync(join(git, "config"), planted);
+    mkdirSync(join(git, "info"), { recursive: true });
+    writeFileSync(join(git, "info", "attributes"), "* filter=x\n");
+  };
+  plant();
+  p.write(".gitattributes", "* filter=x\n");
+  // the same process that saved before (a dashboard that keeps running) …
+  p.write("a.txt", "3");
+  const cp3 = s.checkpoint({ title: "c3" });
+  s.diff(cp.id, cp3.id);
+  s.rewind(cp.id, {});
+  s.ensureFolder(cp3.id);
+  // … and a new one
+  plant();
+  const s2 = Scenaria.open(p.dir);
+  p.write("a.txt", "4");
+  s2.checkpoint({ title: "c4" });
+  s2.rewind(cp3.id, {});
+  assert.equal(existsSync(mark), false, "a filter driver from the project folder ran");
+  // Git reads its settings from the control folder; what is planted in the project stays what it is: unused text.
+  assert.doesNotMatch(readFileSync(join(s2.repo.controlDir, "config"), "utf8"), /filter|include/);
+  assert.equal(readFileSync(join(git, "config"), "utf8"), planted);
+});
+
+test("fileSystemFacts takes four yes/no values from a config text and nothing else", () => {
+  assert.deepEqual(fileSystemFacts("[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n\tignorecase = false\n\tprecomposeunicode = true\n\tsymlinks = false\n"), ["-c", "core.filemode=true", "-c", "core.ignorecase=false", "-c", "core.precomposeunicode=true", "-c", "core.symlinks=false"]);
+  assert.deepEqual(fileSystemFacts("[core]\n\tfsmonitor = /tmp/x\n\thooksPath = /tmp\n\tfilemode = /tmp/x\n\tsshCommand = x\n"), []);
+  assert.deepEqual(fileSystemFacts('[filter "x"]\n\tclean = x\n\tfilemode = true\n[include]\n\tpath = x\n'), []);
+  assert.deepEqual(fileSystemFacts("[core] filemode = true\n"), []);
+  assert.deepEqual(fileSystemFacts("[core]\n\tfilemode = true \\\n\tfsmonitor = x\n"), []);
+  assert.deepEqual(fileSystemFacts("[CORE]\r\n\tFileMode = FALSE\r\n"), ["-c", "core.filemode=false"]);
+  assert.deepEqual(fileSystemFacts("[core]\n\tfilemode = true\n\tfilemode = false\n"), ["-c", "core.filemode=false"]);
+  assert.deepEqual(fileSystemFacts(""), []);
+});
+
+test("shadow repository: a project from before (or from another machine) keeps every saved state", () => {
+  const { p, s, cp } = project();
+  p.write("a.txt", "2");
+  p.write("b.txt", "new");
+  const cp2 = s.checkpoint({ title: "c2" });
+  // What an older version left, or what arrives with a copied folder: no control folder on this machine.
+  rmSync(s.repo.controlDir, { recursive: true, force: true });
+  const s2 = Scenaria.open(p.dir);
+  assert.equal(s2.snapshotIssue, null);
+  assert.equal(existsSync(join(s2.repo.controlDir, "HEAD")), true);
+  assert.equal(s2.repo.missingCommits([cp.snapshot.commit, cp2.snapshot.commit]).size, 0);
+  assert.match(s2.diff(cp.id, cp2.id).patch, /b\.txt/);
+  s2.rewind(cp.id, {});
+  assert.equal(p.read("a.txt"), "1");
+  assert.equal(p.exists("b.txt"), false);
+  // the refs are written anew from the steps
+  assert.ok(s2.syncRefs() >= 2);
+  const refs = s2.repo.git(["for-each-ref", "--format=%(refname) %(objectname)", "refs/scenaria"]);
+  assert.match(refs, new RegExp(`refs/scenaria/${cp2.id} ${cp2.snapshot.commit}`));
+});
+
+test("shadow repository: the saved states move with the project folder", () => {
+  const { p, s, cp } = project();
+  p.write("a.txt", "2");
+  s.checkpoint({ title: "c2" });
+  const moved = `${p.dir}-moved`;
+  renameSync(p.dir, moved);
+  const s2 = Scenaria.open(moved);
+  assert.equal(s2.snapshotIssue, null);
+  assert.notEqual(s2.repo.controlDir, s.repo.controlDir);
+  s2.rewind(cp.id, {});
+  assert.equal(readFileSync(join(moved, "a.txt"), "utf8"), "1");
+});
+
+test("shadow repository: two accounts with their own Scenaria folder share the saved states of one project", () => {
+  const p = tempProject();
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: p.dir });
+  p.write("a.txt", "1");
+  // the agent's account (a sandbox with its own home) saves …
+  const agentHome = mkdtempSync(join(tmpdir(), "scenaria-home-agent-"));
+  const cp = withHome(agentHome, () => {
+    const s = Scenaria.init(p.dir);
+    s.startMission({ title: "m" });
+    const first = s.checkpoint({ title: "c1" });
+    p.write("a.txt", "2");
+    s.checkpoint({ title: "c2" });
+    return first;
+  });
+  // … the person's dashboard looks, goes back and publishes the refs
+  const s = Scenaria.open(p.dir);
+  assert.notEqual(s.repo.controlDir.startsWith(agentHome), true);
+  assert.equal(s.repo.missingCommits([cp.snapshot.commit]).size, 0);
+  s.rewind(cp.id, {});
+  assert.equal(p.read("a.txt"), "1");
+  const r = s.mirrorToProjectGit();
+  assert.equal(r.ok, true, r.message);
+  const refs = execFileSync("git", ["for-each-ref", "--format=%(refname) %(objectname)", "refs/scenaria"], { cwd: p.dir, encoding: "utf8" });
+  assert.match(refs, new RegExp(`refs/scenaria/${cp.id} ${cp.snapshot.commit}`));
+});
+
+test("shadow repository: a control folder that cannot be used switches saving off and says what to check", async () => {
+  const p = tempProject();
+  p.write("a.txt", "1");
+  // Scenaria's own folder exists, but where the control folders belong there is a file.
+  const home = mkdtempSync(join(tmpdir(), "scenaria-home-broken-"));
+  writeFileSync(join(home, "shadow"), "not a folder");
+  await withHomeAsync(home, async () => {
+    const s = Scenaria.init(p.dir);
+    assert.equal(s.repo, null);
+    const st = s.status();
+    assert.equal(st.snapshots, false);
+    assert.equal(st.snapshotIssue.code, "control_folder");
+    assert.equal(st.snapshotIssue.platform, process.platform);
+    assert.ok(st.snapshotIssue.folder.startsWith(join(home, "shadow")));
+    assert.match(st.snapshotIssue.message, /file snapshots are off/);
+    assert.ok(st.snapshotIssue.message.includes(st.snapshotIssue.folder));
+    assert.match(st.snapshotIssue.message, posix ? /ls -ld .*chmod u\+rwx/ : /icacls .*Properties, Security/);
+    // Nothing is saved, and Scenaria does not fall back to control files in the project.
+    s.startMission({ title: "m" });
+    const cp = s.checkpoint({ title: "c" });
+    assert.ok(!cp.snapshot);
+    assert.throws(() => s.diff(cp.id), /file snapshots are off/);
+    assert.equal(s.mirrorToProjectGit().ok, false);
+    // agents are told, and the dashboard gets the reason
+    const told = callTool(s, "scenaria_status", {});
+    assert.match(JSON.stringify(told), /file snapshots are off.*tell the user/);
+    const app = createApp(s, {});
+    const srv = createServer(app.handler);
+    await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+    try {
+      const g = await (await fetch(`http://127.0.0.1:${srv.address().port}/api/graph`)).json();
+      assert.equal(g.snapshots, false);
+      assert.equal(g.snapshotIssue.code, "control_folder");
+      assert.equal(g.snapshotIssue.folder, st.snapshotIssue.folder);
+    } finally {
+      app.close();
+      srv.closeAllConnections?.();
+      srv.close();
+    }
+    // the command line says it too
+    const cli = spawnSync(process.execPath, [CLI, "status", "--root", p.dir], { encoding: "utf8", env: { ...process.env, SCENARIA_HOME: home } });
+    assert.match(cli.stdout + cli.stderr, /file snapshots are off: Scenaria cannot use its own folder/);
+  });
+  // Once the folder is usable again, saving works without anything else to do.
+  const s2 = Scenaria.open(p.dir);
+  assert.equal(s2.snapshotIssue, null);
+  p.write("a.txt", "2");
+  assert.ok(s2.checkpoint({ title: "c2" }).snapshot.commit);
+});
+
+async function withHomeAsync(home, fn) {
+  const before = process.env.SCENARIA_HOME;
+  process.env.SCENARIA_HOME = home;
+  try {
+    return await fn();
+  } finally {
+    process.env.SCENARIA_HOME = before;
+  }
+}
+
+test("shadow repository: a control folder inside the project is refused", () => {
+  const p = tempProject();
+  mkdirSync(join(p.dir, ".scenaria"), { recursive: true });
+  for (const dir of [join(p.dir, ".scenaria", "control"), join(p.dir, "sub", "control")]) {
+    const repo = new ShadowRepo(p.dir, join(p.dir, ".scenaria"), dir);
+    assert.throws(() => repo.init(), (e) => e instanceof ShadowControlError && e.issue.reason === "inside_project" && /lies inside this project/.test(e.message));
+    assert.equal(existsSync(join(dir, "HEAD")), false);
+  }
 });
 
 test("every git call carries the options that switch off hooks, fsmonitor and the ext transport", () => {

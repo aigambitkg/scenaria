@@ -5,7 +5,7 @@ import { userInfo } from "node:os";
 import { createHash } from "node:crypto";
 import { composeContext, estimateTokens, nearestGoal, optionLabel, taskNodes } from "./context.js";
 import { renderNodeNote, renderProtocol } from "./protocol.js";
-import { SAFE_GIT, ShadowRepo, cleanEnv } from "./snapshot.js";
+import { SAFE_GIT, ShadowControlError, ShadowRepo, cleanEnv, snapshotIssueText, type SnapshotIssue } from "./snapshot.js";
 import { Store, numId as numIdOf, resolveRoot, writeJsonAtomic, writeTextAtomic } from "./store.js";
 import type {
   DecisionOption,
@@ -266,15 +266,29 @@ export class Scenaria {
   readonly store: Store;
   readonly repo: ShadowRepo | null;
 
-  private constructor(store: Store, repo: ShadowRepo | null) {
+  /** Why file snapshots are off (`repo` is null), or null when they work. */
+  readonly snapshotIssue: SnapshotIssue | null;
+
+  private constructor(store: Store, shadow: { repo: ShadowRepo | null; issue: SnapshotIssue | null }) {
     this.store = store;
-    this.repo = repo;
-    if (repo) {
-      repo.onConfigCleaned = (message) => {
-        try {
-          this.store.appendEvent({ type: "update", data: { message, security: "shadow_config_cleaned" } });
-        } catch {}
-      };
+    this.repo = shadow.repo;
+    this.snapshotIssue = shadow.issue;
+  }
+
+  /**
+   * The project's shadow repository, ready to use — or the reason why nothing can be saved. A control folder
+   * that cannot be used switches snapshots off (said everywhere `snapshotIssue` is shown); Scenaria never falls
+   * back to control files inside the project (rule 13).
+   */
+  private static shadow(root: string, store: Store): { repo: ShadowRepo | null; issue: SnapshotIssue | null } {
+    if (!ShadowRepo.gitAvailable()) return { repo: null, issue: { code: "git_missing" } };
+    const repo = new ShadowRepo(root, store.dir);
+    try {
+      repo.init(store.readConfig().exclude);
+      return { repo, issue: null };
+    } catch (e) {
+      if (e instanceof ShadowControlError) return { repo: null, issue: e.issue };
+      throw e;
     }
   }
 
@@ -513,6 +527,7 @@ export class Scenaria {
     }
     const store = new Store(r);
     mkdirSync(store.dir, { recursive: true });
+    const fresh = !store.exists;
     if (!store.exists) {
       const config: ScenariaConfig = {
         version: 1,
@@ -545,9 +560,14 @@ export class Scenaria {
         else projectIdentity(store, true);
       } catch {}
     }
-    const repo = ShadowRepo.gitAvailable() ? new ShadowRepo(r, store.dir) : null;
-    repo?.init(store.readConfig().exclude);
-    const s = new Scenaria(store, repo);
+    const shadow = Scenaria.shadow(r, store);
+    // A new project in a folder that had one before: refs of the earlier project name states that are gone.
+    if (fresh) {
+      try {
+        shadow.repo?.resetRefs();
+      } catch {}
+    }
+    const s = new Scenaria(store, shadow);
     s.upgrade();
     return s;
   }
@@ -564,17 +584,13 @@ export class Scenaria {
     if (!store.exists) {
       throw new Error(`No Scenaria project found at or above ${r}. Run "scenaria init" first.`);
     }
-    const repo = ShadowRepo.gitAvailable() ? new ShadowRepo(r, store.dir) : null;
-    if (repo) {
-      if (!repo.initialized) repo.init(store.readConfig().exclude);
-      else repo.writeExcludes(store.readConfig().exclude);
-    }
+    const shadow = Scenaria.shadow(r, store);
     // Older projects: bind their identity on first open (trust on first use), so a later edit of config.json
     // cannot import another project's signed records.
     try {
       projectIdentity(store, true);
     } catch {}
-    const s = new Scenaria(store, repo);
+    const s = new Scenaria(store, shadow);
     s.upgrade();
     return s;
   }
@@ -926,6 +942,8 @@ export class Scenaria {
       root: this.root,
       projectName: this.config().projectName,
       snapshots: Boolean(this.repo),
+      /** Why snapshots are off, with what to check (null when they work). */
+      snapshotIssue: this.snapshotIssue ? { ...this.snapshotIssue, message: snapshotIssueText(this.snapshotIssue) } : null,
       head,
       project,
       /** @deprecated kept for older clients — the project root */
@@ -1058,16 +1076,75 @@ export class Scenaria {
     });
   }
 
+  /**
+   * Write the refs of the shadow repository anew from the steps: `refs/scenaria/<id>` per step with a stored
+   * file state, plus the scenario versions and heads. States that are not stored here get no ref.
+   */
+  syncRefs(): number {
+    if (!this.repo) return 0;
+    const nodes = this.store.listNodes().filter((n) => n.snapshot && /^[0-9a-f]{40,64}$/i.test(n.snapshot.commit));
+    const missing = this.repo.missingCommits(nodes.map((n) => n.snapshot!.commit));
+    const refName = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+    const lines: string[] = [];
+    const heads = new Map<string, string>();
+    const byCreated = (a: ScenariaNode, b: ScenariaNode) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id, undefined, { numeric: true });
+    for (const n of [...nodes].sort(byCreated)) {
+      const commit = n.snapshot!.commit;
+      if (missing.has(commit) || !refName.test(n.id) || n.id.includes("..")) continue;
+      lines.push(`update refs/scenaria/${n.id} ${commit}`);
+      if (!n.scenarioId || !refName.test(n.scenarioId) || n.scenarioId.includes("..")) continue;
+      lines.push(`update refs/scenaria/scenarios/${n.scenarioId}/v${n.version ?? 0} ${commit}`);
+      heads.set(n.scenarioId, commit);
+    }
+    for (const [sc, commit] of heads) lines.push(`update refs/scenaria/heads/${sc} ${commit}`);
+    this.repo.resetRefs();
+    // The same ref can be named twice (two steps with one version after a hand edit): the last one wins.
+    const last = new Map<string, string>();
+    for (const l of lines) last.set(l.split(" ")[1], l);
+    if (last.size) this.repo.git(["update-ref", "--stdin"], { input: [...last.values()].join("\n") + "\n" });
+    return last.size;
+  }
+
   /** Publish refs/scenaria/* into the project's own git repo (only adds refs under refs/scenaria/). */
   mirrorToProjectGit(): { ok: boolean; message: string } {
-    if (!this.repo) return { ok: false, message: "git not available" };
+    if (!this.repo) return { ok: false, message: this.snapshotIssue ? snapshotIssueText(this.snapshotIssue) : "git not available" };
     if (!existsSync(join(this.root, ".git"))) return { ok: false, message: "project is not a git repository" };
-    const r = spawnSync("git", [...SAFE_GIT, "-c", "protocol.allow=never", "-c", "protocol.file.allow=always", "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", this.repo.gitDir, "+refs/scenaria/*:refs/scenaria/*"], {
+    if (/[\r\n]/.test(this.repo.objectDir)) return { ok: false, message: "the project path contains a line break; the mirror cannot read the file states" };
+    // The refs live outside the project, per machine and account. When some are missing here (another account
+    // saved, or the project came from another machine) they are written anew from the steps first.
+    try {
+      if (!this.refsCoverSteps()) this.syncRefs();
+    } catch (e: any) {
+      return { ok: false, message: String(e?.message ?? e) };
+    }
+    let r = this.mirrorFetch();
+    if (r.status !== 0) {
+      // Refs that name states which are not stored here stop the fetch: rebuild once and try again.
+      try {
+        this.syncRefs();
+        r = this.mirrorFetch();
+      } catch {}
+    }
+    return r.status === 0 ? { ok: true, message: "refs/scenaria/* mirrored into the project repository" } : { ok: false, message: (r.stderr || "").trim() };
+  }
+
+  /** Does the control folder hold a ref for every step with a stored file state? (Names only, no git call.) */
+  private refsCoverSteps(): boolean {
+    let names: Set<string>;
+    try {
+      names = new Set(readdirSync(join(this.repo!.controlDir, "refs", "scenaria")));
+    } catch {
+      names = new Set();
+    }
+    return this.store.listNodes().every((n) => !n.snapshot || names.has(n.id));
+  }
+
+  private mirrorFetch() {
+    return spawnSync("git", [...SAFE_GIT, "-c", "protocol.allow=never", "-c", "protocol.file.allow=always", "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", this.repo!.controlDir, "+refs/scenaria/*:refs/scenaria/*"], {
       cwd: this.root,
       env: cleanEnv(),
       encoding: "utf8",
     });
-    return r.status === 0 ? { ok: true, message: "refs/scenaria/* mirrored into the project repository" } : { ok: false, message: (r.stderr || "").trim() };
   }
 
   /** Baseline for `scenaria start`: the project root n0 captures the state before any agent work. */
@@ -2221,7 +2298,7 @@ export class Scenaria {
   }
 
   diff(fromId: string, toId?: string) {
-    if (!this.repo) throw new Error("Snapshots are disabled (git not found).");
+    if (!this.repo) throw new Error(this.snapshotIssue?.code === "control_folder" ? snapshotIssueText(this.snapshotIssue) : "Snapshots are disabled (git not found).");
     const from = this.nearestSnapshot(this.store.readNode(fromId));
     if (!from) throw new Error(`${fromId} has no snapshot`);
     let toRev: string;
