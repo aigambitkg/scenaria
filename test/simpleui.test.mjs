@@ -211,3 +211,13 @@ test("connecting an AI from a locked window: the unlocked window opens at the se
   assert.match(app, /case "connect":[\s\S]{0,420}requestApproval\(t, "settings"\)/);
   assert.match(app, /q\.get\("then"\) === "settings"[\s\S]{0,200}history\.replaceState/);
 });
+
+test("Windows: an approval link with a second parameter reaches the browser whole (cmd would cut it at &)", async () => {
+  const { browserArgs } = await import("../dist/server.js");
+  const url = "http://127.0.0.1:4477/?approve=abc123&then=settings";
+  assert.deepEqual(browserArgs(url, "win32"), ["/c", "start", "", "http://127.0.0.1:4477/?approve=abc123^&then=settings"]);
+  assert.deepEqual(browserArgs(url, "darwin"), [url]);
+  assert.deepEqual(browserArgs(url, "linux"), [url]);
+  // A plain link is passed on unchanged everywhere.
+  assert.deepEqual(browserArgs("http://127.0.0.1:4477/?approve=abc123", "win32"), ["/c", "start", "", "http://127.0.0.1:4477/?approve=abc123"]);
+});

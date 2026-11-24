@@ -42,7 +42,7 @@ jobs:
     name: windows (informational)
     runs-on: windows-latest
     continue-on-error: true
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -51,4 +51,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      - name: The PowerShell installer is valid PowerShell
+        shell: pwsh
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path install.ps1), [ref]$null, [ref]$errors)
+          if ($errors.Count) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }
       - run: npm test

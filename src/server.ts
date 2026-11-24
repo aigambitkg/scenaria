@@ -1355,6 +1355,15 @@ const APPROVAL_THEN = new Set(["settings"]);
 /** For tests: SCENARIA_NO_BROWSER=1 records the URL instead of opening a browser. */
 export const browserLog: string[] = [];
 
+/**
+ * The arguments that open a web address with the system's opener. On Windows the opener is `cmd /c start`,
+ * and cmd reads `&` as "next command": an address with a second parameter (…&then=settings) would be cut
+ * there, so every character cmd treats specially is escaped with `^`.
+ */
+export function browserArgs(url: string, platform: NodeJS.Platform = process.platform): string[] {
+  return platform === "win32" ? ["/c", "start", "", url.replace(/[&|<>^()%!"]/g, "^$&")] : [url];
+}
+
 function openBrowser(url: string): Promise<boolean> {
   if (process.env.SCENARIA_NO_BROWSER) {
     browserLog.push(url);
@@ -1362,8 +1371,7 @@ function openBrowser(url: string): Promise<boolean> {
   }
   const cmd = systemOpener();
   if (!cmd) return Promise.resolve(false);
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-  return launch(cmd, args, openerEnv());
+  return launch(cmd, browserArgs(url), openerEnv());
 }
 
 /** Open a local file with the system's own program (absolute paths only; tests: recorded in browserLog). */
