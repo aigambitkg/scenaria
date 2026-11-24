@@ -1,3 +1,4 @@
+import { findOnPath, onPath, windowsProgram } from "./core/programs.js";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -107,9 +108,17 @@ function runClaude(args: string[]): { status: number | null; stdout: string; std
     const r = spawnSync("claude", args, { encoding: "utf8" });
     return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   }
-  if (args.some((a) => /["%&|<>^!\r\n]/.test(a))) return { status: null, stdout: "", stderr: "a path of this installation holds a character the Windows shell would act on" };
-  const line = ["claude", ...args].map((a) => (/[\s()]/.test(a) ? `"${a}"` : a)).join(" ");
-  const r = spawnSync(line, { encoding: "utf8", shell: true, windowsHide: true });
+  // Found on the PATH only, never in the current folder (core/programs.ts).
+  const exe = findOnPath("claude");
+  if (exe) {
+    const r = spawnSync(exe, args, { encoding: "utf8", windowsHide: true });
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  }
+  const cmd = findOnPath("claude", { exts: [".cmd", ".bat"] });
+  if (!cmd) return { status: null, stdout: "", stderr: "claude not found" };
+  if ([cmd, ...args].some((a) => /["%&|<>^!\r\n]/.test(a))) return { status: null, stdout: "", stderr: "a path of this installation holds a character the Windows shell would act on" };
+  const line = [cmd, ...args].map((a) => (/[\s()]/.test(a) ? `"${a}"` : a)).join(" ");
+  const r = spawnSync(line, { encoding: "utf8", shell: windowsProgram("System32\\cmd.exe"), windowsHide: true });
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
 
@@ -393,11 +402,6 @@ export function setupClaude(root: string, opts: { claudeMd?: boolean } = {}): st
 }
 
 // ------------------------------------------------------------------ detection & global setup
-
-function onPath(cmd: string): boolean {
-  const r = spawnSync(process.platform === "win32" ? "where" : "which", [cmd], { stdio: "ignore" });
-  return r.status === 0;
-}
 
 /** Which agents are installed on this machine? Used by `scenaria start` and `setup --global`. */
 export function detectAgents(home = homedir()): Target[] {

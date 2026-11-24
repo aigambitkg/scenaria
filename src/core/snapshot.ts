@@ -1,3 +1,4 @@
+import { program } from "./programs.js";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -78,7 +79,7 @@ export class ShadowRepo {
   }
 
   static gitAvailable(): boolean {
-    const r = spawnSync("git", ["--version"], { encoding: "utf8", env: cleanEnv() });
+    const r = spawnSync(program("git"), ["--version"], { encoding: "utf8", env: cleanEnv() });
     return r.status === 0;
   }
 
@@ -146,7 +147,7 @@ export class ShadowRepo {
   private runOnce(args: string[], input?: string, maxBuffer?: number) {
     this.guardConfig();
     return spawnSync(
-      "git",
+      program("git"),
       [...SAFE_GIT, "-c", "core.autocrlf=false", "-c", "core.quotepath=false", "-c", "advice.addEmbeddedRepo=false", "-c", "core.safecrlf=false", ...args],
       { cwd: this.root, env: this.env(), encoding: "utf8", input, maxBuffer: maxBuffer ?? 128 * 1024 * 1024 },
     );
@@ -155,7 +156,7 @@ export class ShadowRepo {
   init(exclude: string[] = []) {
     if (!this.initialized) {
       mkdirSync(this.gitDir, { recursive: true });
-      execFileSync("git", ["init", "-q", "--bare", this.gitDir], { stdio: "ignore", env: cleanEnv() });
+      execFileSync(program("git"), ["init", "-q", "--bare", this.gitDir], { stdio: "ignore", env: cleanEnv() });
     }
     this.writeExcludes(exclude);
   }
@@ -363,7 +364,7 @@ export class ShadowRepo {
     const env = { ...this.env(), GIT_WORK_TREE: dir, GIT_INDEX_FILE: join(dir, ".scenaria-export-index") };
     for (const args of [["read-tree", commit], ["checkout-index", "-a", "-f"]]) {
       this.guardConfig();
-      const r = spawnSync("git", [...SAFE_GIT, "-c", "core.autocrlf=false", ...args], { cwd: dir, env, encoding: "utf8" });
+      const r = spawnSync(program("git"), [...SAFE_GIT, "-c", "core.autocrlf=false", ...args], { cwd: dir, env, encoding: "utf8" });
       if (r.status !== 0) throw new Error(`git ${args[0]} failed: ${(r.stderr || "").trim()}`);
     }
     rmSync(join(dir, ".scenaria-export-index"), { force: true });

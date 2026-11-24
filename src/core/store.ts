@@ -10,6 +10,7 @@ import {
   statSync,
   unlinkSync,
   writeFileSync,
+  rmSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -47,22 +48,60 @@ function sleepSync(ms: number) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+/**
+ * Windows only: while one process replaces a file, another that reads it (or a virus scanner looking at it) can
+ * make the replace or the read fail for a moment with one of these codes. On macOS and Linux a replace is one
+ * step and never fails this way, so nothing is retried there.
+ */
+const BUSY = new Set(["EBUSY", "EPERM", "EACCES", "UNKNOWN"]);
+const busy = (err: any) => process.platform === "win32" && BUSY.has(err?.code);
+
+/** Put `tmp` in the place of `file` in one step; on Windows try again for up to about a second while the file is in use. */
+function replaceFile(tmp: string, file: string) {
+  for (let i = 0; ; i++) {
+    try {
+      renameSync(tmp, file);
+      return;
+    } catch (err) {
+      if (!busy(err) || i >= 40) {
+        try {
+          rmSync(tmp, { force: true });
+        } catch {}
+        throw err;
+      }
+      sleepSync(Math.min(5 + i * 3, 40));
+    }
+  }
+}
+
 export function writeJsonAtomic(file: string, data: unknown) {
   mkdirSync(dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", "utf8");
-  renameSync(tmp, file);
+  replaceFile(tmp, file);
 }
 
 export function writeTextAtomic(file: string, text: string) {
   mkdirSync(dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(tmp, text, "utf8");
-  renameSync(tmp, file);
+  replaceFile(tmp, file);
+}
+
+/** Read a file; on Windows try again for a moment while another process is replacing it (see `BUSY`). */
+function readText(file: string): string {
+  for (let i = 0; ; i++) {
+    try {
+      return readFileSync(file, "utf8");
+    } catch (err) {
+      if (!busy(err) || i >= 20) throw err;
+      sleepSync(10);
+    }
+  }
 }
 
 export function readJson<T>(file: string): T {
-  return JSON.parse(readFileSync(file, "utf8")) as T;
+  return JSON.parse(readText(file)) as T;
 }
 
 /**

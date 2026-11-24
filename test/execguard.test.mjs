@@ -3,7 +3,7 @@
 // often run under the person's account. Each test plants what an agent could plant and checks that it never runs.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -11,12 +11,14 @@ import { dirname, join } from "node:path";
 import { Scenaria } from "../dist/core/index.js";
 import { cleanShadowConfig, SAFE_GIT } from "../dist/core/snapshot.js";
 import { insideScenaria, showFolderCommand } from "../dist/core/folders.js";
+import { findOnPath, program } from "../dist/core/programs.js";
 import { createApp } from "../dist/server.js";
 import { callTool } from "../dist/tools.js";
 import { tempProject } from "./helpers.mjs";
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "cli.js");
-const posix = process.platform !== "win32";
+/** A path as a POSIX shell and a git config value take it, also on Windows (git there runs hooks with its own sh). */
+const sh = (p) => p.replaceAll("\\", "/");
 
 function project() {
   const p = tempProject();
@@ -98,11 +100,11 @@ test("verifyCommand: with the person's go (commandBy) it still runs", () => {
   assert.equal(n.verification.checks.find((c) => c.name.startsWith("command")).status, "passed");
 });
 
-test("shadow repository: planted hooks and fsmonitor never run when Scenaria saves, compares or restores", { skip: !posix }, () => {
+test("shadow repository: planted hooks and fsmonitor never run when Scenaria saves, compares or restores", () => {
   const { p, s, cp } = project();
   const git = join(p.dir, ".scenaria", "shadow.git");
   const hookMark = join(p.dir, "..", `hook-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
-  const script = `#!/bin/sh\necho ran >> "${hookMark}"\n`;
+  const script = `#!/bin/sh\necho ran >> "${sh(hookMark)}"\n`;
   mkdirSync(join(git, "hooks"), { recursive: true });
   for (const h of ["reference-transaction", "post-index-change", "pre-commit", "post-checkout", "pre-auto-gc"]) {
     writeFileSync(join(git, "hooks", h), script);
@@ -111,7 +113,7 @@ test("shadow repository: planted hooks and fsmonitor never run when Scenaria sav
   const fsm = join(p.dir, ".scenaria", "fsm.sh");
   writeFileSync(fsm, script);
   chmodSync(fsm, 0o755);
-  writeFileSync(join(git, "config"), `${readFileSync(join(git, "config"), "utf8")}\n[core]\n\tfsmonitor = ${fsm}\n\thooksPath = ${join(git, "hooks")}\n`);
+  writeFileSync(join(git, "config"), `${readFileSync(join(git, "config"), "utf8")}\n[core]\n\tfsmonitor = ${sh(fsm)}\n\thooksPath = ${sh(join(git, "hooks"))}\n`);
   const s2 = Scenaria.open(p.dir);
   p.write("a.txt", "2");
   const cp2 = s2.checkpoint({ title: "c2" });
@@ -120,11 +122,11 @@ test("shadow repository: planted hooks and fsmonitor never run when Scenaria sav
   assert.equal(existsSync(hookMark), false, "a program planted in .scenaria/shadow.git ran");
 });
 
-test("shadow repository: a filter driver planted in its config is removed before git runs, and the change is logged", { skip: !posix }, () => {
+test("shadow repository: a filter driver planted in its config is removed before git runs, and the change is logged", () => {
   const { p, s } = project();
   const git = join(p.dir, ".scenaria", "shadow.git");
   const mark = join(p.dir, "..", `filter-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
-  writeFileSync(join(git, "config"), `${readFileSync(join(git, "config"), "utf8")}\n[filter "x"]\n\tclean = sh -c 'echo ran >> "${mark}"; cat'\n\tsmudge = sh -c 'echo ran >> "${mark}"; cat'\n[include]\n\tpath = ../evil.cfg\n`);
+  writeFileSync(join(git, "config"), `${readFileSync(join(git, "config"), "utf8")}\n[filter "x"]\n\tclean = sh -c 'echo ran >> "${sh(mark)}"; cat'\n\tsmudge = sh -c 'echo ran >> "${sh(mark)}"; cat'\n[include]\n\tpath = ../evil.cfg\n`);
   p.write(".gitattributes", "* filter=x\n");
   const s2 = Scenaria.open(p.dir);
   p.write("a.txt", "3");
@@ -177,10 +179,51 @@ test("a step's folder: a name edited by hand never leads out of .scenaria, and s
   assert.equal(mac.args[0], "-R");
   assert.ok(mac.args[1].startsWith(folder));
   assert.deepEqual(showFolderCommand("/x/y", "linux"), { cmd: "xdg-open", args: ["/x/y"] });
+  // Windows: Explorer by its full path, never by name (a file called explorer.exe in the project must not be started).
+  const win = showFolderCommand("C:\\p\\.scenaria\\snapshots\\v1", "win32");
+  assert.match(win.cmd, /[\\/]explorer\.exe$/i);
+  assert.notEqual(win.cmd, "explorer");
 });
 
 test("the version the server reports is the package's version", async () => {
   const { VERSION } = await import("../dist/server.js");
   const pkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"));
   assert.equal(VERSION, pkg.version);
+});
+
+test("Windows: a program is found on the PATH only, never in the current folder", () => {
+  const files = new Set(["C:\\Program Files\\Git\\cmd\\git.exe", "C:\\tools\\claude.cmd", "C:\\proj\\git.exe"]);
+  const o = { platform: "win32", exists: (f) => files.has(f) };
+  // An empty entry, "." and a relative folder all mean "where I am now" — the project. They never count.
+  assert.equal(findOnPath("git", { ...o, pathVar: ";.;proj;C:\\Program Files\\Git\\cmd;C:\\proj" }), "C:\\Program Files\\Git\\cmd\\git.exe");
+  assert.equal(findOnPath("git", { ...o, pathVar: ".;;bin" }), null);
+  assert.equal(findOnPath("git", { ...o, pathVar: '"C:\\Program Files\\Git\\cmd\\"' }), "C:\\Program Files\\Git\\cmd\\git.exe");
+  // A .cmd only counts where it is asked for (it needs the shell to start).
+  assert.equal(findOnPath("claude", { ...o, pathVar: "C:\\tools" }), null);
+  assert.equal(findOnPath("claude", { ...o, pathVar: "C:\\tools", exts: [".exe", ".cmd"] }), "C:\\tools\\claude.cmd");
+  // macOS and Linux: the name on a full-path entry.
+  assert.equal(findOnPath("git", { platform: "linux", pathVar: ":.:/usr/bin", exists: (f) => f === "/usr/bin/git" }), "/usr/bin/git");
+  // What spawn gets: the name elsewhere; on Windows a full path — also when nothing was found (then one that cannot exist).
+  if (process.platform === "win32") assert.match(program("git"), /^[A-Za-z]:\\.*git\.(exe|com)$/i);
+  else assert.equal(program("git"), "git");
+  // No program is started by its bare name with the project as the working folder.
+  for (const f of ["core/snapshot.ts", "core/folders.ts", "core/engine.ts", "ingest.ts", "setup.ts", "server.ts", "cli.ts"]) {
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "src", f), "utf8");
+    assert.doesNotMatch(src, /(?:spawn|spawnSync|execFile|execFileSync)\(\s*"(git|unzip|explorer|where)"/, f);
+  }
+});
+
+test("Windows: a git.exe placed in the project folder is never started", { skip: process.platform !== "win32" }, () => {
+  const { p, s, cp } = project();
+  // Any program will do as the planted one: started as git it would fail on git's options, and saving would fail with it.
+  copyFileSync(process.execPath, join(p.dir, "git.exe"));
+  writeFileSync(join(p.dir, "git.cmd"), "@echo planted>> planted.txt\r\n");
+  const s2 = Scenaria.open(p.dir);
+  p.write("a.txt", "2");
+  const cp2 = s2.checkpoint({ title: "c2" });
+  assert.ok(cp2.snapshot?.commit, "saved with the real git");
+  s2.diff(cp.id, cp2.id);
+  s2.rewind(cp.id, {});
+  assert.equal(p.read("a.txt"), "1");
+  assert.equal(existsSync(join(p.dir, "planted.txt")), false);
 });

@@ -1,3 +1,4 @@
+import { program } from "./programs.js";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { basename, join } from "node:path";
@@ -1062,7 +1063,7 @@ export class Scenaria {
   mirrorToProjectGit(): { ok: boolean; message: string } {
     if (!this.repo) return { ok: false, message: "git not available" };
     if (!existsSync(join(this.root, ".git"))) return { ok: false, message: "project is not a git repository" };
-    const r = spawnSync("git", [...SAFE_GIT, "-c", "protocol.allow=never", "-c", "protocol.file.allow=always", "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", this.repo.gitDir, "+refs/scenaria/*:refs/scenaria/*"], {
+    const r = spawnSync(program("git"), [...SAFE_GIT, "-c", "protocol.allow=never", "-c", "protocol.file.allow=always", "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", this.repo.gitDir, "+refs/scenaria/*:refs/scenaria/*"], {
       cwd: this.root,
       env: cleanEnv(),
       encoding: "utf8",

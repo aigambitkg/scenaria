@@ -1,3 +1,4 @@
+import { program, windowsProgram } from "./programs.js";
 import { spawnSync } from "node:child_process";
 import { chmodSync, constants as fsc, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -26,7 +27,7 @@ export function showFolderCommand(folder: string, platform: NodeJS.Platform = pr
     } catch {}
     return { cmd: "/usr/bin/open", args: ["-R", inside ? join(folder, inside) : folder] };
   }
-  if (platform === "win32") return { cmd: "explorer", args: [folder] };
+  if (platform === "win32") return { cmd: windowsProgram("explorer.exe"), args: [folder] };
   return { cmd: "xdg-open", args: [folder] };
 }
 
@@ -91,7 +92,7 @@ export class SnapshotFolders {
     const res = new Map<string, Buffer>();
     for (let i = 0; i < shas.length; i += 400) {
       const chunk = shas.slice(i, i + 400);
-      const r = spawnSync("git", [...SAFE_GIT, "cat-file", "--batch"], {
+      const r = spawnSync(program("git"), [...SAFE_GIT, "cat-file", "--batch"], {
         cwd: this.root,
         env: { ...cleanEnv(), GIT_DIR: this.repo.gitDir },
         input: chunk.join("\n") + "\n",

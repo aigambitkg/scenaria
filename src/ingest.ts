@@ -3,6 +3,7 @@
  * - Claude Code transcripts (incremental, from hooks)
  * - File imports: ChatGPT export, Claude.ai export, OpenAI-style message arrays, generic JSONL
  */
+import { program } from "./core/programs.js";
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import type { Scenaria } from "./core/engine.js";
@@ -123,7 +124,7 @@ interface ImportedConversation {
 
 function readImportFile(file: string): string {
   if (file.toLowerCase().endsWith(".zip")) {
-    const r = spawnSync("unzip", ["-p", file, "conversations.json"], { encoding: "utf8", maxBuffer: 2 * 1024 * 1024 * 1024 });
+    const r = spawnSync(program("unzip"), ["-p", file, "conversations.json"], { encoding: "utf8", maxBuffer: 2 * 1024 * 1024 * 1024 });
     if (r.status !== 0 || !r.stdout) throw new Error("Could not read conversations.json from the zip (is `unzip` installed?). Unzip it and import the JSON file.");
     return r.stdout;
   }

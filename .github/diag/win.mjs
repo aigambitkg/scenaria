@@ -18,3 +18,12 @@ try {
   const f = buildAuditFile(Scenaria.open(p.dir));
   console.log("integrity", f.integrity.state, JSON.stringify(f.integrity.warnings.map((w) => [w.code, w.level, (w.items ?? []).slice(0, 3)])));
 } catch (e) { console.log("buildAuditFile threw", e.stack); }
+// Does a bare program name start a file from the working folder on Windows?
+import { spawnSync } from "node:child_process";
+import { copyFileSync } from "node:fs";
+const q = tempProject();
+copyFileSync(process.execPath, join(q.dir, "git.exe"));
+const bare = spawnSync("git", ["--version"], { cwd: q.dir, encoding: "utf8" });
+console.log("bare 'git --version' with a planted git.exe in cwd →", JSON.stringify((bare.stdout || bare.stderr || "").trim().slice(0, 80)));
+const { program } = await import("../../dist/core/programs.js");
+console.log("program('git') =", program("git"));
