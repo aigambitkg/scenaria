@@ -16,16 +16,14 @@ This project keeps ONE decision tree for the whole project with Scenaria (root `
 
 ## Developing Scenaria (this repository)
 
-You are working on Scenaria itself. Before changing anything, read `docs/HANDOFF.md`, then `docs/ARCHITECTURE.md` and `docs/ROADMAP.md`. The handoff file covers:
-- the security rules that must never be broken (no stored keys, only a person approves, person-only actions, signed records);
-- build and test, and when a change counts as done;
-- the module map, the working method (main goal, small batches, independent review, tests per finding) and the open points.
+You are working on Scenaria itself. Before changing anything, read `docs/DEVELOPMENT.md`, then `docs/ARCHITECTURE.md`, `docs/ROADMAP.md` and `docs/KNOWN-LIMITS.md`. The development guide covers:
+- the security rules that must never be broken (no stored keys, only a person approves, person-only actions, signed records, nothing in the project folder runs with the person's rights);
+- build and test, and when a change counts as done (build green, `npm test` green, `npm run typecheck:ui` clean);
+- the module map and the working method (main goal first, small steps, an independent review, a test per finding).
 
-Talk to Kev in German and in plain words.
-
-### Current phase (since 2026-10-14)
-- **Feature freeze.** Work only on the batch plan in `docs/HANDOFF.md` §11 (order 0 → A → B → C → E → D, then F after Kev's go; E moved before D on 2026-10-17). Start a batch only after Kev says go; one batch at a time.
-- Every decision is checked against three personas: an office user new to AI, an ISO/IEC 42001 auditor, and a company's AI manager.
-- **Never commit anything confidential:** no keys or `.env` files, no absolute paths of a machine, no private project names, no `.scenaria/` data. Machine notes live in `CLAUDE.local.md`, internal analyses in `docs/intern/`; both are ignored by git. Run `git status` before every commit.
-- Security rules 11 and 12 in `docs/HANDOFF.md` §2: only the person or a registered independent audit agent may reseal the ledger or give a verdict that counts as verified (enforced since 0.9.2, Batch A). Anything that counts "verified" uses `integrity().confirmed`.
-- Batch 0, A and B are done (B accepted by Kev on 2026-10-15). Batch C (ISO/IEC 42001 audit file) is in progress since Kev's go on 2026-10-15; work through it in small steps C1–C4 (`docs/HANDOFF.md` §11). C1 is accepted; C2 is built (0.9.6) and corrected in C2.1 (0.9.7); C3 (0.9.8) is accepted (2026-10-16). C4 runs with Kev's go and decisions (`docs/HANDOFF.md` §11) in steps: C4a signed file (0.9.9, accepted), C4b audit package with HTML/PDF (0.9.10), C4c-1 dashboard view, package from the dashboard and auditor mode (0.9.11), C4c-2 the form for the organisation's evidence (0.9.12; Kev agreed to the split on 2026-10-17). C5 closing review done in 0.9.13. **Batch C accepted by Kev on 2026-10-17.** Batch E (progress, context window, derivation of every number) is in progress since Kev's go on 2026-10-17: E1 (derivation of every number, `src/core/derivation.ts`, `ui/src/Why.tsx`) built in 0.9.14; E2 (progress, `src/core/progress.ts`, `ui/src/Progress.tsx`) built in 0.9.15; next E3 (context-window rule). Kev's answers to its open questions are in `docs/HANDOFF.md` §11. A new number shown to people gets a versioned formula in `derivation.ts` and a derivation, never a bare value.
+Rules for every change:
+- **Never commit anything confidential:** no keys or `.env` files, no absolute paths of a machine, no private project names, no `.scenaria/` data. Machine notes live in `CLAUDE.local.md` / `AGENTS.local.md`, internal analyses in `docs/intern/`; all are ignored by git. Run `git status` before every commit.
+- Every text of the dashboard exists in German and English, in plain words.
+- A new number shown to people gets a versioned formula in `src/core/derivation.ts` and a derivation, never a bare value.
+- Anything that counts as "verified" uses `integrity().confirmed`.
+- A security problem is reported privately (see `SECURITY.md`), not in a public issue.

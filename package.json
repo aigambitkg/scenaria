@@ -1,6 +1,6 @@
 {
   "name": "scenaria",
-  "version": "0.9.22",
+  "version": "0.9.23",
   "description": "Quicksave & checkpoints for AI agents \u2014 any LLM, any framework. A decision tree you can rewind, fork and verify via MCP, HTTP, CLI, function calling and a visual scenario map.",
   "type": "module",
   "bin": {
@@ -17,6 +17,12 @@
     "install.ps1",
     "README.md",
     "README.de.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "docs/GUIDE.md",
+    "docs/GUIDE.de.md",
+    "docs/KNOWN-LIMITS.md",
+    "docs/screenshot.png",
     "LICENSE"
   ],
   "scripts": {
@@ -54,7 +60,7 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
-    "zod": "^4.6.5"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@fontsource-variable/instrument-sans": "^5.3.0",

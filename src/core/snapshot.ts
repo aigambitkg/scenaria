@@ -1,8 +1,55 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { devNull } from "node:os";
 import { createHash } from "node:crypto";
 import type { Snapshot } from "./types.js";
+
+/**
+ * Options for every git call Scenaria makes on a repository inside the project folder.
+ *
+ * Files in the project (also `.scenaria/shadow.git`) can be written by an agent, while Scenaria often runs
+ * under the person's account (dashboard, hooks). Git would run programs named in such a repository: hooks,
+ * `core.fsmonitor`, an alternate-refs command, a signing program, the `ext::` transport. These options
+ * switch all of that off; they win over the repository's own config.
+ */
+export const SAFE_GIT: readonly string[] = [
+  "-c", `core.hooksPath=${devNull}`,
+  "-c", "core.fsmonitor=false",
+  "-c", "core.alternateRefsCommand=",
+  "-c", "commit.gpgSign=false",
+  "-c", "tag.gpgSign=false",
+  "-c", "protocol.ext.allow=never",
+  "-c", "gc.auto=0",
+];
+
+/** The only settings a shadow repository needs; everything else in its config is removed (see `cleanShadowConfig`). */
+const SHADOW_CORE_KEYS = new Set(["repositoryformatversion", "filemode", "bare", "ignorecase", "precomposeunicode", "symlinks", "logallrefupdates"]);
+
+/**
+ * The shadow repository's config reduced to the plain `[core]` settings git itself writes at `git init`.
+ * Returns the cleaned text when anything else was in it (a filter or diff driver, an include, a URL rewrite, …:
+ * settings that make git run programs or read other files), otherwise null. Deliberately strict: a line it
+ * does not recognise is dropped.
+ */
+export function cleanShadowConfig(text: string): string | null {
+  const keep: string[] = [];
+  let inCore = false;
+  let dirty = false;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#") || line.startsWith(";")) continue;
+    if (line.startsWith("[")) {
+      inCore = /^\[core\]$/i.test(line);
+      if (!inCore) dirty = true;
+      continue;
+    }
+    const m = /^([A-Za-z][A-Za-z0-9-]*)\s*=\s*([A-Za-z0-9]+)$/.exec(line);
+    if (inCore && m && SHADOW_CORE_KEYS.has(m[1].toLowerCase())) keep.push(`\t${m[1]} = ${m[2]}`);
+    else dirty = true;
+  }
+  return dirty ? `[core]\n${keep.join("\n")}${keep.length ? "\n" : ""}` : null;
+}
 
 /**
  * File snapshots via a private "shadow" git repository inside `.scenaria/`.
@@ -20,6 +67,9 @@ export class ShadowRepo {
   /** Paths excluded at runtime (e.g. nested repos without commits). */
   private runtimeExcludes = new Set<string>();
   private warnings = new Set<string>();
+  /** Called when the shadow repository's config held settings Scenaria never writes (they were removed). */
+  onConfigCleaned?: (message: string) => void;
+  private configSeen = "";
 
   constructor(root: string, scenariaDir: string) {
     this.root = root;
@@ -70,10 +120,34 @@ export class ShadowRepo {
     }
   }
 
+  /**
+   * Before git reads it: remove everything from the shadow repository's config that Scenaria did not put there.
+   * This is a second line behind `SAFE_GIT`; a program that rewrites the file at exactly the moment git starts
+   * is not stopped by it (documented in SECURITY.md).
+   */
+  private guardConfig() {
+    const file = join(this.gitDir, "config");
+    try {
+      const st = statSync(file);
+      const mark = `${st.ino}:${st.size}:${st.mtimeMs}`;
+      if (mark === this.configSeen) return;
+      const cleaned = cleanShadowConfig(readFileSync(file, "utf8"));
+      if (cleaned !== null) {
+        writeFileSync(file, cleaned);
+        try {
+          this.onConfigCleaned?.("the config of .scenaria/shadow.git held settings Scenaria never writes (changed outside Scenaria); they were removed before git ran");
+        } catch {}
+      }
+      const now = statSync(file);
+      this.configSeen = `${now.ino}:${now.size}:${now.mtimeMs}`;
+    } catch {}
+  }
+
   private runOnce(args: string[], input?: string, maxBuffer?: number) {
+    this.guardConfig();
     return spawnSync(
       "git",
-      ["-c", "core.autocrlf=false", "-c", "core.quotepath=false", "-c", "advice.addEmbeddedRepo=false", "-c", "core.safecrlf=false", ...args],
+      [...SAFE_GIT, "-c", "core.autocrlf=false", "-c", "core.quotepath=false", "-c", "advice.addEmbeddedRepo=false", "-c", "core.safecrlf=false", ...args],
       { cwd: this.root, env: this.env(), encoding: "utf8", input, maxBuffer: maxBuffer ?? 128 * 1024 * 1024 },
     );
   }
@@ -288,7 +362,8 @@ export class ShadowRepo {
     if (!this.hasObject(commit)) throw new Error(`Snapshot ${commit.slice(0, 10)} not found in shadow repo`);
     const env = { ...this.env(), GIT_WORK_TREE: dir, GIT_INDEX_FILE: join(dir, ".scenaria-export-index") };
     for (const args of [["read-tree", commit], ["checkout-index", "-a", "-f"]]) {
-      const r = spawnSync("git", ["-c", "core.autocrlf=false", ...args], { cwd: dir, env, encoding: "utf8" });
+      this.guardConfig();
+      const r = spawnSync("git", [...SAFE_GIT, "-c", "core.autocrlf=false", ...args], { cwd: dir, env, encoding: "utf8" });
       if (r.status !== 0) throw new Error(`git ${args[0]} failed: ${(r.stderr || "").trim()}`);
     }
     rmSync(join(dir, ".scenaria-export-index"), { force: true });
@@ -311,7 +386,7 @@ export class ShadowRepo {
       const out = this.git(["ls-tree", "-r", "--name-only", toCommit]);
       return out ? out.split("\n") : [];
     }
-    const out = this.git(["diff", "--name-status", "--no-renames", fromCommit, toCommit]);
+    const out = this.git(["diff", "--no-ext-diff", "--no-textconv", "--name-status", "--no-renames", fromCommit, toCommit]);
     if (!out) return [];
     return out.split("\n").map((l) => {
       const [status, ...rest] = l.split("\t");
@@ -321,8 +396,8 @@ export class ShadowRepo {
   }
 
   diff(fromRev: string, toRev: string, maxChars = 40_000): { stat: string; patch: string; truncated: boolean } {
-    const stat = this.git(["diff", "--stat=120", fromRev, toRev]);
-    let patch = this.git(["diff", "--no-color", fromRev, toRev]);
+    const stat = this.git(["diff", "--no-ext-diff", "--no-textconv", "--stat=120", fromRev, toRev]);
+    let patch = this.git(["diff", "--no-ext-diff", "--no-textconv", "--no-color", fromRev, toRev]);
     let truncated = false;
     if (patch.length > maxChars) {
       patch = patch.slice(0, maxChars) + "\n… (diff truncated)";

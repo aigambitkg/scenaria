@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { showFolderCommand } from "./core/folders.js";
 import { accessSync, constants as fsConstants, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, dirname, extname, isAbsolute, join, normalize, sep } from "node:path";
@@ -49,7 +50,7 @@ import { adoptRecommendation, expertAnalysis, factSheet, getReport, listPersonal
 import { forgetProject, listProjects, registerProject } from "./core/projects.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
-export const VERSION = "0.9.17";
+export const VERSION = "0.9.23";
 
 const KEY_ENVS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "AZURE_OPENAI_API_KEY"];
 
@@ -101,8 +102,8 @@ async function readRaw(req: IncomingMessage, limit: number): Promise<Buffer> {
 
 /** Reveal a folder in Finder / Explorer / the file manager (local mode only). */
 function openPath(path: string) {
-  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
-  void launch(cmd, [path]);
+  const { cmd, args } = showFolderCommand(path);
+  void launch(cmd, args);
 }
 
 /**
@@ -261,7 +262,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
   const AUDIT_VIEW_IDLE_MS = 10 * 60_000;
   const viewKey = (v: string) => createHash("sha256").update(v).digest("hex");
   // Only cookies Scenaria issued count (review C4c-1 R1): "<random>.<valid until, ms>.<HMAC>", the HMAC key kept in
-  // the person's config folder (mode 600; agents run without access to it, HANDOFF §2 rule 6). A cookie planted by
+  // the person's config folder (mode 600; agents run without access to it, docs/DEVELOPMENT.md, security rule 6). A cookie planted by
   // another page on 127.0.0.1 (cookies do not separate ports) is ignored: it neither locks nor reads anything.
   const viewSign = (body: string) => createHmac("sha256", auditViewKey()).update(`scenaria-auditview/v1|${body}`).digest("hex").slice(0, 32);
   const viewValue = (rand: string, until: number) => `${rand}.${until.toString(36)}.${viewSign(`${rand}.${until.toString(36)}`)}`;
@@ -1273,6 +1274,9 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           if (b?.status && !isApprover(req)) {
             return send(res, 403, { error: "A verdict is the person's: click the lock (Open approval mode) in the dashboard. Without it you can run the automatic checks; agents record self-reported verdicts with scenaria_verify.", code: "approval_required" });
           }
+          // The verify command (a shell command from the project's config, which agents can edit) never runs over
+          // HTTP: `runCommand` is passed on without `commandBy`, so the engine records "not run". The person runs
+          // it at a terminal (scenaria verify --run), where they see its text first.
           return send(res, 200, s.verify(String(b.id), { status: b.status, notes: b.notes, by: b.status ? approver : "dashboard", auto: b.auto !== false, runCommand: Boolean(b.runCommand), ...(b.status ? { origin: "person" as const, via: "dashboard" } : {}) }));
         }
         if (req.method === "POST" && p === "/api/choose") {
@@ -1364,7 +1368,7 @@ function openLocalFile(path: string): Promise<boolean> {
 
 /**
  * The key that signs auditor-mode cookies (C4c, review R1): 32 random bytes in the person's config folder (mode 600),
- * created on first use. Agents run without access to that folder (HANDOFF §2 rule 6), so they cannot make a cookie
+ * created on first use. Agents run without access to that folder (docs/DEVELOPMENT.md, security rule 6), so they cannot make a cookie
  * Scenaria would count. Kept across restarts, so a browser handed to an auditor stays read-only after a restart.
  */
 let auditViewKeyCache: Buffer | null = null;

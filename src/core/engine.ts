@@ -5,7 +5,7 @@ import { userInfo } from "node:os";
 import { createHash } from "node:crypto";
 import { composeContext, estimateTokens, nearestGoal, optionLabel, taskNodes } from "./context.js";
 import { renderNodeNote, renderProtocol } from "./protocol.js";
-import { ShadowRepo, cleanEnv } from "./snapshot.js";
+import { SAFE_GIT, ShadowRepo, cleanEnv } from "./snapshot.js";
 import { Store, numId as numIdOf, resolveRoot, writeJsonAtomic, writeTextAtomic } from "./store.js";
 import type {
   DecisionOption,
@@ -27,7 +27,7 @@ import { verdictParts, verdictTrustAll } from "./trust.js";
 import { checkEnvelopeKey, parseEnvelope, verifyAuditorRequest } from "./auditors.js";
 import { authenticVerdicts, confirmHighWater, listResealIds, registerVerdict, ensureLedgerAnchor, markRequestUsed, markerTime, raiseHighWater, readLedgerAnchor, recordResealInAnchor, requestHash, requestUsed, saveReseal, sealFindings, startNewProjectAnchor, type ResealAuthority, type ResealRecord } from "./seal.js";
 import { Conversations, renderConversation, type MessageInput, type SessionInput } from "./conversations.js";
-import { DEFAULT_SNAPSHOT_FOLDERS, SnapshotFolders, versionReadme } from "./folders.js";
+import { DEFAULT_SNAPSHOT_FOLDERS, SnapshotFolders, versionReadme, insideScenaria } from "./folders.js";
 import { ulid, versionLabel } from "./ids.js";
 import { isForbiddenRoot } from "./global.js";
 import { Ledger, checkIntegrity, contentHash, workHash } from "./ledger.js";
@@ -146,7 +146,14 @@ export interface VerifyInput {
   notes?: string;
   by?: string;
   auto?: boolean;
+  /** Ask for the project's `verifyCommand` to run as well. It runs only together with `commandBy: "person"`. */
   runCommand?: boolean;
+  /**
+   * The verify command is a shell command from the project's config, a file agents can edit. It therefore runs
+   * only when the PERSON starts it after seeing its text (interactive terminal with a typed confirmation) —
+   * the caller enforces that, as for `origin: "person"`. Agents' paths (MCP, HTTP, chat) never set this.
+   */
+  commandBy?: "person";
   /**
    * Who gives the verdict. "person" only from the person's own paths (approval session, interactive
    * terminal) — the caller enforces that. Without it, an explicit status is an agent's self-report.
@@ -262,6 +269,13 @@ export class Scenaria {
   private constructor(store: Store, repo: ShadowRepo | null) {
     this.store = store;
     this.repo = repo;
+    if (repo) {
+      repo.onConfigCleaned = (message) => {
+        try {
+          this.store.appendEvent({ type: "update", data: { message, security: "shadow_config_cleaned" } });
+        } catch {}
+      };
+    }
   }
 
   get root() {
@@ -1037,7 +1051,9 @@ export class Scenaria {
         if (abs.startsWith(join(this.root, ".scenaria"))) rmSync(abs, { recursive: true, force: true });
         node.snapshotFolder = undefined;
       }
-      const rel = node.snapshotFolder && existsSync(join(this.root, node.snapshotFolder, ".scenaria-version")) ? node.snapshotFolder : this.materializeFolder(node, cfg);
+      // A folder name from a step file edited by hand never leads out of `.scenaria/`: then the folder is built anew.
+      const known = node.snapshotFolder && insideScenaria(this.root, node.snapshotFolder) && existsSync(join(this.root, node.snapshotFolder, ".scenaria-version"));
+      const rel = known ? node.snapshotFolder! : this.materializeFolder(node, cfg);
       return rel ? join(this.root, rel) : null;
     });
   }
@@ -1046,7 +1062,7 @@ export class Scenaria {
   mirrorToProjectGit(): { ok: boolean; message: string } {
     if (!this.repo) return { ok: false, message: "git not available" };
     if (!existsSync(join(this.root, ".git"))) return { ok: false, message: "project is not a git repository" };
-    const r = spawnSync("git", ["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", this.repo.gitDir, "+refs/scenaria/*:refs/scenaria/*"], {
+    const r = spawnSync("git", [...SAFE_GIT, "-c", "protocol.allow=never", "-c", "protocol.file.allow=always", "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", this.repo.gitDir, "+refs/scenaria/*:refs/scenaria/*"], {
       cwd: this.root,
       env: cleanEnv(),
       encoding: "utf8",
@@ -1758,7 +1774,11 @@ export class Scenaria {
     // 2) the (possibly slow) verify command runs WITHOUT holding the lock
     const cmd = this.config().verifyCommand;
     if (input.auto !== false && input.runCommand && cmd) {
-      pre.checks.push(commandCheck(cmd, this.root, pre.isHeadAndClean));
+      pre.checks.push(
+        input.commandBy === "person"
+          ? commandCheck(cmd, this.root, pre.isHeadAndClean)
+          : { name: "command: not run", status: "warning", detail: "skipped — the verify command comes from the project's config, which agents can edit: only the person runs it, at a terminal (scenaria verify --run)" },
+      );
     }
     // 3) record the verdict
     return this.store.withLock(() => {

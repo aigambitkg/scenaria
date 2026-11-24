@@ -1,5 +1,5 @@
 /**
- * Batch E3a-2: acting on the measured fill of a context window (Kev 2026-10-18, n75–n79; design in docs/intern).
+ * Batch E3a-2: acting on the measured fill of a context window (decisions n75–n79 of 2026-10-18).
  *
  * What Scenaria does, by zone (thresholds from the rule in force — the person's signed setting or the start values, contextsettings.ts — the fill only as windowStatus measured and checked it):
  *   green      nothing

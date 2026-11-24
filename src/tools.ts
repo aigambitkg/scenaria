@@ -329,7 +329,7 @@ export const TOOLS: ToolDef[] = [
       id: str,
       status: z.enum(["passed", "warning", "failed"]).optional().describe("Your verdict; omit to use the automatic result"),
       notes: str.optional(),
-      runCommand: z.boolean().optional().describe("Also run the configured verifyCommand (only if node is HEAD and clean)"),
+      runCommand: z.boolean().optional().describe("Kept for older clients: the project's verifyCommand is never run for an agent (only the person runs it, at a terminal); the result then says 'not run'"),
     },
     run(s, a, c) {
       const n = s.verify(a.id, { status: a.status, notes: a.notes, by: c.agent ?? c.user, runCommand: a.runCommand, origin: "agent" });
