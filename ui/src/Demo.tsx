@@ -24,7 +24,11 @@ export function demoNodes(lang: Lang, now = Date.now()): ScenariaNode[] {
   return raw.map(({ minute, ...n }) => ({ ...n, createdAt: new Date(end - (last - minute) * 60_000).toISOString() }) as ScenariaNode);
 }
 
-export function Demo(props: { t: Dict; lang: Lang; toast: Toast; onClose: () => void }) {
+/**
+ * The example itself: the three tasks and the real Simple view on the example data.
+ * `Demo` shows it over the dashboard; the landing page (site/) shows it inside the page (`embedded`).
+ */
+export function DemoStage(props: { t: Dict; lang: Lang; toast: Toast; onClose?: () => void; embedded?: boolean }) {
   const { t, lang } = props;
   const x = TOUR[lang];
   const data = DEMO_DATA[lang];
@@ -64,16 +68,7 @@ export function Demo(props: { t: Dict; lang: Lang; toast: Toast; onClose: () => 
   const all = done.every(Boolean);
 
   return (
-    <div className="demo" role="dialog" aria-modal="true" aria-label={x.demoBand}>
-      <header className="demo-band">
-        <div>
-          <strong>🎓 {x.demoBand}</strong>
-          <span>{x.demoBandText}</span>
-        </div>
-        <button className="btn primary" onClick={props.onClose}>
-          {x.demoEnd}
-        </button>
-      </header>
+    <>
       <aside className="demo-tasks" aria-live="polite">
         <strong>{all ? x.demoAllDone : x.demoTry}</strong>
         <ol>
@@ -85,9 +80,11 @@ export function Demo(props: { t: Dict; lang: Lang; toast: Toast; onClose: () => 
         </ol>
         {all && (
           <p className="row">
-            <button className="btn primary" onClick={props.onClose}>
-              {x.demoEnd}
-            </button>
+            {props.onClose && (
+              <button className="btn primary" onClick={props.onClose}>
+                {x.demoEnd}
+              </button>
+            )}
             <button
               className="btn"
               onClick={() => {
@@ -102,7 +99,7 @@ export function Demo(props: { t: Dict; lang: Lang; toast: Toast; onClose: () => 
           </p>
         )}
       </aside>
-      <main className="main simple-main demo-main">
+      <div className={`main simple-main demo-main ${props.embedded ? "embedded" : ""}`}>
         {/* The example never changes anything on the server, so it is not "read-only" in the auditor's sense: buttons stay. */}
         <ReadOnlyContext.Provider value={false}>
           <SimpleBackendContext.Provider value={backend}>
@@ -124,7 +121,26 @@ export function Demo(props: { t: Dict; lang: Lang; toast: Toast; onClose: () => 
             />
           </SimpleBackendContext.Provider>
         </ReadOnlyContext.Provider>
-      </main>
+      </div>
+    </>
+  );
+}
+
+/** The example over the whole dashboard (also over its top bar, whose buttons act on the real project). */
+export function Demo(props: { t: Dict; lang: Lang; toast: Toast; onClose: () => void }) {
+  const x = TOUR[props.lang];
+  return (
+    <div className="demo" role="dialog" aria-modal="true" aria-label={x.demoBand}>
+      <header className="demo-band">
+        <div>
+          <strong>🎓 {x.demoBand}</strong>
+          <span>{x.demoBandText}</span>
+        </div>
+        <button className="btn primary" onClick={props.onClose}>
+          {x.demoEnd}
+        </button>
+      </header>
+      <DemoStage {...props} />
     </div>
   );
 }

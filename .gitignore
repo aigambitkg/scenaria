@@ -1,6 +1,7 @@
 # --- build and dependencies
 node_modules/
 dist/
+dist-site/
 build/
 release/
 coverage/

@@ -2,6 +2,11 @@
 
 All notable changes to Scenaria. Versions follow `MAJOR.MINOR.PATCH`; before 1.0 a minor version may change behaviour.
 
+## Unreleased
+
+- **Landing page** (`site/`, `npm run build:site`): one static page in German and English with the drawings of the introduction and the real Simple view as a live example in the browser. It loads nothing from other servers and sets no cookies. Published only when a person starts the “Landing page” workflow.
+- The example to try out is split into `DemoStage` (the example itself) and `Demo` (the overlay in the dashboard), so the landing page shows the same example.
+
 ## 0.9.24 — a dashboard without loose ends
 
 For people who open Scenaria for the first time. Checked by clicking through every view in a browser.
