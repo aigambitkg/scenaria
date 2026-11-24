@@ -564,7 +564,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         // Batch E2: progress per task and for the project, each with its derivation (read-only, computed from evidence).
         if (req.method === "GET" && p === "/api/progress") return send(res, 200, projectProgress(s));
         // Batch E3a-1: how full the agents' context windows are, each number with its derivation (read-only, measured).
-        if (req.method === "GET" && p === "/api/windows") return send(res, 200, { ...windowStatus(s), progress: { ...windowProgress(s), hookWired: preToolHookWired(s.store.root, process.env.HOME) } });
+        if (req.method === "GET" && p === "/api/windows") return send(res, 200, { ...windowStatus(s), progress: { ...windowProgress(s), hookWired: preToolHookWired(s.store.root, homedir()) } });
         // E3b-1: the values of the context-window rule. Reading is open (rule 10: nothing secret); setting them is the
         // person's (POST under the personOnly prefix: approval session).
         if (req.method === "GET" && p === "/api/context-settings") {

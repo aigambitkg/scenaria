@@ -549,7 +549,7 @@ test("C2 N2: a destroyed root step or hash chain never makes the audit file unav
     assert.equal(r.status, 200);
     assert.equal(r.body.integrity.state, "alarm");
     const w = r.body.integrity.warnings.find((x) => x.code === "evaluation_failed");
-    assert.ok(w, "the failed check is named");
+    assert.ok(w, `the failed check is named (warnings: ${r.body.integrity.warnings.map((x) => x.code).join(", ")})`);
     assert.equal(r.body.sources.verdicts.count, 0, "nothing counts as authentic without the check");
     assert.ok(!JSON.stringify(r.body).includes(p.dir), "no machine path in error details");
   }

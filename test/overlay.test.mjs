@@ -5,8 +5,8 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Scenaria } from "../dist/core/index.js";
 import { createApp } from "../dist/server.js";
@@ -14,7 +14,7 @@ import { createMcpServer } from "../dist/mcp.js";
 import { isPlausibleProject } from "../dist/core/global.js";
 import { parseImport } from "../dist/ingest.js";
 import { streamMessage, conversationKey } from "../dist/proxy.js";
-import { tempProject } from "./helpers.mjs";
+import { tempProject, homeEnv, setHome } from "./helpers.mjs";
 
 const CLI = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 const cli = (dir, args, env = {}, input) => spawnSync(process.execPath, [CLI, ...args], { cwd: dir, encoding: "utf8", input, env: { ...process.env, ...env } });
@@ -442,7 +442,8 @@ test("setup --global writes user-level configs into HOME, enables auto-init, and
   const home = join(tmpdir(), `scenaria-home-${Date.now()}`);
   mkdirSync(join(home, ".cursor"), { recursive: true });
   writeFileSync(join(home, ".cursor", "mcp.json"), JSON.stringify({ mcpServers: { other: { command: "x" } } }));
-  const env = { HOME: home, PATH: process.env.PATH, SCENARIA_HOME: "", XDG_CONFIG_HOME: "" };
+  // The rest of the environment stays (Windows needs SystemRoot and friends to start a program at all).
+  const env = { ...process.env, ...homeEnv(home) };
   delete env.SCENARIA_HOME;
   delete env.XDG_CONFIG_HOME;
   const r = spawnSync(process.execPath, [CLI, "setup", "--global", "--for", "cursor,gemini,codex"], { cwd: home, encoding: "utf8", env });
@@ -466,12 +467,11 @@ test("setup --global writes user-level configs into HOME, enables auto-init, and
   assert.equal(existsSync(join(home, ".scenaria")), false);
   // Scenaria refuses home and config folders
   assert.notEqual(spawnSync(process.execPath, [CLI, "start", "--no-open"], { cwd: home, encoding: "utf8", env }).status, 0);
-  const realHome = process.env.HOME;
-  process.env.HOME = home; // os.homedir() follows HOME on POSIX
+  const restoreHome = setHome(home); // os.homedir() follows HOME on macOS and Linux, USERPROFILE on Windows
   try {
     assert.equal(isPlausibleProject(join(home, ".codex")), false, "agent config folders are never projects");
   } finally {
-    process.env.HOME = realHome;
+    restoreHome();
   }
 });
 
@@ -480,9 +480,17 @@ test("claude mcp add: name before -e, existing entry replaced only when needed",
   const bin = join(home, "bin");
   mkdirSync(bin, { recursive: true });
   const log = join(home, "claude-args.log");
-  writeFileSync(join(bin, "claude"), `#!/bin/sh\necho "$@" >> "${log}"\ncase "$*" in *"mcp add"*) if [ -f "${home}/exists" ]; then rm "${home}/exists"; echo "MCP server scenaria already exists" >&2; exit 1; fi;; esac\nexit 0\n`, { mode: 0o755 });
+  // A stand-in for the Claude Code command: it writes down how it was called, and says "already exists" once.
+  if (process.platform === "win32") {
+    // npm installs the command as claude.cmd on Windows: Scenaria must be able to start that as well.
+    writeFileSync(join(bin, "claude.cmd"), `@echo off\r\necho %*>> "${log}"\r\necho %* | findstr /C:"mcp add" >nul\r\nif errorlevel 1 exit /b 0\r\nif not exist "${join(home, "exists")}" exit /b 0\r\ndel "${join(home, "exists")}"\r\necho MCP server scenaria already exists 1>&2\r\nexit /b 1\r\n`);
+  } else {
+    writeFileSync(join(bin, "claude"), `#!/bin/sh\necho "$@" >> "${log}"\ncase "$*" in *"mcp add"*) if [ -f "${home}/exists" ]; then rm "${home}/exists"; echo "MCP server scenaria already exists" >&2; exit 1; fi;; esac\nexit 0\n`, { mode: 0o755 });
+  }
   writeFileSync(join(home, "exists"), "");
-  const env = { HOME: home, PATH: `${bin}:${process.env.PATH}` };
+  const env = { ...process.env, ...homeEnv(home), PATH: `${bin}${delimiter}${process.env.PATH}` };
+  delete env.SCENARIA_HOME;
+  delete env.XDG_CONFIG_HOME;
   const r = spawnSync(process.execPath, [CLI, "setup", "--global", "--for", "claude"], { cwd: home, encoding: "utf8", env });
   assert.equal(r.status, 0, r.stderr);
   const calls = readFileSync(log, "utf8").trim().split("\n");
@@ -497,7 +505,7 @@ test("auto-init only in real projects: never home, never unresolved templates", 
   assert.equal(isPlausibleProject(p.dir), false);
   p.write("package.json", "{}");
   assert.equal(isPlausibleProject(p.dir), true);
-  assert.equal(isPlausibleProject(process.env.HOME), false);
+  assert.equal(isPlausibleProject(homedir()), false);
   assert.equal(isPlausibleProject("${workspaceFolder}"), false);
   // global auto-init via hook
   const q = tempProject();

@@ -84,7 +84,8 @@ test("C4b: verify without a name checks the newest audit file here and says whic
   r = run(["audit-file", "verify"], out);
   assert.equal(r.status, 0, r.stderr);
   // The CLI names the real folder (on macOS /var/… is really /private/var/…): compare real paths (docs/DEVELOPMENT.md §3).
-  assert.ok(r.stdout.includes("Checking the newest audit file here") && r.stdout.includes(realpathSync.native(newer)), r.stdout);
+  // (On Windows a temp folder may be given in its short form, C:\\Users\\RUNNER~1\\…: the folder as given counts too.)
+  assert.ok(r.stdout.includes("Checking the newest audit file here") && (r.stdout.includes(realpathSync.native(newer)) || r.stdout.includes(newer)), r.stdout);
   assert.match(r.stdout, /1 other audit file\(s\) here/);
   assert.match(r.stdout, /roles only/);
   assert.match(r.stdout, /reading copy audit-file\.html: same content as the evidence/);
