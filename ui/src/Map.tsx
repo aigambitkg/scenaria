@@ -1,3 +1,4 @@
+import { localizeEngineText } from "./localize";
 import { memo, useEffect, useMemo } from "react";
 import {
   Background,
@@ -124,7 +125,7 @@ const ScNode = memo(({ data, selected }: NodeProps<Node<ScData>>) => {
         {n.scenarioId && <span className="vlabel">{n.scenarioId}/v{n.version}</span>}
         <span className={`vdot v-${vs}`} title={vs === "self" ? t.passNotCounted[verdictView(n.verification, data.confirmed).reason ?? "agent"] : t.verification[vs]} />
       </div>
-      <div className="sc-title">{n.type === "decision" ? n.question ?? n.title : n.title}</div>
+      <div className="sc-title">{n.type === "decision" ? n.question ?? n.title : localizeEngineText(n.title, t.langCode)}</div>
       {sub && <div className="sc-sub">{sub}</div>}
       <Handle type="source" position={Position.Right} isConnectable={false} />
     </div>

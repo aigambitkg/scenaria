@@ -1,3 +1,4 @@
+import { localizeEngineText } from "./localize";
 import { LockedNote, ReadOnlyContext } from "./Approval";
 import { DecisionForecast } from "./Forecasts";
 import { useContext, useEffect, useState } from "react";
@@ -248,7 +249,7 @@ export function NodePanel(props: {
             </span>
           </div>
         </div>
-        <h2 className="p-title">{n.type === "decision" ? n.question ?? n.title : n.title}</h2>
+        <h2 className="p-title">{n.type === "decision" ? n.question ?? n.title : localizeEngineText(n.title, t.langCode)}</h2>
         <p className="p-meta">
           <span>{fmtTime(n.createdAt)}</span>
           {n.agent && (
@@ -532,8 +533,8 @@ export function NodePanel(props: {
                 <li key={i} className={`v-${c.status}`}>
                   <span className={`vdot v-${c.status}`} />
                   <span>
-                    <strong>{c.name}</strong>
-                    {c.detail ? <span className="muted"> — {c.detail}</span> : null}
+                    <strong>{localizeEngineText(c.name, t.langCode)}</strong>
+                    {c.detail ? <span className="muted"> — {localizeEngineText(c.detail, t.langCode)}</span> : null}
                   </span>
                 </li>
               ))}

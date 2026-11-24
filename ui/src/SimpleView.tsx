@@ -6,11 +6,13 @@
  * answers two questions: "What did the AI do?" and "Can I go back to this?". Nothing here needs the words
  * node, branch, capsule or canon.
  */
-import { useContext, useEffect, useMemo, useState } from "react";
+import { localizeEngineText } from "./localize";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { ReadOnlyContext } from "./Approval";
 import { api, type ConversationMessage, type Fidelity, type ProjectProgress, type ScenariaNode, type WindowStatus } from "./api";
 import { ProgressCard } from "./Progress";
 import { HandoverDialog, WindowCard } from "./Window";
+import { TOUR } from "./tourText";
 import type { Dict, Lang } from "./i18n";
 import { verdictView } from "../../src/core/verdict";
 import { Modal } from "./Dialogs";
@@ -81,9 +83,9 @@ export function sentenceFor(n: ScenariaNode, nodes: ScenariaNode[], t: Dict, cut
       return { head: `${t.svTriedOther}: ${parent ? option(parent, n.viaOption) ?? n.title : n.title}` };
     }
     case "autosave":
-      return { head: n.title || t.svAutoSaved, sub: n.changedFiles?.length ? t.svFilesChanged(n.changedFiles.length) : undefined };
+      return { head: localizeEngineText(n.title, t.langCode) || t.svAutoSaved, sub: n.changedFiles?.length ? t.svFilesChanged(n.changedFiles.length) : undefined };
     default:
-      return { head: n.title, sub: n.changedFiles?.length ? t.svFilesChanged(n.changedFiles.length) : n.outputs?.[0] };
+      return { head: localizeEngineText(n.title, t.langCode), sub: n.changedFiles?.length ? t.svFilesChanged(n.changedFiles.length) : n.outputs?.[0] };
   }
 }
 
@@ -126,6 +128,13 @@ function ago(iso: string, lang: Lang, t: Dict) {
 /** Show these steps? The project root and empty task headers carry no state of their own. */
 const isStep = (n: ScenariaNode) => n.type !== "mission";
 
+/**
+ * What the Simple view asks the server. The example of the introduction (Demo.tsx) puts its own answers here,
+ * so people try the real view on example data and nothing touches their project.
+ */
+export type SimpleBackend = Pick<typeof api, "rewind" | "folder" | "nodeMessages" | "headAt">;
+export const SimpleBackendContext = createContext<SimpleBackend>(api);
+
 export function SimpleView(props: {
   t: Dict;
   lang: Lang;
@@ -146,9 +155,13 @@ export function SimpleView(props: {
   onDiff: (from: string, to: string) => void;
   onOpenAudit: () => void;
   onConnect: () => void;
+  /** Start the introduction / the example to try out (shown while the project is still empty). */
+  onIntro?: () => void;
+  onDemo?: () => void;
   toast: Toast;
 }) {
   const readOnly = useContext(ReadOnlyContext);
+  const backend = useContext(SimpleBackendContext);
   const { t, lang, nodes, headId } = props;
   const [limit, setLimit] = useState(40);
   const [showOther, setShowOther] = useState(false);
@@ -191,12 +204,12 @@ export function SimpleView(props: {
       if (d.key in dayEnds) continue;
       const x = new Date(d.at);
       const midnight = new Date(x.getFullYear(), x.getMonth(), x.getDate() + 1);
-      api
+      backend
         .headAt(midnight.toISOString())
         .then((r) => setDayEnds((m) => ({ ...m, [d.key]: r.id })))
         .catch(() => setDayEnds((m) => ({ ...m, [d.key]: null })));
     }
-  }, [pastDays, dayEnds]);
+  }, [pastDays, dayEnds, backend]);
   const endOfDayFor = (key: string) => {
     const fromLog = dayEnds[key] ? nodes.find((n) => n.id === dayEnds[key] && isStep(n)) : undefined;
     if (fromLog) return fromLog;
@@ -249,9 +262,21 @@ export function SimpleView(props: {
       {!lastStep ? (
         <section className="sv-empty">
           <p>{t.svEmpty}</p>
-          <button className="btn primary" onClick={props.onConnect}>
-            {t.svConnect}
-          </button>
+          <p className="row">
+            <button className="btn primary" onClick={props.onConnect}>
+              {t.svConnect}
+            </button>
+            {props.onIntro && (
+              <button className="btn" onClick={props.onIntro}>
+                {TOUR[lang].startIntro}
+              </button>
+            )}
+            {props.onDemo && (
+              <button className="btn" onClick={props.onDemo}>
+                {TOUR[lang].startDemo}
+              </button>
+            )}
+          </p>
         </section>
       ) : (
         <ol className="sv-days">
@@ -326,7 +351,7 @@ export function SimpleView(props: {
                   label: t.svUndo,
                   run: async () => {
                     try {
-                      await api.rewind(undo, "", true);
+                      await backend.rewind(undo, "", true);
                       await props.onRewound();
                       props.toast(t.svUndone);
                     } catch (e: any) {
@@ -360,15 +385,16 @@ function Step(props: {
   const { n, t, lang } = props;
   const s = sentenceFor(n, props.nodes, t, props.cutIds);
   const view = verdictView(n.verification, props.confirmed);
+  const backend = useContext(SimpleBackendContext);
   const [open, setOpen] = useState(false);
   const [asked, setAsked] = useState<ConversationMessage | null | undefined>(undefined);
   useEffect(() => {
     if (!open || asked !== undefined) return;
-    api
+    backend
       .nodeMessages(n.id)
       .then((m) => setAsked([...m.leading].reverse().find((x) => x.role === "user") ?? null))
       .catch(() => setAsked(null));
-  }, [open, asked, n.id]);
+  }, [open, asked, n.id, backend]);
   const request = asked?.text ?? n.trigger;
   const files = n.changedFiles ?? [];
   const verdictText =
@@ -442,7 +468,7 @@ function Step(props: {
                   className="btn"
                   onClick={async () => {
                     try {
-                      const r = await api.folder(n.id, true);
+                      const r = await backend.folder(n.id, true);
                       props.toast(r.folder ? t.svFolderOpened : t.svNoFolder);
                     } catch (e: any) {
                       props.toast(e?.message ?? String(e));
@@ -462,6 +488,7 @@ function Step(props: {
 
 function BackDialog(props: { t: Dict; lang: Lang; target: ScenariaNode; leaving: string[]; onCancel: () => void; onDone: (autosaveId: string | null, warnings: string[]) => Promise<void> }) {
   const { t, lang, target } = props;
+  const backend = useContext(SimpleBackendContext);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -500,7 +527,7 @@ function BackDialog(props: { t: Dict; lang: Lang; target: ScenariaNode; leaving:
             setBusy(true);
             setErr(null);
             try {
-              const r = await api.rewind(target.id, note, true);
+              const r = await backend.rewind(target.id, note, true);
               await props.onDone(r.autosave?.id ?? null, r.warnings ?? []);
             } catch (e: any) {
               setErr(e?.message ?? String(e));

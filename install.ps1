@@ -1,7 +1,7 @@
 # Scenaria installer (Windows) — single binary, no Node.js required.
 #   irm https://raw.githubusercontent.com/<owner>/scenaria/main/install.ps1 | iex
 # The download is checked against the release's SHA256SUMS before it is installed.
-# Options (env): SCENARIA_REPO=owner/repo  SCENARIA_VERSION=0.9.23
+# Options (env): SCENARIA_REPO=owner/repo  SCENARIA_VERSION=0.9.24
 $ErrorActionPreference = "Stop"
 $repo = if ($env:SCENARIA_REPO) { $env:SCENARIA_REPO } else { "aigambitkg/scenaria" }
 $version = if ($env:SCENARIA_VERSION) { $env:SCENARIA_VERSION } else { "latest" }

@@ -284,7 +284,8 @@ export const api = {
   models: (b: { provider: string; baseUrl?: string; apiKey?: string }) => req<{ models: string[] }>("/api/settings/models", b),
   testLlm: (b: LlmCall) => req<{ ok: boolean; model: string; reply: string; ms: number }>("/api/settings/test", b),
   /** Opens a fresh single-use approval link in the default browser (the code never comes back here). */
-  openApproval: () => req<{ ok: boolean; already?: boolean; opened?: boolean }>("/api/approval/open", {}),
+  /** `then`: what the unlocked window shows first (so the person lands where they wanted to go). */
+  openApproval: (then?: "settings") => req<{ ok: boolean; already?: boolean; opened?: boolean }>("/api/approval/open", then ? { then } : {}),
   createLauncher: () => req<{ ok: boolean; file: string }>("/api/agents/launcher", {}),
   connectAgents: (targets: string[]) => req<{ changes: string[]; notes: string[]; agents: AgentStatus[] }>("/api/agents/connect", { targets }),
   chat: (b: { sessionId: string; messages: ChatMessage[]; decisions?: Record<string, "approve" | "deny">; llm?: Partial<LlmCall>; lang: string }) => req<ChatResponse>("/api/chat", b),

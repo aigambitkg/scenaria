@@ -44,9 +44,9 @@ function watchApproval() {
  * Ask the running Scenaria to open a fresh single-use approval link in the default browser.
  * The code never reaches this page: the server hands it straight to the operating system.
  */
-export async function requestApproval(t: Dict): Promise<{ kind: "already" | "opened" } | { kind: "error"; text: string }> {
+export async function requestApproval(t: Dict, then?: "settings"): Promise<{ kind: "already" | "opened" } | { kind: "error"; text: string }> {
   try {
-    const r = await api.openApproval();
+    const r = await api.openApproval(then);
     if (r.already) {
       window.dispatchEvent(new Event(EVENT));
       return { kind: "already" };

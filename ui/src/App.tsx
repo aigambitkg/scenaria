@@ -6,7 +6,10 @@ import { ProgressDialog } from "./Progress";
 import { WindowDialog } from "./Window";
 import { dict, initialLang, saveLang, type Lang } from "./i18n";
 import { ProjectSwitcher } from "./Projects";
-import { HelpDialog, Onboarding, onboardingDone, restartOnboarding } from "./Help";
+import { HelpDialog, onboardingDone, restartOnboarding } from "./Help";
+import { Tour } from "./Tour";
+import { Demo } from "./Demo";
+import { TOUR } from "./tourText";
 import { HelpContext } from "./HelpButton";
 import { HELP, type HelpAction } from "./helpContent";
 import { layoutTree, taskOf } from "./layout";
@@ -85,6 +88,13 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
   /** Help: false = closed, string = open at that topic. */
   const [help, setHelp] = useState<string | false>(false);
   const [onboarding, setOnboarding] = useState(false);
+  /** The example to try out (Demo.tsx): shown over everything, nothing of it reaches the server. */
+  const [demo, setDemo] = useState(false);
+  /**
+   * Is a language model set up? Chat, forecasts and the oracle only work with one, so the dashboard shows
+   * them only then (null = not known yet: hidden as well, so nothing appears and disappears while loading).
+   */
+  const [hasModel, setHasModel] = useState<boolean | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [projectsSignal, setProjectsSignal] = useState(0);
   /** Forecasts page: false = closed, null = open without focus, "n12" = focused on a decision. */
@@ -242,12 +252,24 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
   // the audit file nor writes anything until the mode is ended here).
   const [auditView, setAuditView] = useState<boolean | "stale">(false);
   // An approval link opened in an auditor-mode browser ends the mode there and gives no approval (review C4c-1 K1).
+  // An approval window opened for a purpose ("then=settings") shows that right away; the hint leaves the address.
+  useEffect(() => {
+    const q = new URLSearchParams(location.search);
+    if (q.get("then") === "settings") {
+      setSettingsOpen(true);
+      q.delete("then");
+      try {
+        history.replaceState(null, "", `${location.pathname}${q.toString() ? `?${q}` : ""}`);
+      } catch {}
+    }
+  }, []);
   const [auditorLinkNote, setAuditorLinkNote] = useState(() => new URLSearchParams(location.search).get("approval") === "auditor");
   const checkApproval = useCallback(
     () =>
       api.settings().then((st) => {
         setApproved(st.approval);
         setTeamMode(st.teamMode);
+        setHasModel(Boolean(st.effective?.chat));
         api
           .approval()
           .then((a) => setAuditView(a.auditView === true ? true : a.auditView === "stale" ? "stale" : false))
@@ -340,6 +362,12 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
     setOnboarding(false);
     setMoreOpen(false);
     setExtOpen(false);
+    // Functions that need a language model: without one, lead to where it is set up instead of to a dead end.
+    if (!hasModel && (a === "chat" || a === "relay" || a === "forecasts" || a === "audit")) {
+      toast(t.needsModel);
+      if (!auditView) setSettingsOpen(true);
+      return;
+    }
     switch (a) {
       case "goal":
         if (!auditView) setEditGoal(root?.goal ?? "");
@@ -390,6 +418,20 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
         break;
       case "projects":
         setProjectsSignal((n) => n + 1);
+        break;
+      case "connect":
+        // Connecting an AI is the person's action. If this window is locked, the unlocked one opens with the
+        // settings already open, so nobody lands in front of greyed-out buttons.
+        if (!approved && !teamMode && !auditView) {
+          requestApproval(t, "settings").then((r) => {
+            if (r.kind === "error") toast(r.text);
+            else if (r.kind === "opened") toast(t.approvalOpeningSettings);
+          });
+        }
+        if (!auditView) setSettingsOpen(true);
+        break;
+      case "demo":
+        setDemo(true);
         break;
       case "onboarding":
         restartOnboarding();
@@ -475,7 +517,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
               {t.saveNow}
             </button>
           )}
-          {view === "manage" && !auditView && (
+          {view === "manage" && !auditView && hasModel && (
             <button className={`btn ${side === "chat" ? "primary" : ""}`} onClick={() => setSide(side === "chat" ? "node" : "chat")} title={t.chatHint}>
               {t.chat}
             </button>
@@ -529,7 +571,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
               </button>
             </>
           )}
-          {view === "manage" && !auditView && (
+          {view === "manage" && !auditView && hasModel && (
             <div className="more">
               <button className="btn" aria-haspopup="menu" aria-expanded={extOpen} title={t.extensionsHint} onClick={() => setExtOpen(!extOpen)}>
                 {t.extensions}
@@ -537,6 +579,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
               </button>
               {extOpen && (
                 <div className="more-menu" role="menu" onMouseLeave={() => setExtOpen(false)}>
+                  <p className="menu-note">{t.extensionsNote}</p>
                   <button role="menuitem" onClick={() => act("forecasts")} title={t.fcIntro}>
                     {t.fcButton}
                   </button>
@@ -568,6 +611,9 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
                   </button>
                   <button role="menuitem" onClick={() => act("onboarding")}>
                     {t.obRestart}
+                  </button>
+                  <button role="menuitem" onClick={() => act("demo")}>
+                    {TOUR[lang].startDemo}
                   </button>
                 </div>
               )}
@@ -664,7 +710,9 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
                   }
                 }}
                 onOpenAudit={() => setView("audit")}
-                onConnect={() => setSettingsOpen(true)}
+                onConnect={() => act("connect")}
+                onIntro={() => act("onboarding")}
+                onDemo={() => act("demo")}
               />
             </ErrorBoundary>
           )}
@@ -701,12 +749,14 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
             <button role="tab" aria-selected={side === "node"} className={side === "node" ? "on" : ""} onClick={() => setSide("node")}>
               {t.chatNode}
             </button>
-            <button role="tab" aria-selected={side === "chat"} className={side === "chat" ? "on" : ""} onClick={() => setSide("chat")}>
-              {t.chat}
-            </button>
+            {hasModel && (
+              <button role="tab" aria-selected={side === "chat"} className={side === "chat" ? "on" : ""} onClick={() => setSide("chat")}>
+                {t.chat}
+              </button>
+            )}
           </div>
           <ErrorBoundary scope="side" key={side}>
-          {side === "chat" ? (
+          {side === "chat" && hasModel ? (
             <ChatPanel
               t={t}
               lang={lang}
@@ -962,7 +1012,11 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
           }}
         />
       )}
-      {settingsOpen && <SettingsDialog t={t} keys={keys} onKey={(p, k) => setKeys((o) => ({ ...o, [p]: k }))} toast={toast} onClose={() => setSettingsOpen(false)} onSaved={load} />}
+      {settingsOpen && <SettingsDialog t={t} keys={keys} onKey={(p, k) => setKeys((o) => ({ ...o, [p]: k }))} toast={toast} onClose={() => {
+            setSettingsOpen(false);
+            // A model may have been set up or removed: show or hide what needs one.
+            checkApproval().catch(() => {});
+          }} onSaved={load} />}
       {relayOpen && (
         <RelayDialog
           t={t}
@@ -1002,18 +1056,23 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
         />
       )}
       </ErrorBoundary>
-      {help !== false && <HelpDialog t={t} lang={lang} topic={help} onClose={() => setHelp(false)} onAction={act} />}
+      {help !== false && <HelpDialog t={t} lang={lang} topic={help} hasModel={Boolean(hasModel)} onClose={() => setHelp(false)} onAction={act} />}
       {onboarding && (
-        <Onboarding
-          t={t}
+        <Tour
           lang={lang}
           goal={root?.goal ?? null}
+          readOnly={Boolean(auditView)}
           toast={toast}
           onGoalSaved={load}
           onAction={act}
+          onDemo={() => {
+            setOnboarding(false);
+            setDemo(true);
+          }}
           onClose={() => setOnboarding(false)}
         />
       )}
+      {demo && <Demo t={t} lang={lang} toast={toast} onClose={() => setDemo(false)} />}
       <div className="toasts" aria-live="polite">
         {toasts.map((x) => (
           <div key={x.id} className="toast">

@@ -50,7 +50,7 @@ import { adoptRecommendation, expertAnalysis, factSheet, getReport, listPersonal
 import { forgetProject, listProjects, registerProject } from "./core/projects.js";
 import { acceptRule, analysisPrompt, dossier, importAnalysis, listAnalyses, projectMetrics, runAnalysis } from "./core/analysis.js";
 
-export const VERSION = "0.9.23";
+export const VERSION = "0.9.24";
 
 const KEY_ENVS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "AZURE_OPENAI_API_KEY"];
 
@@ -200,7 +200,7 @@ export interface AppOptions {
    * Local mode only: open a fresh single-use approval link in the person's default browser. The code
    * never appears in an HTTP answer — it goes from this process straight to the OS browser.
    */
-  openApproval?: (fromDashboard: boolean) => Promise<{ opened: true } | { opened: false; reason: "busy"; retryIn: number } | { opened: false; reason: "no_browser" }>;
+  openApproval?: (fromDashboard: boolean, then?: string) => Promise<{ opened: true } | { opened: false; reason: "busy"; retryIn: number } | { opened: false; reason: "no_browser" }>;
   /** The project the dashboard shows right now (it can differ from the one agents write to). */
   viewRoot?: () => string;
 }
@@ -461,7 +461,9 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         return res.end();
       }
       if (redeemed) {
-        res.writeHead(302, { location: "/", "set-cookie": `scenaria_approval=${encodeURIComponent(approvalSecret)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000` });
+        // `then` names what the unlocked window shows first (a fixed list, never free text from the link).
+        const then = APPROVAL_THEN.has(url.searchParams.get("then") ?? "") ? `?then=${url.searchParams.get("then")}` : "";
+        res.writeHead(302, { location: `/${then}`, "set-cookie": `scenaria_approval=${encodeURIComponent(approvalSecret)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000` });
         return res.end();
       }
       if (isApprover(req)) {
@@ -620,7 +622,9 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           }
           if (!opts.openApproval) return send(res, 409, { error: "This Scenaria cannot open your browser. Start it with scenaria start (or the start icon).", code: "no_browser" });
           const fromDashboard = req.headers["x-scenaria-view"] === "dashboard";
-          const r = await opts.openApproval(fromDashboard);
+          // What the unlocked window shows first, so the person lands where they wanted to go (fixed list).
+          const want = String((await readBody(req).catch(() => ({})))?.then ?? "");
+          const r = await opts.openApproval(fromDashboard, APPROVAL_THEN.has(want) ? want : undefined);
           if (!r.opened && r.reason === "busy") return send(res, 429, { error: `Just opened — try again in ${r.retryIn} s.`, code: "busy", retryIn: r.retryIn });
           if (!r.opened) return send(res, 409, { error: "This Scenaria cannot open your browser. Start it with scenaria start (or the start icon).", code: "no_browser" });
           // The dashboard mark is only a claim (any local client can send it): logged as such, with the client's name.
@@ -1340,6 +1344,9 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
   };
 }
 
+/** What an approval link may ask the unlocked window to show first. A fixed list: nothing else is passed on. */
+const APPROVAL_THEN = new Set(["settings"]);
+
 /** For tests: SCENARIA_NO_BROWSER=1 records the URL instead of opening a browser. */
 export const browserLog: string[] = [];
 
@@ -1451,7 +1458,7 @@ export async function startServer(
   // A request that is not from the dashboard (an agent, a script) waits longer between openings.
   const openApproval: AppOptions["openApproval"] = opts.token
     ? undefined
-    : async (fromDashboard) => {
+    : async (fromDashboard, then) => {
         const wait = (fromDashboard ? 15_000 : 60_000) - (Date.now() - lastOpen);
         if (wait > 0) return { opened: false, reason: "busy", retryIn: Math.ceil(wait / 1000) };
         lastOpen = Date.now();
@@ -1459,7 +1466,7 @@ export async function startServer(
         const extra = linkState.extra!;
         extra.set(code, Date.now() + 60_000);
         while (extra.size > 3) extra.delete(extra.keys().next().value!);
-        if (await openBrowser(`${baseUrl}/?approve=${code}`)) return { opened: true };
+        if (await openBrowser(`${baseUrl}/?approve=${code}${then && APPROVAL_THEN.has(then) ? `&then=${then}` : ""}`)) return { opened: true };
         extra.delete(code);
         lastOpen = 0;
         return { opened: false, reason: "no_browser" };

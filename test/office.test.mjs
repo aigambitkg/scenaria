@@ -311,7 +311,7 @@ test("K4: a hand-edited root (goalHistory not a list) no longer breaks the integ
 
 test("K5/K6/K14: end of a day = its newest saved state; warnings and outside effects are shown; calendar yesterday", () => {
   const sv = readFileSync(new URL("../ui/src/SimpleView.tsx", import.meta.url), "utf8");
-  assert.match(sv, /api\s*\.headAt\(midnight\.toISOString\(\)\)/, "end of day from the event log (K19)");
+  assert.match(sv, /backend\s*\.headAt\(midnight\.toISOString\(\)\)/, "end of day from the event log (K19)");
   assert.match(sv, /\.filter\(\(n\) => isStep\(n\) && n\.snapshot && dayKey\(n\.createdAt\) === key\)/, "fallback: newest saved state of the day");
   assert.match(sv, /\.forEach\(\(w\) => props\.toast\(w\)\)/);
   assert.match(sv, /t\.svCannotUndo/);

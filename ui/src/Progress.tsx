@@ -195,6 +195,9 @@ export function ProgressDialog({ p, t, lang, onClose, onNode, onOpenCanon }: { p
 export function ProgressCard({ p, task, t, lang }: { p: ProjectProgress | null; task: string | null; t: Dict; lang: Lang }) {
   if (!p || !task) return null;
   const tp = p.tasks.find((x) => x.task === task);
+  // Nothing to measure yet (no approved criteria for this task): no card. An empty box at the top of the
+  // Simple view only raised a question; the Progress dialog in the other views explains how to get there.
+  if (!tp) return null;
   return (
     <section className="sv-card pg-card" aria-label={t.pgSimpleTitle}>
       <h2>{t.pgSimpleTitle}</h2>

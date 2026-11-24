@@ -1,3 +1,5 @@
+import { ErrorBox } from "./ForecastStart";
+import { localizeEngineList, localizeEngineText } from "./localize";
 import { LockedNote, useApprovalSignal } from "./Approval";
 import { HelpButton } from "./HelpButton";
 /**
@@ -267,7 +269,7 @@ function ModelPicker(props: {
           {LOCAL.has(known) && <span className="muted small">{props.t.keyLocalNone}</span>}
         </div>
       )}
-      {err && <p className="error small">{err}</p>}
+      {err && <p className="error small">{localizeEngineText(err, t.langCode)}</p>}
     </div>
   );
 }
@@ -366,7 +368,7 @@ export function SettingsDialog(props: { t: Dict; keys: SessionKeys; onKey: (prov
     <Modal wide title={<>{t.settingsTitle} <HelpButton topic="settings" /></>} onClose={props.onClose}>
       <div className="modal-body analysis settings">
         {page && !page.approval && <LockedNote t={t} text={t.settingsLocked} />}
-        {err && <p className="error">{err}</p>}
+        {err && <p className="error">{localizeEngineText(err, t.langCode)}</p>}
         {page && (
           <>
             <section className="a-sec">
@@ -378,7 +380,7 @@ export function SettingsDialog(props: { t: Dict; keys: SessionKeys; onKey: (prov
                     <tr key={a.target}>
                       <td>
                         <strong>{a.target === "generic" ? t.agentGeneric : a.label}</strong>
-                        <div className="muted small">{a.target === "claude-desktop" ? t.desktopWhere : a.where}</div>
+                        <div className="muted small">{a.target === "claude-desktop" ? t.desktopWhere : localizeEngineText(a.where, t.langCode)}</div>
                       </td>
                       <td>{a.detected && a.target !== "generic" ? <span className="chip">{t.agentInstalled}</span> : null}</td>
                       <td>{a.connected ? <span className="chip v-passed">✓ {t.agentConnected}</span> : <span className="muted small">{t.agentNotConnected}</span>}</td>
@@ -421,6 +423,7 @@ export function SettingsDialog(props: { t: Dict; keys: SessionKeys; onKey: (prov
             <section className="a-sec">
               <h3>{t.modelSection}</h3>
               <p className="hint">{t.modelSectionHint}</p>
+              {!page.effective?.chat && <p className="hint">{t.stModelUnlocks}</p>}
               <ModelPicker t={t} value={def} onChange={setDef} keys={props.keys} onKey={props.onKey} envKeys={page.envKeys} teamMode={page.teamMode} toast={props.toast} />
               <details className="roles">
                 <summary>{t.rolesSection}</summary>
@@ -726,7 +729,7 @@ export function ChatPanel(props: { t: Dict; lang: "de" | "en"; keys: SessionKeys
         )}
         {busy && <Thinking label={t.chatThinking} />}
         {notice && <p className="qnote q-info">{notice}</p>}
-        {err && <p className="error">{err}</p>}
+        {err && <ErrorBox t={t} message={err} />}
         <div ref={end} />
       </div>
       <form
@@ -886,7 +889,7 @@ export function RelayDialog(props: { t: Dict; lang: "de" | "en"; keys: SessionKe
             </button>
           </div>
         </form>
-        {err && <p className="error">{err}</p>}
+        {err && <ErrorBox t={t} message={err} />}
         {report && (
           <section className="a-sec">
             <h3>{report.question}</h3>
@@ -954,7 +957,7 @@ export function GateSection(props: { t: Dict; locked: boolean; toast: (m: string
         </button>
       </h3>
       <p className="hint">{t.gateHint}</p>
-      {err && <p className="error">{err}</p>}
+      {err && <p className="error">{localizeEngineText(err, t.langCode)}</p>}
       {m.tampered.length > 0 && (
         <p className="qnote q-bad">
           ⛔ {t.gateTampered}: {m.tampered.join(", ")}
@@ -983,14 +986,14 @@ export function GateSection(props: { t: Dict; locked: boolean; toast: (m: string
                     <button className="btn link" onClick={() => props.onNode(r.head)}>
                       <NodeId id={r.head} />
                     </button>{" "}
-                    <span className="small">{r.title}</span> <span className="muted small">{r.scenario}</span>
+                    <span className="small">{localizeEngineText(r.title, t.langCode)}</span> <span className="muted small">{r.scenario}</span>
                   </td>
                   {r.cells.map((c) => (
                     <td key={c.event} className={`cell s-${c.status.replace(" ", "-")}`} title={c.detail ?? t.gateNotRun}>
                       {icon(c.status)}
                     </td>
                   ))}
-                  <td title={r.reasons.join(" · ")}>
+                  <td title={localizeEngineList(r.reasons, t.langCode).join(" · ")}>
                     <span className={`chip v-${r.verdict === "valid" ? "passed" : r.verdict === "invalid" ? "failed" : "warning"}`}>{t.canonVerdicts[r.verdict]}</span>
                   </td>
                 </tr>

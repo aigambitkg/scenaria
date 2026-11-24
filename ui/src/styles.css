@@ -1100,3 +1100,42 @@ table.gate tr.current td:first-child { box-shadow: inset 4px 0 0 var(--marker-so
   .cw-ptable th:nth-child(3), .cw-ptable td:nth-child(3) { display: table-cell; }
   .cw-ptable th:nth-child(2), .cw-ptable td:nth-child(2) { display: none; }
 }
+
+/* ---------- introduction (Tour.tsx) and the example to try out (Demo.tsx) ---------- */
+/* one height for all five steps, so "Next" stays where it is while clicking through */
+.modal-body.tour { min-height: 470px; }
+.tour h3 { margin: 10px 0 8px; font-size: 18px; }
+.tour h4 { margin: 0 0 2px; font-size: 14.5px; }
+.tour-art { display: block; width: 100%; height: auto; max-height: 230px; background: var(--paper); border: 1px solid var(--rule); border-radius: 3px; }
+.tour-art text { font-family: var(--font); fill: var(--ink); }
+.tour-art .ta-label { font-size: 13px; font-weight: 600; }
+.tour-art .ta-small { font-size: 12px; }
+.tour-art .ta-key { font-size: 11px; fill: var(--ink-3); text-transform: uppercase; letter-spacing: 0.04em; }
+.tour-art .ta-caption { font-size: 12px; fill: var(--ink-2); }
+.tour-art .ta-line { font-size: 14px; }
+.tour-art .ta-link { font-size: 13px; }
+.tour-art .ta-time { font-family: var(--math); font-style: italic; font-size: 15px; }
+.tour-do { border: 1px solid var(--rule); background: var(--paper); padding: 10px 12px; margin: 0 0 10px; }
+.tour-do p { margin: 0 0 8px; }
+.tour-do .row { display: flex; gap: 8px; }
+.tour-do .row .grow { flex: 1; min-width: 0; }
+
+.help-start { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; border: 1px solid var(--rule); background: var(--paper); padding: 10px 12px; margin: 0 0 14px; }
+.help-start p { flex-basis: 100%; margin: 0; color: var(--ink); }
+.more-menu .menu-note { margin: 0; padding: 6px 12px; font-size: 12px; color: var(--ink-2); max-width: 240px; border-bottom: 1px solid var(--rule); }
+.sv-empty .row { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; }
+
+/* The example lies over the whole dashboard (also over its top bar, whose buttons act on the real project),
+   under dialogs (50) and messages (60). */
+.demo { position: fixed; inset: 0; z-index: 40; overflow: auto; background: var(--paper); background-image: linear-gradient(var(--grid-minor) 1px, transparent 1px), linear-gradient(90deg, var(--grid-minor) 1px, transparent 1px); background-size: 16px 16px; }
+.demo-band { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 16px; background: var(--marker-solid); border-bottom: 1.5px solid var(--ink); }
+.demo-band div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.demo-band span { font-size: 13.5px; }
+.demo-tasks { max-width: 760px; margin: 16px auto 0; padding: 12px 16px; background: var(--surface); border: 1.5px solid var(--ink); }
+.demo-tasks ol { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.demo-tasks li span { display: inline-grid; place-items: center; width: 22px; height: 22px; margin-right: 6px; border: 1.5px solid var(--ink); border-radius: 50%; font-size: 12px; font-weight: 600; }
+.demo-tasks li.ok { color: var(--ink-2); }
+.demo-tasks li.ok span { background: var(--pass); border-color: var(--pass); color: var(--surface); }
+.demo-tasks .row { display: flex; gap: 8px; margin: 12px 0 0; }
+.demo-main { display: block; }
+.demo-main .simple { padding-top: 20px; }
