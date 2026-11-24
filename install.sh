@@ -2,7 +2,7 @@
 # Scenaria installer (macOS / Linux) — single binary, no Node.js required.
 #   curl -fsSL https://raw.githubusercontent.com/<owner>/scenaria/main/install.sh | sh
 # The download is checked against the release's SHA256SUMS before it is installed.
-# Options (env): SCENARIA_REPO=owner/repo  SCENARIA_VERSION=0.9.23  SCENARIA_INSTALL_DIR=~/.local/bin
+# Options (env): SCENARIA_REPO=owner/repo  SCENARIA_VERSION=0.9.24  SCENARIA_INSTALL_DIR=~/.local/bin
 set -eu
 
 REPO="${SCENARIA_REPO:-aigambitkg/scenaria}"

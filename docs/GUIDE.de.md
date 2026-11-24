@@ -61,7 +61,7 @@ Eine Entscheidung enthält mehr als Frage, Optionen und Wahl:
 
 Fehlende Angaben werden auf der Karte und im Tool-Ergebnis markiert.
 
-- **Projekt-Check ohne LLM, ohne Token:** `scenaria analyze` bzw. Dashboard → *Analyse*. Er prüft:
+- **Analyse ohne LLM, ohne Token:** `scenaria analyze` bzw. Dashboard → *Analyse*. Er prüft:
   - ob das Hauptziel gesetzt ist;
   - ob Entscheidungen Kontext, Begründung und Zielbezug haben;
   - ob Arbeit auf fehlgeschlagenen Prüfungen aufbaut;
@@ -93,7 +93,7 @@ Was das ehrlich schützt: Agenten, Chat-Blöcke, API-Tokens und Änderungen an D
 So werden Fixpunkte durchgesetzt:
 - Jede Kapsel und jeder Prompt enthält die aktiven Fixpunkte; harte fallen nie dem Token-Budget zum Opfer.
 - Entscheidungen geben an, welche sie respektieren (`respectsCanon`).
-- Einen zu brechen erfordert `breaksCanon` plus Begründung. Das erscheint im Projekt-Check, im Treue-Diagramm (⚑) und auf der Tafel.
+- Einen zu brechen erfordert `breaksCanon` plus Begründung. Das erscheint in der Analyse, im Treue-Diagramm (⚑) und auf der Tafel.
 
 **Der String:** `scenaria string` (bzw. `scenaria_context {mode: "string"}`) macht aus einer Arbeitslinie ein Paket:
 - Vorgaben aus der Vergangenheit;
@@ -138,7 +138,7 @@ Ein Klick auf den Projektnamen oben zeigt deine Scenaria-Projekte auf diesem Rec
 
 Das Dashboard hat drei Ansichten auf dieselben Daten:
 - **Einfach** (Standard): dein Verlauf in Klartext, nach Tagen. *Zurück zu diesem Stand* setzt deine Dateien auf jeden gesicherten Stand (mit *Rückgängig*), *Was hat die KI gemacht?* zeigt Auftrag, Ergebnis und geänderte Dateien, und jeder Stand lässt sich als Ordner öffnen.
-- **Prüfung**: die Szenario-Karte mit Regeln und Meilensteinen, Projekt-Check, Protokoll und die **Prüfakte** (ISO/IEC 42001).
+- **Prüfung**: die Szenario-Karte mit Regeln und Meilensteinen, Analyse, Protokoll und die **Prüfakte** (ISO/IEC 42001).
 - **Steuerung**: Chat, Analyse und **Erweiterungen** (Prognosen, Prognose-Prüfung, Relay).
 
 ## Prüfakte nach ISO/IEC 42001 (v0.9.6–0.9.13)
@@ -153,7 +153,7 @@ Ein Prüfer findet jede der 38 Kontrollen aus Anhang A an einem Ort: was die Auf
 
 ## Jede Zahl mit Herleitung (v0.9.14)
 
-Neben der Kontext-Treue, dem Projekt-Check und den Zählern der Prüfakte steht **ⓘ Wie berechnet?**: die Formel mit Version, die Eingänge (bei Zählern jeder gezählte Eintrag) und ein Satz in einfachen Worten. Darüberfahren zeigt den Satz, Antippen oder Enter zeigt alles. Scenaria rechnet die Zahl aus den Eingängen nach und sagt, ob sie stimmt. Im Prüfpaket stehen die Herleitungen als Fußnoten, und `scenaria audit-file verify` rechnet sie nach. Ein Modell liefert nie eine dieser Zahlen.
+Neben der Kontext-Treue, der Analyse und den Zählern der Prüfakte steht **ⓘ Wie berechnet?**: die Formel mit Version, die Eingänge (bei Zählern jeder gezählte Eintrag) und ein Satz in einfachen Worten. Darüberfahren zeigt den Satz, Antippen oder Enter zeigt alles. Scenaria rechnet die Zahl aus den Eingängen nach und sagt, ob sie stimmt. Im Prüfpaket stehen die Herleitungen als Fußnoten, und `scenaria audit-file verify` rechnet sie nach. Ein Modell liefert nie eine dieser Zahlen.
 
 ## Fortschritt: wie weit ist die Arbeit? (v0.9.15)
 
@@ -171,7 +171,9 @@ Scenaria handelt danach: ab Gelb bekommt der Agent den Hinweis, keine große neu
 
 ## Hilfe und Einführung
 
-**?** oben rechts erklärt jede Funktion in einfachen Worten, und jeder Dialog hat sein eigenes **?**. Beim ersten Besuch führt eine kurze Einführung durch die ersten Schritte: Ziel, deine KI, Verlauf, Ansichten. Du kannst sie überspringen und über **Mehr → Einführung** jederzeit neu starten.
+**?** oben rechts erklärt jede Funktion in einfachen Worten, und jeder Dialog hat sein eigenes **?**. Beim ersten Besuch zeigt eine Einführung in fünf Bildern, wofür Scenaria da ist: sichern, nachsehen, zurückgehen, wer freigibt, loslegen. Du kannst sie überspringen und jederzeit neu starten: oben in der Hilfe (**?**), in der Einfach-Ansicht eines leeren Projekts oder über **Mehr → Einführung**. **Am Beispiel ausprobieren** öffnet ein erfundenes Projekt in der echten Einfach-Ansicht; dort kannst du alles anklicken, und an deinem eigenen Projekt und deinen Dateien ändert sich nichts.
+
+**Chat, Prognosen, Prognose-Prüfung und „Orakel befragen“ brauchen ein Sprachmodell.** Das Dashboard zeigt sie erst, wenn in den Einstellungen ein Modell eingerichtet ist, und kennzeichnet sie als experimentell. Nichts anderes braucht ein Modell.
 
 ## Kontext-Treue: sehen, wo Kontext abbrach, sich änderte oder manipuliert wurde
 
@@ -185,7 +187,7 @@ Marker zeigen, wo der Kontext **abbrach**, das **Hauptziel geändert** wurde, di
 
 Sichtbar wird Manipulation durch ein **Integritäts-Protokoll** (`.scenaria/ledger.jsonl`):
 - Jeder Schreibvorgang legt den Inhalts-Hash des Knotens ab, und die Zeilen bilden eine Hash-Kette.
-- Eine von Hand bearbeitete Knotendatei oder ein bearbeitetes Protokoll fällt auf: in `scenaria integrity`, im Projekt-Check und auf der Karte. Ein späterer Schreibvorgang wäscht eine Änderung nie rein.
+- Eine von Hand bearbeitete Knotendatei oder ein bearbeitetes Protokoll fällt auf: in `scenaria integrity`, in der Analyse und auf der Karte. Ein späterer Schreibvorgang wäscht eine Änderung nie rein.
 - Ein **Anker außerhalb des Projekts** (`~/.config/scenaria/anchors/`) merkt sich, welches Protokoll dieser Rechner kennt und wie weit es reicht. Ein gelöschtes, ersetztes, gekürztes, zurückgesetztes oder verlängertes Protokoll wird gemeldet.
 - **Zurücksetzen darf nur die Person** (`scenaria integrity --reseal` im Terminal oder der Knopf im Dashboard mit Freigabe-Link) – oder ein registrierter Prüfagent mit signiertem Antrag. Jedes Neuversiegeln wird signiert festgehalten; das alte Protokoll bleibt erhalten.
 - **Geprüft sagen dürfen nur du und ein registrierter Prüfagent.** Das „bestanden“ eines Agenten wird als selbst gemeldet angezeigt und zählt nie; ein „fehlgeschlagen“ zählt von jedem. Deine Urteile sind signiert und an genau den geprüften Inhalt gebunden.

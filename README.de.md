@@ -14,7 +14,7 @@
 - **Nichts geht verloren.** Ungespeicherte Arbeit wird vor jedem Schritt zurück gesichert. Auch ein Schritt zurück lässt sich rückgängig machen.
 - **Ein Baum für jedes Modell.** Claude, GPT, Gemini, Mistral, lokale Modelle über Ollama: Alle teilen einen Entscheidungsbaum und ein Protokoll, wer was getan hat.
 - **Nur du kannst „geprüft“ sagen.** Das eigene „bestanden“ eines Agenten wird als Selbstauskunft gezeigt und zählt nie. Deine Freigaben und Urteile sind mit einem Schlüssel signiert, der außerhalb des Projekts liegt.
-- **Ein Dashboard in einfachen Worten.** Drei Ansichten auf dieselben Daten: *Einfach* für den Alltag, *Prüfung* zum Kontrollieren, *Verwalten* für Einstellungen und Analyse. Deutsch und Englisch.
+- **Ein Dashboard in einfachen Worten.** Drei Ansichten auf dieselben Daten: *Einfach* für den Alltag, *Prüfung* zum Kontrollieren, *Steuerung* für Einstellungen und Analyse. Deutsch und Englisch.
 - **Nachweise für Audits.** Eine Prüfakte, geordnet nach den Annex-A-Kontrollen der ISO/IEC 42001, signiert und exportierbar. Die Zuordnung ist eigene Arbeit des Projekts und kein Zertifikat.
 - **Lokal, ohne Telemetrie.** Alles liegt in `.scenaria/` in deinem Projekt. Nichts verlässt deinen Rechner, außer du startest einen Team-Server.
 

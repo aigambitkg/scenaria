@@ -4,10 +4,13 @@
  * Progress of the tour lives only in this browser (localStorage, guarded) — never in the project.
  */
 import { useEffect, useMemo, useState } from "react";
-import { api, type SettingsPage } from "./api";
 import { Modal } from "./Dialogs";
 import { HELP, type HelpAction, type HelpTopic } from "./helpContent";
 import type { Dict } from "./i18n";
+import { TOUR } from "./tourText";
+
+/** Help topics about functions the dashboard shows only once a language model is set up. */
+export const NEEDS_MODEL = new Set(["forecasts", "forecast-check", "chat", "relay"]);
 
 const ONBOARDED = "scenaria.onboarded.v1";
 export function onboardingDone(): boolean {
@@ -79,10 +82,12 @@ function Topic({ t, x, open, onAction }: { t: Dict; x: HelpTopic; open: boolean;
   );
 }
 
-export function HelpDialog(props: { t: Dict; lang: "de" | "en"; topic?: string | null; onClose: () => void; onAction: (a: HelpAction) => void }) {
+export function HelpDialog(props: { t: Dict; lang: "de" | "en"; topic?: string | null; hasModel?: boolean; onClose: () => void; onAction: (a: HelpAction) => void }) {
   const { t } = props;
+  const x = TOUR[props.lang];
   const [q, setQ] = useState("");
-  const topics = HELP[props.lang];
+  // Topics about functions that need a language model say so in their title while none is set up.
+  const topics = useMemo(() => HELP[props.lang].map((h) => (!props.hasModel && NEEDS_MODEL.has(h.id) ? { ...h, title: `${h.title} ${t.needsModelTag}` } : h)), [props.lang, props.hasModel, t]);
   const shown = useMemo(() => {
     const s = q.trim().toLowerCase();
     if (!s) return topics;
@@ -94,6 +99,15 @@ export function HelpDialog(props: { t: Dict; lang: "de" | "en"; topic?: string |
   return (
     <Modal wide title={t.helpTitle} onClose={props.onClose}>
       <div className="modal-body help">
+        <div className="help-start">
+          <p>{x.introHint}</p>
+          <button className="btn primary" onClick={() => props.onAction("onboarding")}>
+            ▶ {x.startIntro}
+          </button>
+          <button className="btn" onClick={() => props.onAction("demo")}>
+            {x.startDemo}
+          </button>
+        </div>
         <p className="hint">{t.helpIntro}</p>
         <input className="help-search" type="search" value={q} placeholder={t.helpSearch} aria-label={t.helpSearch} onChange={(e) => setQ(e.target.value)} />
         <nav className="help-index" aria-label={t.helpTitle}>
@@ -119,177 +133,9 @@ export function HelpDialog(props: { t: Dict; lang: "de" | "en"; topic?: string |
   );
 }
 
-type StepId = "welcome" | "goal" | "agents" | "history" | "views" | "more";
-const STEPS: StepId[] = ["welcome", "goal", "agents", "history", "views", "more"];
-
-export function Onboarding(props: { t: Dict; lang: "de" | "en"; goal: string | null; onClose: () => void; onAction: (a: HelpAction) => void; onGoalSaved: () => void; toast: (m: string) => void }) {
-  const { t } = props;
-  const [i, setI] = useState(0);
-  const [goal, setGoal] = useState(props.goal ?? "");
-  const [settings, setSettings] = useState<SettingsPage | null>(null);
-  const [saving, setSaving] = useState(false);
-  useEffect(() => {
-    api.settings().then(setSettings).catch(() => {});
-  }, []);
-  const step = STEPS[i];
-  const connected = settings?.agents.filter((a) => a.connected) ?? [];
-  const done: Record<StepId, boolean> = {
-    welcome: true,
-    goal: Boolean(props.goal),
-    agents: connected.length > 0,
-    history: true,
-    views: true,
-    more: true,
-  };
-  const finish = () => {
-    setOnboardingDone(true);
-    props.onClose();
-  };
-  const go = (a: HelpAction) => {
-    setOnboardingDone(true);
-    props.onAction(a);
-  };
-  return (
-    <Modal title={`${t.obTitle} · ${i + 1}/${STEPS.length}`} onClose={finish}>
-      <div className="modal-body onboarding">
-        <ol className="ob-dots" aria-label={t.obProgress}>
-          {STEPS.map((s, k) => (
-            <li key={s} className={`${k === i ? "on" : ""} ${k !== 0 && done[s] && s !== "history" && s !== "views" && s !== "more" ? "ok" : ""}`}>
-              <button aria-label={`${k + 1}`} onClick={() => setI(k)} />
-            </li>
-          ))}
-        </ol>
-
-        {step === "welcome" && (
-          <>
-            <h3>{t.obWelcome}</h3>
-            <p>{t.obWelcomeText}</p>
-            <ul className="ob-list">
-              <li>🌳 {t.obPoint1}</li>
-              <li>🔮 {t.obPoint2}</li>
-              <li>⚑ {t.obPoint3}</li>
-              <li>★ {t.obPoint4}</li>
-            </ul>
-          </>
-        )}
-
-        {step === "goal" && (
-          <>
-            <h3>{done.goal ? "✓ " : ""}{t.obGoal}</h3>
-            <p>{t.obGoalText}</p>
-            <form
-              className="row"
-              onSubmit={async (e) => {
-                e.preventDefault();
-                if (!goal.trim()) return;
-                setSaving(true);
-                try {
-                  await api.setGoal(goal.trim());
-                  props.onGoalSaved();
-                  props.toast(t.obGoalSaved);
-                  setI(i + 1);
-                } catch (er: any) {
-                  props.toast(String(er?.message ?? er));
-                } finally {
-                  setSaving(false);
-                }
-              }}
-            >
-              <input className="grow" value={goal} placeholder={t.obGoalPlaceholder} onChange={(e) => setGoal(e.target.value)} aria-label={t.obGoal} />
-              <button className="btn primary" type="submit" disabled={!goal.trim() || saving}>
-                {t.save}
-              </button>
-            </form>
-          </>
-        )}
-
-        {step === "agents" && (
-          <>
-            <h3>{done.agents ? "✓ " : ""}{t.obAgents}</h3>
-            <p>{t.obAgentsText}</p>
-            {settings && <p className="muted small">{connected.length ? `${t.obConnected}: ${connected.map((a) => a.label).join(", ")}` : t.obNoAgent}</p>}
-            <div className="row">
-              <button className="btn" onClick={() => go("prompt")}>
-                {t.obCopyPrompt}
-              </button>
-              <button className="btn" onClick={() => go("settings")}>
-                {t.obConnectAgents}
-              </button>
-            </div>
-            <p className="muted small">{t.obAgentsCli}</p>
-          </>
-        )}
-
-        {step === "history" && (
-          <>
-            <h3>{t.obHistory}</h3>
-            <p>{t.obHistoryText}</p>
-          </>
-        )}
-
-        {step === "views" && (
-          <>
-            <h3>{t.obViews}</h3>
-            <p>{t.obViewsText}</p>
-            {settings && (
-              <p className="muted small">
-                {settings.effective.chat ? `${t.obModelNow}: ${settings.effective.chat.provider}/${settings.effective.chat.model}` : t.obNoModel}
-              </p>
-            )}
-            <button className="btn" onClick={() => go("settings")}>
-              {t.obChooseModel}
-            </button>
-          </>
-        )}
-
-        {step === "more" && (
-          <>
-            <h3>{t.obMore}</h3>
-            <ul className="ob-list">
-              <li>
-                <strong>⚑ {t.canon}</strong> — {t.obCanonText}{" "}
-                <button className="btn link" onClick={() => go("canon")}>
-                  → {t.obOpen}
-                </button>
-              </li>
-              <li>
-                <strong>★ {t.xTabExpert}</strong> — {t.obExpertText}{" "}
-                <button className="btn link" onClick={() => go("expert")}>
-                  → {t.obOpen}
-                </button>
-              </li>
-              <li>
-                <strong>▾ {t.pjHint}</strong> — {t.obProjectsText}
-              </li>
-              <li>
-                <strong>?</strong> — {t.obHelpText}
-              </li>
-            </ul>
-          </>
-        )}
-      </div>
-      <div className="modal-foot">
-        <button className="btn link" onClick={finish}>
-          {t.obSkip}
-        </button>
-        <span className="grow" />
-        {i > 0 && (
-          <button className="btn" onClick={() => setI(i - 1)}>
-            {t.obBack}
-          </button>
-        )}
-        {i < STEPS.length - 1 ? (
-          <button className="btn primary" onClick={() => setI(i + 1)}>
-            {t.obNext}
-          </button>
-        ) : (
-          <button className="btn primary" onClick={finish}>
-            {t.obDone}
-          </button>
-        )}
-      </div>
-    </Modal>
-  );
+/** The introduction itself is Tour.tsx; this file only remembers, in this browser, whether it was seen. */
+export function markOnboardingDone() {
+  setOnboardingDone(true);
 }
 
 export function restartOnboarding() {

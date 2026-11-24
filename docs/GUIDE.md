@@ -157,7 +157,7 @@ Click the project name at the top to see your Scenaria projects on this computer
 
 The dashboard has three views on the same data:
 - **Simple** (the default): your history in plain words, by day. *Back to this state* returns your files to any saved state (with *Undo*), *What did the AI do?* shows the request, the result and the changed files, and any state opens as a folder.
-- **Audit**: the scenario map with rules and milestones, the project check, the protocol and the **audit file** (ISO/IEC 42001).
+- **Audit**: the scenario map with rules and milestones, the analysis, the protocol and the **audit file** (ISO/IEC 42001).
 - **Manage**: chat, analysis and **Extensions** (forecasts, forecast audit, relay).
 
 ## ISO/IEC 42001 audit file (v0.9.6–0.9.13)
@@ -172,7 +172,7 @@ An auditor finds every one of the 38 Annex A controls in one place: what this pr
 
 ## Every number with its derivation (v0.9.14)
 
-Next to context fidelity, the project check and the audit file's counts there is **ⓘ How computed?**: the formula with its version, the inputs (for counts every counted item) and one sentence in plain words. Hovering shows the sentence; a tap or Enter shows everything. Scenaria recomputes the number from the inputs and says whether it matches. In the audit package the derivations are footnotes, and `scenaria audit-file verify` recomputes them. A model never supplies one of these numbers.
+Next to context fidelity, the analysis and the audit file's counts there is **ⓘ How computed?**: the formula with its version, the inputs (for counts every counted item) and one sentence in plain words. Hovering shows the sentence; a tap or Enter shows everything. Scenaria recomputes the number from the inputs and says whether it matches. In the audit package the derivations are footnotes, and `scenaria audit-file verify` recomputes them. A model never supplies one of these numbers.
 
 ## Progress: how far along is the work? (v0.9.15)
 
@@ -190,7 +190,9 @@ Scenaria acts on it: from yellow the agent is told not to start a large new part
 
 ## Help and introduction
 
-**?** (top right) explains every function in plain words, and every dialog has its own **?**. On the first visit a short introduction (goal → your AI → history → views) gets you going. You can skip it, and restart it from **More → Introduction**.
+**?** (top right) explains every function in plain words, and every dialog has its own **?**. On the first visit an introduction in five pictures shows what Scenaria is for: saving, looking, going back, who approves, getting started. You can skip it and start it again at any time: at the top of the help (**?**), in the Simple view of an empty project, or under **More → Introduction**. **Try it on an example** opens an invented project in the real Simple view; you can click everything there, and nothing in your own project or your files changes.
+
+**Chat, forecasts, the forecast audit and “Ask the oracle” need a language model.** The dashboard shows them only once a model is set up in the settings, and marks them as experimental. Nothing else needs a model.
 
 ## Context fidelity: see where context broke, changed or was manipulated
 

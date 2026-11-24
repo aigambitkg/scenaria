@@ -1,3 +1,4 @@
+import { localizeEngineList, localizeEngineText, localizeEventType, localizeVerdict } from "./localize";
 import { LockedNote, ReadOnlyContext, useApprovalSignal } from "./Approval";
 import { HelpButton } from "./HelpButton";
 import { Why, WhyList } from "./Why";
@@ -152,6 +153,7 @@ export function ProtocolDialog(props: { t: Dict; events: ScenariaEvent[]; onSele
   return (
     <Modal wide title={t.protocol} onClose={props.onClose}>
       <div className="modal-body">
+        {t.langCode === "de" && <p className="hint">{t.protocolNote}</p>}
         <table className="log">
           <thead>
             <tr>
@@ -168,14 +170,14 @@ export function ProtocolDialog(props: { t: Dict; events: ScenariaEvent[]; onSele
                 e.type === "rewind"
                   ? `${d.from ?? "?"} → ${d.to}${d.autosave ? ` (autosave ${d.autosave})` : ""}${d.lesson ? ` — ${d.lesson}` : ""}`
                   : e.type === "verify"
-                    ? `${d.status}${d.notes ? ` — ${d.notes}` : ""}`
+                    ? `${localizeVerdict(String(d.status), t.langCode)}${d.notes ? ` — ${d.notes}` : ""}`
                     : e.type === "branch"
                       ? `${d.decision} · option ${d.option}`
-                      : d.message ?? "";
+                      : localizeEngineText(d.message ?? "", t.langCode);
               return (
                 <tr key={i}>
                   <td className="muted">{new Date(e.ts).toLocaleString()}</td>
-                  <td>{e.type}</td>
+                  <td>{localizeEventType(e.type, t.langCode)}</td>
                   <td>
                     {e.nodeId ? (
                       <button className="btn link" onClick={() => props.onSelect(e.nodeId!)}>
@@ -1137,7 +1139,7 @@ export function CanonDialog(props: { t: Dict; lang: "de" | "en"; toast: (m: stri
               {t.canonVerdict}: {t.canonVerdicts[verdict.verdict]}
             </strong>{" "}
             <span className="muted">{verdict.string}</span>
-            {verdict.reasons.length > 0 && <p className="small">{verdict.reasons.join(" · ")}</p>}
+            {verdict.reasons.length > 0 && <p className="small">{localizeEngineList(verdict.reasons, t.langCode).join(" · ")}</p>}
           </section>
         )}
         <GateSection t={t} locked={locked} toast={props.toast} onNode={props.onSelectNode} onChanged={() => reload().catch(() => {})} reloadKey={events} />

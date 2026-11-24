@@ -2,7 +2,7 @@
  * The help area: every function in plain words — what it is, when it helps, how to use it, one example.
  * Kept as data (DE/EN) so the help dialog, the onboarding and the "?" buttons share one source.
  */
-export type HelpAction = "goal" | "forecasts" | "audit" | "auditfile" | "analysis" | "expert" | "canon" | "progress" | "window" | "chat" | "relay" | "settings" | "prompt" | "conversations" | "protocol" | "projects" | "onboarding";
+export type HelpAction = "goal" | "forecasts" | "audit" | "auditfile" | "analysis" | "expert" | "canon" | "progress" | "window" | "chat" | "relay" | "settings" | "prompt" | "conversations" | "protocol" | "projects" | "onboarding" | "connect" | "demo";
 
 export interface HelpTopic {
   id: string;
@@ -28,9 +28,9 @@ const de: HelpTopic[] = [
     when: "Immer, wenn Agenten länger an einem Projekt arbeiten, mehrere Agenten oder Modelle beteiligt sind oder Entscheidungen nachvollziehbar sein sollen.",
     how: [
       "Hauptziel festlegen (oben in der Leiste) – alles wird daran gemessen.",
-      "Einen Agenten verbinden (Mehr → Agent-Prompt, oder scenaria start im Projektordner).",
+      "Deine KI verbinden (Zahnrad ⚙ → „Deine KI verbinden“, oder scenaria start im Projektordner).",
       "Arbeiten lassen: Checkpoints und Entscheidungen erscheinen live im Baum.",
-      "Vor einer Wahl die Prognose ansehen, Fixpunkte freigeben, ab und zu die Experten-Analyse laufen lassen.",
+      "Bei Bedarf: unter „Regeln & Meilensteine“ festlegen, was immer gelten muss, und ab und zu in die Analyse schauen.",
     ],
     terms: [
       ["Knoten (n12)", "Ein Schritt im Baum. Klick darauf zeigt Details, Kontext und Dateien."],
@@ -208,7 +208,7 @@ const de: HelpTopic[] = [
 
   {
     id: "canon",
-    title: "Fixpunkte (Kanon)",
+    title: "Regeln & Meilensteine (Fixpunkte)",
     what: "Fixpunkte sind Dinge, die feststehen: Vorgaben, Entscheidungen, Zusagen. Agenten bekommen sie in ihren Kontext; Linien, die einen harten Fixpunkt brechen, sind ungültig.",
     how: [
       "Kanon öffnen → „Archivar fragen“: er schlägt Fixpunkte aus der Historie vor.",
@@ -391,9 +391,9 @@ const en: HelpTopic[] = [
     when: "Whenever agents work on a project for a while, several agents or models are involved, or decisions should be traceable.",
     how: [
       "Set the main goal (top bar) — everything is measured against it.",
-      "Connect an agent (More → Agent prompt, or scenaria start in the project folder).",
+      "Connect your AI (gear ⚙ → “Connect your AI”, or scenaria start in the project folder).",
       "Let it work: checkpoints and decisions appear live in the tree.",
-      "Look at the forecast before a choice, approve fixed points, run the expert analysis now and then.",
+      "When needed: write down under “Rules & milestones” what must always hold, and look at the analysis now and then.",
     ],
     terms: [
       ["Node (n12)", "One step in the tree. Click it for details, context and files."],
@@ -571,7 +571,7 @@ const en: HelpTopic[] = [
 
   {
     id: "canon",
-    title: "Fixed points (canon)",
+    title: "Rules & milestones (fixed points)",
     what: "Fixed points are things that are settled: constraints, decisions, commitments. Agents get them in their context; lines that break a hard fixed point are invalid.",
     how: [
       "Open Canon → \"Ask the archivist\": it proposes fixed points from the history.",

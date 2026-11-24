@@ -88,6 +88,8 @@ export function WindowCard({ ws, t, lang, onHandover, onOpenWindow }: { ws: Wind
   const urgent = w?.zone === "red" || w?.zone === "emergency";
   // "Scenaria has saved" only when a save of red or higher is on the current line (not after a rewind, not if it failed).
   const saved = Boolean(w?.cuts.some((c) => c.onLine && (c.zone === "red" || c.zone === "emergency")));
+  // Nothing measured and nothing to say (measuring needs Claude Code or the LLM proxy): no card in the Simple view.
+  if (!w && !st && !ws.progress?.warning && !ws.progress?.escalation && ws.settings.trust !== "invalid") return null;
   return (
     <section className="sv-card cw-card" aria-label={t.cwSimpleTitle}>
       <h2>{t.cwSimpleTitle}</h2>
