@@ -96,6 +96,23 @@ function writeJson(file: string, data: unknown) {
   writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
 }
 
+/**
+ * Run Claude Code's own command line. On Windows it is `claude.cmd` (npm) or `claude.exe`, and a `.cmd` only
+ * starts through the shell; the arguments are Scenaria's own (fixed words and the paths of this installation).
+ * A path with a character the Windows shell would act on is not passed to it: the caller then shows the command
+ * to run by hand.
+ */
+function runClaude(args: string[]): { status: number | null; stdout: string; stderr: string } {
+  if (process.platform !== "win32") {
+    const r = spawnSync("claude", args, { encoding: "utf8" });
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  }
+  if (args.some((a) => /["%&|<>^!\r\n]/.test(a))) return { status: null, stdout: "", stderr: "a path of this installation holds a character the Windows shell would act on" };
+  const line = ["claude", ...args].map((a) => (/[\s()]/.test(a) ? `"${a}"` : a)).join(" ");
+  const r = spawnSync(line, { encoding: "utf8", shell: true, windowsHide: true });
+  return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+}
+
 /** Quote a path for the hook shell: single quotes on POSIX (no $, ` or \\ expansion), double quotes on Windows. */
 const q = (s: string) => (process.platform === "win32" ? `"${s.replace(/"/g, '\\"')}"` : `'${s.replace(/'/g, "'\\''")}'`);
 
@@ -436,10 +453,10 @@ export function setupGlobal(targets: Target[], home = homedir()): SetupResult {
     if (onPath("claude")) {
       // Name BEFORE -e (the -e option is variadic); only replace an existing entry if adding fails because it exists.
       const addArgs = ["mcp", "add", "--scope", "user", "scenaria", "-e", "SCENARIA_AGENT=claude-code", "--", ...SELF, "mcp"];
-      let add = spawnSync("claude", addArgs, { encoding: "utf8" });
+      let add = runClaude(addArgs);
       if (add.status !== 0 && /already exists/i.test(`${add.stderr}${add.stdout}`)) {
-        spawnSync("claude", ["mcp", "remove", "--scope", "user", "scenaria"], { stdio: "ignore" });
-        add = spawnSync("claude", addArgs, { encoding: "utf8" });
+        runClaude(["mcp", "remove", "--scope", "user", "scenaria"]);
+        add = runClaude(addArgs);
       }
       if (add.status === 0) r.changes.push('Claude Code → MCP server "scenaria" (user scope, all projects)');
       else r.notes.push(`Could not run "claude mcp add" (${(add.stderr || "").trim()}). Run: claude mcp add --scope user scenaria -- ${CLI_DISPLAY} mcp`);

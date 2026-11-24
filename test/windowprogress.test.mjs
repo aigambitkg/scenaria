@@ -469,7 +469,10 @@ test("E4a review H3: the check before every tool call is cheap, whatever the len
   const t0 = performance.now();
   for (let i = 0; i < 20; i++) assert.ok(stopState(Scenaria.open(p.dir)));
   const ms = (performance.now() - t0) / 20;
-  assert.ok(ms < 30, `the hook's check took ${ms.toFixed(1)} ms`);
+  // The point is "independent of the length of the records", checked below; the limit only catches a relapse
+  // into reading them. File access on Windows (and its virus scanner) costs a multiple of macOS and Linux.
+  const limit = process.platform === "win32" ? 150 : 30;
+  assert.ok(ms < limit, `the hook's check took ${ms.toFixed(1)} ms`);
 });
 
 test("E4a review M5: a window whose task waits for the person is not judged; M6: rows are per agent", async () => {

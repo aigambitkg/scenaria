@@ -1,0 +1,6 @@
+# One kind of line ending everywhere. Without this, git on Windows checks text files out with CRLF:
+# shell scripts stop working, and tests that read source files see different text than on macOS and Linux.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.png binary
+*.woff2 binary

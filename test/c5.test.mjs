@@ -11,7 +11,7 @@ import { buildAuditFile } from "../dist/core/auditfile.js";
 import { exportAuditFile, verifyAuditExport } from "../dist/core/auditexport.js";
 import { writeAuditPackage } from "../dist/core/auditpackage.js";
 import { signRecord } from "../dist/core/canon.js";
-import { tempProject } from "./helpers.mjs";
+import { tempProject, importPath } from "./helpers.mjs";
 
 const ROOT = join(import.meta.dirname, "..");
 const CLI = join(ROOT, "dist", "cli.js");
@@ -48,8 +48,8 @@ test("C5 S-K1: a loop in the parent links never hangs the audit file; it raises 
     }
     // In a child process with a time limit: an endless loop would block this test process for good.
     const code = `
-      const { Scenaria } = await import(${JSON.stringify(join(ROOT, "dist/core/index.js"))});
-      const { buildAuditFile } = await import(${JSON.stringify(join(ROOT, "dist/core/auditfile.js"))});
+      const { Scenaria } = await import(${importPath(join(ROOT, "dist/core/index.js"))});
+      const { buildAuditFile } = await import(${importPath(join(ROOT, "dist/core/auditfile.js"))});
       const s = Scenaria.open(${JSON.stringify(p.dir)});
       const f = buildAuditFile(s);
       console.log(JSON.stringify({ state: f.integrity.state, w: f.integrity.warnings.map((w) => [w.code, w.items]) }));`;
@@ -238,15 +238,15 @@ test("C5: a damaged (too short) auditor-mode key is replaced on disk, never kept
   const { dirname } = await import("node:path");
   const env = { ...process.env, SCENARIA_HOME: home };
   // Where the global config lives under this home.
-  const where = spawnSync(process.execPath, ["--input-type=module", "-e", `const { globalConfigPath } = await import(${JSON.stringify(join(ROOT, "dist/core/global.js"))}); console.log(globalConfigPath());`], { encoding: "utf8", env });
+  const where = spawnSync(process.execPath, ["--input-type=module", "-e", `const { globalConfigPath } = await import(${importPath(join(ROOT, "dist/core/global.js"))}); console.log(globalConfigPath());`], { encoding: "utf8", env });
   const keyFile = join(dirname(where.stdout.trim()), "auditview.key");
   const { mkdirSync } = await import("node:fs");
   mkdirSync(dirname(keyFile), { recursive: true });
   writeFileSync(keyFile, Buffer.from("short"));
   const { p } = project();
   const code = `
-    const { Scenaria } = await import(${JSON.stringify(join(ROOT, "dist/core/index.js"))});
-    const { createApp } = await import(${JSON.stringify(join(ROOT, "dist/server.js"))});
+    const { Scenaria } = await import(${importPath(join(ROOT, "dist/core/index.js"))});
+    const { createApp } = await import(${importPath(join(ROOT, "dist/server.js"))});
     const { createServer } = await import("node:http");
     const s = Scenaria.open(${JSON.stringify(p.dir)});
     const app = createApp(s, { approvalCode: "c", approvalSecret: "sess", openApproval: async () => ({ opened: true }), auditViewEveryMs: 0 });
@@ -326,7 +326,7 @@ test("C5 R1: a reader without the lock never sees a false alarm while another pr
   const home = mkdtempSync(join(tmpdir(), "c5-race-home-"));
   const dir = mkdtempSync(join(tmpdir(), "c5-race-"));
   const env = { ...process.env, SCENARIA_HOME: home };
-  const idx = JSON.stringify(join(ROOT, "dist/core/index.js"));
+  const idx = importPath(join(ROOT, "dist/core/index.js"));
   const setup = spawnSync(process.execPath, ["--input-type=module", "-e", `
     const { Scenaria } = await import(${idx});
     const { writeFileSync } = await import("node:fs");

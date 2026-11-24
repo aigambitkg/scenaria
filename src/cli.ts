@@ -1532,7 +1532,12 @@ async function main() {
         let target = p[1];
         let found = "";
         if (!target) {
-          const newest = findNewestExport(process.cwd());
+          // Name the real folder (on Windows the working folder can be a short "8.3" spelling like RUNNER~1).
+          let here = process.cwd();
+          try {
+            here = (await import("node:fs")).realpathSync.native(here);
+          } catch {}
+          const newest = findNewestExport(here);
           if (!newest) throw new Error("No audit file in this folder. Usage: scenaria audit-file verify [<file.json> | <package folder>]");
           target = newest.path;
           found = newest.others ? ` (${newest.others} other audit file(s) here — name one to check it)` : "";

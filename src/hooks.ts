@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { preToolHookWired as wiredCheck } from "./setup.js";
 import { appendFileSync, existsSync, readFileSync, statSync } from "node:fs";
 import { Scenaria } from "./core/engine.js";
@@ -535,7 +536,7 @@ export async function handleHook(event: string, input: HookInput): Promise<strin
         const note = input.source !== "resume" ? sessionStartNote(s, AGENT) : null;
         // During a stop: is the hook before every tool still wired? (A restored older state of .claude/ could have put
         // it back to the shell only — review 3, M3.) Scenaria says it; it never rewrites the person's settings here.
-        const wiring = stopState(s) && !wiredCheck(root, process.env.HOME) ? " [Scenaria stop] Warning: the hook before every tool (PreToolUse, matcher \"*\") is not set up in this project's or your Claude Code settings — the stop is not enforced. Ask the person to run \"scenaria start\" again." : "";
+        const wiring = stopState(s) && !wiredCheck(root, homedir()) ? " [Scenaria stop] Warning: the hook before every tool (PreToolUse, matcher \"*\") is not set up in this project's or your Claude Code settings — the stop is not enforced. Ask the person to run \"scenaria start\" again." : "";
         const open = input.source !== "resume" ? s.openTaskWithCriteria() : null;
         const cont = open ? continueNote(s, open) : null;
         if (cont) updSession((cur) => (cur.toldTask = open!));

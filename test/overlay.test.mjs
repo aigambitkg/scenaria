@@ -6,7 +6,7 @@ import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Scenaria } from "../dist/core/index.js";
 import { createApp } from "../dist/server.js";
@@ -14,7 +14,7 @@ import { createMcpServer } from "../dist/mcp.js";
 import { isPlausibleProject } from "../dist/core/global.js";
 import { parseImport } from "../dist/ingest.js";
 import { streamMessage, conversationKey } from "../dist/proxy.js";
-import { tempProject } from "./helpers.mjs";
+import { tempProject, homeEnv, useHome } from "./helpers.mjs";
 
 const CLI = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 const cli = (dir, args, env = {}, input) => spawnSync(process.execPath, [CLI, ...args], { cwd: dir, encoding: "utf8", input, env: { ...process.env, ...env } });
@@ -385,7 +385,7 @@ test("scenaria start: wires agents, baseline, dashboard and auto-save in one com
   const p = tempProject();
   execFileSync("git", ["init", "-q"], { cwd: p.dir });
   const port = 4600 + Math.floor(Math.random() * 300);
-  const child = spawn(process.execPath, [CLI, "start", "--no-open", "--port", String(port), "--for", "cursor"], { cwd: p.dir, env: { ...process.env, HOME: join(p.dir, "home") } });
+  const child = spawn(process.execPath, [CLI, "start", "--no-open", "--port", String(port), "--for", "cursor"], { cwd: p.dir, env: { ...process.env, ...homeEnv(join(p.dir, "home")) } });
   let out = "";
   child.stdout.on("data", (d) => (out += d));
   try {
@@ -442,7 +442,7 @@ test("setup --global writes user-level configs into HOME, enables auto-init, and
   const home = join(tmpdir(), `scenaria-home-${Date.now()}`);
   mkdirSync(join(home, ".cursor"), { recursive: true });
   writeFileSync(join(home, ".cursor", "mcp.json"), JSON.stringify({ mcpServers: { other: { command: "x" } } }));
-  const env = { HOME: home, PATH: process.env.PATH, SCENARIA_HOME: "", XDG_CONFIG_HOME: "" };
+  const env = { ...homeEnv(home), PATH: process.env.PATH, SCENARIA_HOME: "", XDG_CONFIG_HOME: "" };
   delete env.SCENARIA_HOME;
   delete env.XDG_CONFIG_HOME;
   const r = spawnSync(process.execPath, [CLI, "setup", "--global", "--for", "cursor,gemini,codex"], { cwd: home, encoding: "utf8", env });
@@ -466,12 +466,11 @@ test("setup --global writes user-level configs into HOME, enables auto-init, and
   assert.equal(existsSync(join(home, ".scenaria")), false);
   // Scenaria refuses home and config folders
   assert.notEqual(spawnSync(process.execPath, [CLI, "start", "--no-open"], { cwd: home, encoding: "utf8", env }).status, 0);
-  const realHome = process.env.HOME;
-  process.env.HOME = home; // os.homedir() follows HOME on POSIX
+  const restoreHome = useHome(home); // os.homedir() follows HOME on POSIX and USERPROFILE on Windows
   try {
     assert.equal(isPlausibleProject(join(home, ".codex")), false, "agent config folders are never projects");
   } finally {
-    process.env.HOME = realHome;
+    restoreHome();
   }
 });
 
@@ -480,9 +479,25 @@ test("claude mcp add: name before -e, existing entry replaced only when needed",
   const bin = join(home, "bin");
   mkdirSync(bin, { recursive: true });
   const log = join(home, "claude-args.log");
-  writeFileSync(join(bin, "claude"), `#!/bin/sh\necho "$@" >> "${log}"\ncase "$*" in *"mcp add"*) if [ -f "${home}/exists" ]; then rm "${home}/exists"; echo "MCP server scenaria already exists" >&2; exit 1; fi;; esac\nexit 0\n`, { mode: 0o755 });
+  // A stand-in for Claude Code's command line: it notes its arguments and refuses the first "mcp add" as existing.
+  // The logic is a small Node script; `claude` (macOS, Linux) and `claude.cmd` (Windows) only start it.
+  writeFileSync(
+    join(bin, "claude.js"),
+    `const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(log)}, args.join(" ") + "\\n");
+const exists = ${JSON.stringify(join(home, "exists"))};
+if (args.join(" ").includes("mcp add") && fs.existsSync(exists)) {
+  fs.rmSync(exists);
+  console.error("MCP server scenaria already exists");
+  process.exit(1);
+}
+`,
+  );
+  writeFileSync(join(bin, "claude"), `#!/bin/sh\nexec "${process.execPath}" "${join(bin, "claude.js")}" "$@"\n`, { mode: 0o755 });
+  writeFileSync(join(bin, "claude.cmd"), `@echo off\r\n"${process.execPath}" "%~dp0claude.js" %*\r\n`);
   writeFileSync(join(home, "exists"), "");
-  const env = { HOME: home, PATH: `${bin}:${process.env.PATH}` };
+  const env = { ...homeEnv(home), PATH: `${bin}${delimiter}${process.env.PATH}` };
   const r = spawnSync(process.execPath, [CLI, "setup", "--global", "--for", "claude"], { cwd: home, encoding: "utf8", env });
   assert.equal(r.status, 0, r.stderr);
   const calls = readFileSync(log, "utf8").trim().split("\n");

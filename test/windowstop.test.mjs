@@ -14,9 +14,11 @@ import { createApp } from "../dist/server.js";
 import { allowedDuringStop } from "../dist/hooks.js";
 import { stopState, windowProgress } from "../dist/core/windowprogress.js";
 import { setupAgents } from "../dist/setup.js";
-import { tempProject } from "./helpers.mjs";
+import { tempProject, useHome } from "./helpers.mjs";
 
 process.env.SCENARIA_HOME = mkdtempSync(join(tmpdir(), "scenaria-home-"));
+// An empty home folder: whether the hook is wired must not depend on the real ~/.claude/settings.json of this machine.
+useHome(mkdtempSync(join(tmpdir(), "scenaria-userhome-")));
 const CLI = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 const cli = (dir, args, input) => spawnSync(process.execPath, [CLI, ...args], { cwd: dir, encoding: "utf8", input, env: { ...process.env, CLAUDE_PROJECT_DIR: dir } });
 const line = (o) => JSON.stringify(o) + "\n";
