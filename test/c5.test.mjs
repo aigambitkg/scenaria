@@ -335,7 +335,8 @@ test("C5 R1: a reader without the lock never sees a false alarm while another pr
     s.startMission({ projectGoal: "G", title: "T", goal: "g" });
     for (let i = 0; i < 10; i++) s.checkpoint({ title: "c" + i, outputs: ["x"], agent: "a" });`], { env, encoding: "utf8" });
   assert.equal(setup.status, 0, setup.stderr);
-  const SECS = 6;
+  // Saving a state takes longer on Windows (starting git costs more there): more time for the same overlap.
+  const SECS = process.platform === "win32" ? 18 : 6;
   const run = (code) =>
     new Promise((res) => {
       let out = "";

@@ -67,6 +67,7 @@ node dist/cli.js start # dashboard, approval link opened in the browser (in a pr
 ```
 
 - **Node:** ≥ 20.
+- **Windows:** CI runs the whole suite on Windows too (about 30 minutes). What keeps code and tests working there: find the home folder with `os.homedir()`, never `process.env.HOME`; in tests point "home" somewhere with `setHome()` / `homeEnv()` from `test/helpers.mjs` (both `HOME` and `USERPROFILE`); give `import()` a file URL (`importUrl()`), never a bare path; a path inside a shell script or a git config goes through `shPath()`; never start a `.cmd` file without the shell.
 - Tests use a temporary `SCENARIA_HOME` (`test/helpers.mjs`), so they never touch the real `~/.config/scenaria`.
 - **Known flaky test:** `watch fingerprint writes no git objects while idle`. It is timing-sensitive, failed once on macOS and passed on rerun.
 - **macOS specifics** (CI runs on macOS too; two failures there were fixed on 2026-10-15):

@@ -36,12 +36,10 @@ jobs:
       - name: No known vulnerabilities in what users install
         run: npm audit --omit=dev --audit-level=moderate
 
-  # Windows is built and tested on every change so problems show up, but it does not block yet:
-  # the test suite was written on macOS and Linux. Make this job required once it is green.
+  # Windows runs the same suite. It takes about 30 minutes there (starting git costs more on Windows),
+  # so it has its own job with a longer limit.
   windows:
-    name: windows (informational)
     runs-on: windows-latest
-    continue-on-error: true
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4

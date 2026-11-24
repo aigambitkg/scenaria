@@ -46,7 +46,7 @@ Please read this before you rely on Scenaria for confidential work. The full lis
 - **Team mode is basic.** One shared token for agents, one for approvers, no user accounts, no roles and no TLS of its own. Run it only inside a trusted network and behind a reverse proxy with HTTPS.
 - **Data at rest.** Recorded conversations, snapshots (which follow your `.gitignore`, so check that secrets are ignored there) and the tree are plain, unencrypted files in `.scenaria/`.
 - **Downloads.** Release files come with `SHA256SUMS`, and the install scripts check them. This catches a damaged or swapped file; it does not help if the release itself was compromised. The binaries are not signed with an Apple or Microsoft developer certificate yet, so your system may warn.
-- **Windows is experimental.** The test suite, including the security tests, does not pass there yet.
+- **Windows is newer than macOS and Linux.** The whole test suite, including the security tests, runs on Windows in CI. What a test cannot show there (the installer, the start icon, opening the browser, work with real agents) has not been tried by hand on a Windows desktop yet.
 - **No external audit yet.** The code was reviewed part by part by independent AI reviewer agents and is covered by tests, but no external security firm has audited it.
 - **No certificate.** The ISO/IEC 42001 audit file orders evidence by the standard's controls. The mapping is the project's own work and was not reviewed by an accredited body.
 

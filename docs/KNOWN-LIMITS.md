@@ -12,7 +12,7 @@ What Scenaria does not do, does not detect or does not protect against — writt
 - **Team mode is simple:** one shared token for agents and one for approvers, no user accounts or roles, no TLS of its own (put it behind a reverse proxy with HTTPS).
 - **Data at rest is not encrypted.** Recorded conversations, snapshots and the tree are plain files in `.scenaria/` inside the project. Use disk encryption and keep `.scenaria/` out of shared or public repositories (the default `.gitignore` does).
 - **Chat, forecasts, the forecast audit and “Ask the oracle” are experimental.** They ask a language model the person sets up, and how good the answers are depends on that model; they were checked with a stand-in model for the mechanics only, not yet systematically with real models. The dashboard shows them only once a model is set up. Saving, looking, going back, approving, rules and the audit file need no model.
-- **Windows is experimental.** Scenaria builds there, but in CI (November 2026) 12 of the automated tests failed on Windows and the run did not finish within 25 minutes (audit package paths, setup of agent configs, a few dashboard checks). macOS and Linux are the tested systems.
+- **Windows is newer than macOS and Linux.** The whole test suite runs on Windows in CI (since November 2026), including the tests that nothing in the project folder is run with the person's rights. Not yet tried by hand on a Windows desktop: `install.ps1` (CI only checks that it is valid PowerShell), the start icon, opening the browser, and work with real agents. Saving a state takes noticeably longer than on macOS and Linux, because starting git costs more on Windows.
 
 ## Integrity and verdicts (0.9.2)
 
