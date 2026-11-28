@@ -405,7 +405,7 @@ Global flags: `--root`, `--json`, `--agent`, `--model`, `--user`.
   blobs/             deduplicated file cache for the folders (git-ignored)
   kb/n7.md           Obsidian-compatible note per node
   protocol.md        human-readable audit protocol
-  shadow.git/        private snapshot repository (git-ignored)
+  shadow.git/        the saved file states (git-ignored; its settings live in ~/.config/scenaria/shadow)
 ```
 
 Your own `.git`, branches, index and stash are never touched, unless you opt into `mirror`, which adds only `refs/scenaria/*`. Conversations stay local and git-ignored by default. Add `.scenaria/` to your project's `.gitignore` if you don't want the tree itself committed.

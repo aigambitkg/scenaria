@@ -1,6 +1,6 @@
 {
   "name": "scenaria",
-  "version": "0.9.24",
+  "version": "0.9.25",
   "description": "Approval and evidence for the work of AI agents: every step recorded, only the person approves (signed), an audit file ordered by ISO/IEC 42001 Annex A, and a way back to every earlier state. Any LLM, local first; MCP, HTTP, CLI and a dashboard.",
   "type": "module",
   "bin": {
@@ -64,20 +64,20 @@
   "author": "Kevin Grundmann <kevin.grundmann@ai-gambit.com> (AI-Gambit)",
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "zod": "^4.6.6"
   },
   "devDependencies": {
     "@fontsource-variable/instrument-sans": "^5.3.0",
     "@fontsource/stix-two-text": "^5.3.0",
-    "@types/node": "^26.6.5",
+    "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "@vitejs/plugin-react": "^6.1.2",
-    "@xyflow/react": "^12.12.0",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "@xyflow/react": "^13.0.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "typescript": "^7.0.2",
-    "vite": "^8.3.4"
+    "vite": "^8.3.8"
   }
 }

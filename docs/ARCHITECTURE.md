@@ -96,11 +96,14 @@ Children of a decision carry `viaOption`, which records the option they continue
 
 ## Snapshots
 
-`git` runs with `GIT_DIR=.scenaria/shadow.git`, `GIT_WORK_TREE=<project>` and `GIT_INDEX_FILE=.scenaria/shadow.index`:
+`git` runs with `GIT_DIR=~/.config/scenaria/shadow/<hash of the project's real path>` (the control folder: config, HEAD, refs, `info/exclude`), `GIT_OBJECT_DIRECTORY=.scenaria/shadow.git/objects`, `GIT_WORK_TREE=<project>` and `GIT_INDEX_FILE=.scenaria/shadow.index`:
+
+- **Two places since 0.9.25.** The file states (objects) and the index stay in the project: they move with the folder, and an agent in a sandbox and the person's dashboard both reach them. The control files are outside the project, so git never reads settings an agent could write (`ShadowRepo`, `shadowControlDir` in `core/snapshot.ts`). The control folder is created on first use and can be deleted at any time: the refs are written anew from the steps (`Scenaria.syncRefs`), the exclude list from the project config. `.scenaria/shadow.git` is still created as a plain bare repository (older versions keep working on it); of its config Scenaria itself reads four yes/no file-system facts (`fileSystemFacts`) and passes them as `-c` options.
+- **A control folder that cannot be used** (`ShadowControlError`) switches snapshots off: `Scenaria.repo` is null and `Scenaria.snapshotIssue` says why (`status().snapshotIssue`, `/api/graph`, the banner in the dashboard, the CLI). There is no fallback into the project.
 
 - Snapshot: `add -A` → `write-tree` → `commit-tree` → `update-ref refs/scenaria/<id>`. The ref pins it against garbage collection.
 - Restore: `add -A` (the index learns about new files), then `read-tree -u --reset <commit>`. This restores modified and deleted files and removes files that were created after the snapshot. Ignored files stay untouched.
-- The project's `.gitignore` is honored. `.scenaria/` is excluded by an explicit pathspec (`:(top,literal,exclude).scenaria`) on every `add`, so even allowlist-style ignores (`*`, `!*/`) cannot pull it in; a restore refuses any tree that contains it. Extra patterns (`node_modules/`, …) go to `info/exclude`. The project's own `.git` is never read or written, and `GIT_*` variables from a surrounding git process are stripped.
+- The project's `.gitignore` is honored. `.scenaria/` is excluded by an explicit pathspec (`:(top,literal,exclude).scenaria`) on every `add`, so even allowlist-style ignores (`*`, `!*/`) cannot pull it in; a restore refuses any tree that contains it. Extra patterns (`node_modules/`, …) go to `info/exclude` in the control folder. The project's own `.git` is never read or written, and `GIT_*` variables from a surrounding git process are stripped.
 - **Ignored files are never overwritten silently.** Before a restore, Scenaria lists files on disk that the target would overwrite but that are not part of the current snapshot (ignored files at the same path, or a file where the target has a folder). They are force-added to the autosave first, so they can be recovered.
 - Nested repositories without commits are excluded with a warning on the node; nested repos with commits are stored as a commit pointer (also flagged).
 
@@ -497,7 +500,7 @@ The person's projects are remembered in `~/.config/scenaria/projects.json` (dash
 
 **Nothing in the project folder runs with the person's rights.** The project folder, including `.scenaria/`, is writable by agents, while the dashboard, the HTTP API and the hooks often run under the person's account. Therefore:
 - every git call on a repository in the project carries `SAFE_GIT` (`core/snapshot.ts`): no hooks, no `core.fsmonitor`, no alternate-refs command, no signing program, no `ext::` transport; comparisons run with `--no-ext-diff --no-textconv`;
-- before git reads it, the config of `.scenaria/shadow.git` is reduced to the plain `[core]` settings `git init` writes (`cleanShadowConfig`); anything else (filter and diff drivers, includes, URL rewrites) is removed and logged (`security: "shadow_config_cleaned"`). This check and git's own read are two steps: a program that rewrites the file at exactly that moment is not stopped (see `SECURITY.md`, known limits);
+- the shadow repository's control files (config, HEAD, refs, exclude list) live outside the project (since 0.9.25, see "Snapshots"); git is never pointed at `.scenaria/shadow.git` as its `GIT_DIR`, so a config, an attributes file or a hook placed there is not read. A control folder that would lie inside the project is refused;
 - a step's folder name from a step file never leads out of `.scenaria/` (`insideScenaria`), and "open as folder" only shows the folder in the file manager (`showFolderCommand`; on macOS `open -R`, so a folder that is an application bundle is never launched).
 
 Tests: `test/execguard.test.mjs`.

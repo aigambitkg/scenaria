@@ -97,7 +97,7 @@ export const TOOLS: ToolDef[] = [
         `HEAD: ${st.head ? `${st.head.id} [${st.head.type}${st.head.scenarioId ? ` ${st.head.scenarioId}/v${st.head.version}` : ""}] ${st.head.title}` : "—"}${st.dirty ? " (unsaved file changes)" : ""}`,
         `tasks ${st.counts.tasks}, decisions ${st.counts.decisions}, checkpoints ${st.counts.checkpoints}, branches ${st.counts.branches}, verified ${st.counts.verified}, failed ${st.counts.failed}, rules ${st.rules}`,
         st.counts.withoutRationale ? `quality: ${st.counts.withoutRationale} decision(s) without rationale` : "",
-        st.snapshots ? "" : "warning: git not found, file snapshots disabled",
+        st.snapshots ? "" : `warning: ${st.snapshotIssue?.message ?? "file snapshots are off"}${st.snapshotIssue?.code === "control_folder" ? " — tell the user; only the person can fix this" : ""}`,
       ]
         .filter(Boolean)
         .join("\n");

@@ -112,6 +112,8 @@ export interface Graph {
   root: string;
   version: number;
   snapshots: boolean;
+  /** Why file snapshots are off (null or missing: they work, or git is missing). */
+  snapshotIssue?: { code: "git_missing" | "control_folder"; folder?: string; reason?: string; platform?: string } | null;
 }
 
 async function req<T>(path: string, body?: unknown): Promise<T> {

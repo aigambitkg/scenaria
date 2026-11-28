@@ -6,13 +6,22 @@ What Scenaria does not do, does not detect or does not protect against — writt
 
 - **Tamper-evident, not tamper-proof.** A program running with the person's full user rights can read the person's signing key, fake a terminal or drive the person's browser. Scenaria cannot protect against that.
 - **Agents belong in a sandbox.** Scenaria's guarantees ("only a person approves", signed records) assume that the agent, and every process it starts, has no access to the Scenaria config folder (`~/.config/scenaria`) and does not start Scenaria under the person's account. Scenaria does not set up that sandbox; `scenaria start` wires agents under the account it runs in.
-- **The shadow repository lives in the project folder.** Scenaria removes foreign settings from its config before every git call and switches off hooks and other programs (`SAFE_GIT`). A program that rewrites that config at exactly the moment git starts could still have a filter driver run with the rights of the Scenaria process. Moving this file out of the project folder is planned.
+- **The saved file states live in the project folder** (`.scenaria/shadow.git/objects`), so they move with it and an agent in a sandbox and the person's dashboard both reach them. An agent can delete or damage them there; Scenaria reports such a state as missing (`snapshot_missing`) and cannot restore it. The repository's settings (config, exclude list, refs) are outside the project since 0.9.25, see the section below.
 - **Not audited by a third party.** The reviews named here were done by independent AI reviewer agents, not by an external security firm.
 - **The ISO/IEC 42001 mapping is the project's own.** It was not reviewed by an accredited certification body and is no certificate. Scenaria evidences how AI agents worked in a project; it does not evidence how models are developed or trained, nor an organisation's policies.
 - **Team mode is simple:** one shared token for agents and one for approvers, no user accounts or roles, no TLS of its own (put it behind a reverse proxy with HTTPS).
 - **Data at rest is not encrypted.** Recorded conversations, snapshots and the tree are plain files in `.scenaria/` inside the project. Use disk encryption and keep `.scenaria/` out of shared or public repositories (the default `.gitignore` does).
 - **Chat, forecasts, the forecast audit and “Ask the oracle” are experimental.** They ask a language model the person sets up, and how good the answers are depends on that model; they were checked with a stand-in model for the mechanics only, not yet systematically with real models. The dashboard shows them only once a model is set up. Saving, looking, going back, approving, rules and the audit file need no model.
 - **Windows is experimental.** Scenaria builds there, but in CI (November 2026) 12 of the automated tests failed on Windows and the run did not finish within 25 minutes (audit package paths, setup of agent configs, a few dashboard checks). macOS and Linux are the tested systems.
+
+## Snapshot repository: control files outside the project (0.9.25)
+
+- If Scenaria cannot use its own folder (`~/.config/scenaria/shadow`: missing rights, a file in its place, a read-only home), **nothing is saved** until the person fixed it. The dashboard, `scenaria status`, `scenaria start` and the agents' status say so and name what to check on that system. Scenaria does not fall back to control files in the project.
+- The refs (`refs/scenaria/*`) are kept per machine and account. They are written anew from the steps when needed (the mirror does it); a tool that reads `.scenaria/shadow.git` directly sees only the refs from before 0.9.25.
+- Do not run `git gc` or `git prune` by hand inside `.scenaria/shadow.git`: seen from there, states saved since 0.9.25 have no ref and would be removed. Scenaria itself never runs them.
+- An older Scenaria version working on the same project still reads and writes (it uses the old control files in the project), but without this protection. Update every installation, also the one an agent uses.
+- File-system facts (upper/lower case, execute bit, symlinks) are taken as four yes/no values from `.scenaria/shadow.git/config`, read by Scenaria, not by git. An agent that changes them can make a save record wrong file modes or names; it cannot make git run anything.
+- Checked on Linux with git 2.43. macOS and Windows run the same tests in CI; a project path with a line break in its name cannot be mirrored.
 
 ## Integrity and verdicts (0.9.2)
 
