@@ -1,8 +1,9 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { accessSync, constants as fsc, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, sep } from "node:path";
 import { devNull } from "node:os";
 import { createHash } from "node:crypto";
+import { globalConfigPath } from "./global.js";
 import type { Snapshot } from "./types.js";
 
 /**
@@ -11,7 +12,8 @@ import type { Snapshot } from "./types.js";
  * Files in the project (also `.scenaria/shadow.git`) can be written by an agent, while Scenaria often runs
  * under the person's account (dashboard, hooks). Git would run programs named in such a repository: hooks,
  * `core.fsmonitor`, an alternate-refs command, a signing program, the `ext::` transport. These options
- * switch all of that off; they win over the repository's own config.
+ * switch all of that off; they win over the repository's own config. For the shadow repository they are a
+ * second line: its config lives outside the project (see `ShadowRepo`).
  */
 export const SAFE_GIT: readonly string[] = [
   "-c", `core.hooksPath=${devNull}`,
@@ -23,37 +25,91 @@ export const SAFE_GIT: readonly string[] = [
   "-c", "gc.auto=0",
 ];
 
-/** The only settings a shadow repository needs; everything else in its config is removed (see `cleanShadowConfig`). */
-const SHADOW_CORE_KEYS = new Set(["repositoryformatversion", "filemode", "bare", "ignorecase", "precomposeunicode", "symlinks", "logallrefupdates"]);
+/** What git found out about the project's file system at `git init` (the only settings taken from the project). */
+const FS_FACTS = new Set(["filemode", "ignorecase", "precomposeunicode", "symlinks"]);
 
 /**
- * The shadow repository's config reduced to the plain `[core]` settings git itself writes at `git init`.
- * Returns the cleaned text when anything else was in it (a filter or diff driver, an include, a URL rewrite, …:
- * settings that make git run programs or read other files), otherwise null. Deliberately strict: a line it
- * does not recognise is dropped.
+ * The file-system facts from a git config text, as `-c core.<key>=<true|false>` options.
+ *
+ * The control files of the shadow repository live outside the project, on a file system that can differ from
+ * the project's (case, execute bit, symlinks). Git wrote the project's facts into `.scenaria/shadow.git/config`
+ * at `git init`; only those four yes/no values are read from that file, by this function, never by git itself.
+ * Anything else in the text is ignored.
  */
-export function cleanShadowConfig(text: string): string | null {
-  const keep: string[] = [];
+export function fileSystemFacts(text: string): string[] {
+  const facts = new Map<string, string>();
   let inCore = false;
-  let dirty = false;
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
-    if (!line || line.startsWith("#") || line.startsWith(";")) continue;
     if (line.startsWith("[")) {
       inCore = /^\[core\]$/i.test(line);
-      if (!inCore) dirty = true;
       continue;
     }
-    const m = /^([A-Za-z][A-Za-z0-9-]*)\s*=\s*([A-Za-z0-9]+)$/.exec(line);
-    if (inCore && m && SHADOW_CORE_KEYS.has(m[1].toLowerCase())) keep.push(`\t${m[1]} = ${m[2]}`);
-    else dirty = true;
+    const m = /^([A-Za-z]+)\s*=\s*(true|false)$/i.exec(line);
+    if (inCore && m && FS_FACTS.has(m[1].toLowerCase())) facts.set(m[1].toLowerCase(), m[2].toLowerCase());
   }
-  return dirty ? `[core]\n${keep.join("\n")}${keep.length ? "\n" : ""}` : null;
+  return [...facts].flatMap(([k, v]) => ["-c", `core.${k}=${v}`]);
+}
+
+/** Why file snapshots are off (shown to the person and to agents). */
+export interface SnapshotIssue {
+  code: "git_missing" | "control_folder";
+  /** The folder Scenaria could not use (`control_folder`). */
+  folder?: string;
+  /** `inside_project`: the folder lies in the project; otherwise what the system said. */
+  reason?: string;
+  /** The system Scenaria runs on (`process.platform`), for a fitting suggestion. */
+  platform?: string;
+}
+
+/** The issue in plain English, with what to check on this system (CLI and agents; the dashboard has its own texts). */
+export function snapshotIssueText(issue: SnapshotIssue): string {
+  if (issue.code === "git_missing") return "file snapshots are off: git was not found";
+  const dir = issue.folder ?? "";
+  if (issue.reason === "inside_project") {
+    return `file snapshots are off: Scenaria's own folder "${dir}" lies inside this project. Please check: start Scenaria with SCENARIA_HOME set to a folder outside the project, or open a subfolder as the project.`;
+  }
+  const check =
+    issue.platform === "win32"
+      ? `in PowerShell, icacls "${dir}" shows who may write there; or in the Explorer: right-click the folder, Properties, Security`
+      : `in a terminal, ls -ld "${dir}" shows the owner and the rights; chmod u+rwx "${dir}" gives your account access`;
+  const why: Record<string, string> = { EACCES: "no permission", EPERM: "no permission", ENOTDIR: "a file is in the way", EEXIST: "a file is in the way", EROFS: "the drive is read-only", ENOSPC: "the drive is full" };
+  const reason = issue.reason ? why[issue.reason] ?? issue.reason : "";
+  return `file snapshots are off: Scenaria cannot use its own folder "${dir}"${reason ? ` (${reason})` : ""}. Please check that it exists and that your account may write to it: ${check}.`;
+}
+
+/** The control folder of a shadow repository cannot be used; file snapshots stay off until the person fixed it. */
+export class ShadowControlError extends Error {
+  readonly issue: SnapshotIssue;
+  constructor(folder: string, reason: string) {
+    const issue: SnapshotIssue = { code: "control_folder", folder, reason, platform: process.platform };
+    super(snapshotIssueText(issue));
+    this.issue = issue;
+  }
+}
+
+function real(p: string) {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    return p;
+  }
+}
+
+/** Where the control files of a project's shadow repository live: in Scenaria's own folder, never in the project. */
+export function shadowControlDir(root: string): string {
+  const h = createHash("sha256").update(real(root)).digest("hex").slice(0, 20);
+  return join(dirname(globalConfigPath()), "shadow", h);
 }
 
 /**
- * File snapshots via a private "shadow" git repository inside `.scenaria/`.
+ * File snapshots via a private "shadow" git repository.
  *
+ * - The saved file states (git objects) and the index live in the project, in `.scenaria/`: they travel with
+ *   the folder, and an agent in a sandbox and the person's dashboard both reach them.
+ * - The control files (config, HEAD, refs, exclude list) live outside the project, in Scenaria's own folder
+ *   (`shadowControlDir`). Git reads its settings only from there; the config in `.scenaria/shadow.git` is never
+ *   read by git (rule 13). The refs can be rebuilt from the steps at any time (`resetRefs`).
  * - Works in any folder (with or without its own git repo).
  * - Never touches the project's own `.git`, index, branches or stash.
  * - Honors the project's .gitignore files. `.scenaria/` is excluded by an explicit
@@ -62,18 +118,23 @@ export function cleanShadowConfig(text: string): string | null {
  */
 export class ShadowRepo {
   readonly root: string;
-  readonly gitDir: string;
+  /** Control files (config, HEAD, refs, info): outside the project. This is git's `GIT_DIR`. */
+  readonly controlDir: string;
+  /** `.scenaria/shadow.git` in the project: the file states (`objects/`); the rest of it is not used any more. */
+  readonly dataDir: string;
+  readonly objectDir: string;
   readonly indexFile: string;
   /** Paths excluded at runtime (e.g. nested repos without commits). */
   private runtimeExcludes = new Set<string>();
   private warnings = new Set<string>();
-  /** Called when the shadow repository's config held settings Scenaria never writes (they were removed). */
-  onConfigCleaned?: (message: string) => void;
-  private configSeen = "";
+  private facts: string[] | null = null;
 
-  constructor(root: string, scenariaDir: string) {
+  /** `controlDir` is for tests; everything else uses the folder `shadowControlDir` names. */
+  constructor(root: string, scenariaDir: string, controlDir: string = shadowControlDir(root)) {
     this.root = root;
-    this.gitDir = join(scenariaDir, "shadow.git");
+    this.controlDir = controlDir;
+    this.dataDir = join(scenariaDir, "shadow.git");
+    this.objectDir = join(this.dataDir, "objects");
     this.indexFile = join(scenariaDir, "shadow.index");
   }
 
@@ -82,13 +143,32 @@ export class ShadowRepo {
     return r.status === 0;
   }
 
+  /** Are there stored file states in this project folder? (A copy or clone without `.scenaria/shadow.git` has none.) */
   get initialized() {
-    return existsSync(join(this.gitDir, "HEAD"));
+    return existsSync(this.objectDir);
+  }
+
+  /** Environment for git calls that only read stored file states (no work tree, no index). */
+  readEnv(): NodeJS.ProcessEnv {
+    const env = cleanEnv();
+    env.GIT_DIR = this.controlDir;
+    env.GIT_OBJECT_DIRECTORY = this.objectDir;
+    return env;
+  }
+
+  /** The project's file-system facts as git options (see `fileSystemFacts`); read once per process. */
+  private fsFacts(): string[] {
+    if (this.facts) return this.facts;
+    try {
+      this.facts = fileSystemFacts(readFileSync(join(this.dataDir, "config"), "utf8").slice(0, 4096));
+    } catch {
+      this.facts = [];
+    }
+    return this.facts;
   }
 
   private env() {
-    const env = cleanEnv();
-    env.GIT_DIR = this.gitDir;
+    const env = this.readEnv();
     env.GIT_WORK_TREE = this.root;
     env.GIT_INDEX_FILE = this.indexFile;
     // Untranslated git messages: the parsers below match English text.
@@ -120,55 +200,89 @@ export class ShadowRepo {
     }
   }
 
-  /**
-   * Before git reads it: remove everything from the shadow repository's config that Scenaria did not put there.
-   * This is a second line behind `SAFE_GIT`; a program that rewrites the file at exactly the moment git starts
-   * is not stopped by it (documented in SECURITY.md).
-   */
-  private guardConfig() {
-    const file = join(this.gitDir, "config");
-    try {
-      const st = statSync(file);
-      const mark = `${st.ino}:${st.size}:${st.mtimeMs}`;
-      if (mark === this.configSeen) return;
-      const cleaned = cleanShadowConfig(readFileSync(file, "utf8"));
-      if (cleaned !== null) {
-        writeFileSync(file, cleaned);
-        try {
-          this.onConfigCleaned?.("the config of .scenaria/shadow.git held settings Scenaria never writes (changed outside Scenaria); they were removed before git ran");
-        } catch {}
-      }
-      const now = statSync(file);
-      this.configSeen = `${now.ino}:${now.size}:${now.mtimeMs}`;
-    } catch {}
-  }
-
   private runOnce(args: string[], input?: string, maxBuffer?: number) {
-    this.guardConfig();
     return spawnSync(
       "git",
-      [...SAFE_GIT, "-c", "core.autocrlf=false", "-c", "core.quotepath=false", "-c", "advice.addEmbeddedRepo=false", "-c", "core.safecrlf=false", ...args],
+      [...SAFE_GIT, ...this.fsFacts(), "-c", "core.autocrlf=false", "-c", "core.quotepath=false", "-c", "advice.addEmbeddedRepo=false", "-c", "core.safecrlf=false", ...args],
       { cwd: this.root, env: this.env(), encoding: "utf8", input, maxBuffer: maxBuffer ?? 128 * 1024 * 1024 },
     );
   }
 
+  /**
+   * Make the shadow repository ready: the data folder in the project, the control folder outside it, the
+   * exclude list. Cheap when everything is there. Throws `ShadowControlError` when the control folder cannot be
+   * used; then nothing is saved (never a fallback to control files inside the project).
+   */
   init(exclude: string[] = []) {
-    if (!this.initialized) {
-      mkdirSync(this.gitDir, { recursive: true });
-      execFileSync("git", ["init", "-q", "--bare", this.gitDir], { stdio: "ignore", env: cleanEnv() });
+    if (!existsSync(join(this.dataDir, "HEAD")) || !existsSync(this.objectDir)) {
+      mkdirSync(this.dataDir, { recursive: true });
+      // As before: a plain bare repository in the project. Git writes the project's file-system facts into its
+      // config here; later git calls never read that config (their GIT_DIR is the control folder).
+      execFileSync("git", [...SAFE_GIT, "init", "-q", "--bare", this.dataDir], { stdio: "ignore", env: cleanEnv() });
+      mkdirSync(this.objectDir, { recursive: true });
+      this.facts = null;
     }
+    this.ensureControl();
     this.writeExcludes(exclude);
+  }
+
+  private ensureControl() {
+    const dir = this.controlDir;
+    const rootReal = real(this.root);
+    const inside = (p: string) => p === rootReal || p.startsWith(rootReal.endsWith(sep) ? rootReal : rootReal + sep);
+    if (inside(real(dirname(dir))) || inside(real(dir))) throw new ShadowControlError(dir, "inside_project");
+    try {
+      if (!existsSync(join(dir, "HEAD"))) {
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+        // Asked again now that the folder exists (a link on the way there is resolved only then).
+        if (inside(real(dir))) throw new ShadowControlError(dir, "inside_project");
+        // No template: no sample hooks, nothing from the person's `init.templateDir`.
+        execFileSync("git", ["init", "-q", "--bare", "--template=", dir], { stdio: ["ignore", "ignore", "pipe"], env: cleanEnv(), encoding: "utf8" });
+      }
+      accessSync(dir, fsc.R_OK | fsc.W_OK);
+      // For `git fetch` from the control folder (mirror): where the file states are. Scenaria's own calls name
+      // the object folder directly (GIT_OBJECT_DIRECTORY).
+      const alt = join(dir, "objects", "info", "alternates");
+      const line = this.objectDir.split(sep).join("/") + "\n";
+      if (!/[\r\n]/.test(this.objectDir) && !/^["#]/.test(line)) {
+        let have = "";
+        try {
+          have = readFileSync(alt, "utf8");
+        } catch {}
+        if (have !== line) {
+          mkdirSync(dirname(alt), { recursive: true });
+          writeFileSync(alt, line);
+        }
+      }
+    } catch (e: any) {
+      if (e instanceof ShadowControlError) throw e;
+      throw new ShadowControlError(dir, String(e?.code ?? e?.stderr ?? e?.message ?? e).trim().split("\n")[0].slice(0, 160));
+    }
   }
 
   writeExcludes(exclude: string[]) {
     const lines = ["# managed by scenaria (.scenaria/ is excluded by pathspec)", ...exclude];
-    const file = join(this.gitDir, "info", "exclude");
+    const file = join(this.controlDir, "info", "exclude");
     const next = lines.join("\n") + "\n";
     try {
       if (existsSync(file) && readFileSync(file, "utf8") === next) return;
     } catch {}
-    mkdirSync(join(this.gitDir, "info"), { recursive: true });
-    writeFileSync(file, next);
+    try {
+      mkdirSync(join(this.controlDir, "info"), { recursive: true });
+      writeFileSync(file, next);
+    } catch (e: any) {
+      throw new ShadowControlError(this.controlDir, String(e?.code ?? e?.message ?? e).slice(0, 160));
+    }
+  }
+
+  /**
+   * Forget every ref in the control folder. Refs only name file states the steps name anyway; the caller
+   * writes them again from the steps (`Scenaria.syncRefs`). Used before the mirror, so that refs left by an
+   * earlier project in this folder, or missing on this machine, cannot get in the way.
+   */
+  resetRefs() {
+    rmSync(join(this.controlDir, "refs", "scenaria"), { recursive: true, force: true });
+    rmSync(join(this.controlDir, "packed-refs"), { force: true });
   }
 
   /** A hook killed mid-operation can leave git's index lock behind; clear it if clearly orphaned. */
@@ -362,8 +476,7 @@ export class ShadowRepo {
     if (!this.hasObject(commit)) throw new Error(`Snapshot ${commit.slice(0, 10)} not found in shadow repo`);
     const env = { ...this.env(), GIT_WORK_TREE: dir, GIT_INDEX_FILE: join(dir, ".scenaria-export-index") };
     for (const args of [["read-tree", commit], ["checkout-index", "-a", "-f"]]) {
-      this.guardConfig();
-      const r = spawnSync("git", [...SAFE_GIT, "-c", "core.autocrlf=false", ...args], { cwd: dir, env, encoding: "utf8" });
+      const r = spawnSync("git", [...SAFE_GIT, ...this.fsFacts(), "-c", "core.autocrlf=false", ...args], { cwd: dir, env, encoding: "utf8" });
       if (r.status !== 0) throw new Error(`git ${args[0]} failed: ${(r.stderr || "").trim()}`);
     }
     rmSync(join(dir, ".scenaria-export-index"), { force: true });

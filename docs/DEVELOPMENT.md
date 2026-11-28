@@ -53,6 +53,7 @@ Every review so far has enforced these. Treat them as hard requirements.
 13. **Nothing in the project folder runs with the person's rights.** The project folder, including `.scenaria/`, is writable by agents, while the dashboard, the HTTP API and the hooks often run under the person's account.
     - A shell command that comes from a project file (`verifyCommand`, a check command) runs only after the person saw its text and started it: canon checks are adopted and signed, `verifyCommand` runs only from `scenaria verify --run` at an interactive terminal.
     - Every git call on a repository in the project carries `SAFE_GIT` (`core/snapshot.ts`); never call git on project files without it.
+    - Git never gets `.scenaria/shadow.git` as its `GIT_DIR`: the shadow repository's control files live outside the project (`shadowControlDir`), only the objects and the index are in it. Use `ShadowRepo.git()` or `ShadowRepo.readEnv()`; if the control folder cannot be used, snapshots are off (`snapshotIssue`), never a fallback into the project.
     - A path read from a project file is checked before it is opened, written or shown (`insideScenaria`, `showFolderCommand`).
     - Tests: `test/execguard.test.mjs`. A new way to start a program or open a path needs a test there.
 
@@ -96,7 +97,7 @@ node dist/cli.js start # dashboard, approval link opened in the browser (in a pr
 | File | Role |
 |---|---|
 | `engine.ts` | The `Scenaria` class: missions, decide, choose, checkpoint, rewind, fork, verify, update. `remember()` keeps the field history (`meta.fieldHistory`) used for leak-free backtests. |
-| `store.ts`, `types.ts`, `ledger.ts`, `snapshot.ts` | Storage, data model, integrity ledger, shadow-git snapshots. `snapshot.ts` also holds `SAFE_GIT` and `cleanShadowConfig` (rule 13). |
+| `store.ts`, `types.ts`, `ledger.ts`, `snapshot.ts` | Storage, data model, integrity ledger, shadow-git snapshots. `snapshot.ts` also holds `SAFE_GIT`, the control folder outside the project (`shadowControlDir`, `ShadowControlError`, `SnapshotIssue`) and `fileSystemFacts` (rule 13). |
 | **`verdict.ts`**, **`trust.ts`** | **Rule 11:** verdict origins, what counts, signature and work-hash checks (`verdict.ts` has no imports: shared with the UI). |
 | **`seal.ts`** | Anchor outside the project (genesis, high-water mark, used requests), reseal records, seal findings. |
 | **`auditors.ts`** | Registered audit agents: registry, signed requests (verdict / reseal), key generation. |
