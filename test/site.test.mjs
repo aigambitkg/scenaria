@@ -24,9 +24,13 @@ test("landing page: German and English have the same texts, and none is empty", 
   assert.match(INSTALL[1], /npm install && npm run build && npm link$/);
   assert.match(INSTALL[2], /scenaria start$/);
   assert.deepEqual(INSTALL.slice(0, 2), INSTALL_EN.slice(0, 2));
-  // No promise the product does not keep: the status names preview, Windows and the missing external audit.
-  assert.match(SITE.de.status, /Vorschau[\s\S]*Windows[\s\S]*experimentell[\s\S]*Dritten/);
-  assert.match(SITE.en.status, /preview[\s\S]*Windows[\s\S]*experimental[\s\S]*third party/);
+  // No promise the product does not keep: the status names the preview, that Windows is the newest, and the missing external audit.
+  assert.match(SITE.de.status, /Vorschau[\s\S]*Windows[\s\S]*am jüngsten[\s\S]*Dritten/);
+  assert.match(SITE.en.status, /preview[\s\S]*Windows[\s\S]*newest[\s\S]*third party/);
+  // … and that claim rests on CI: Windows is a required job there, not an informational one.
+  const ci = read(".github/workflows/ci.yml");
+  assert.match(ci, /runs-on: windows-latest/);
+  assert.doesNotMatch(ci, /continue-on-error/);
   for (const lang of ["de", "en"]) assert.doesNotMatch(texts(SITE[lang]).join(" "), /zertifiziert|certified|100 ?%|garantiert|guaranteed|unhackable|manipulationssicher|tamper-proof/i);
   assert.match(SITE.de.forWhom[2].what, /kein Zertifikat/);
 });

@@ -14,10 +14,9 @@ import { fileSystemFacts, SAFE_GIT, ShadowControlError, ShadowRepo, shadowContro
 import { insideScenaria, showFolderCommand } from "../dist/core/folders.js";
 import { createApp } from "../dist/server.js";
 import { callTool } from "../dist/tools.js";
-import { tempProject } from "./helpers.mjs";
+import { tempProject, shPath } from "./helpers.mjs";
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "cli.js");
-const posix = process.platform !== "win32";
 
 function project() {
   const p = tempProject();
@@ -99,11 +98,12 @@ test("verifyCommand: with the person's go (commandBy) it still runs", () => {
   assert.equal(n.verification.checks.find((c) => c.name.startsWith("command")).status, "passed");
 });
 
-test("shadow repository: planted hooks and fsmonitor never run when Scenaria saves, compares or restores", { skip: !posix }, () => {
+// Also on Windows: Git for Windows runs hooks and drivers through its own sh, so the same plants apply there.
+test("shadow repository: planted hooks and fsmonitor never run when Scenaria saves, compares or restores", () => {
   const { p, s, cp } = project();
   const git = join(p.dir, ".scenaria", "shadow.git");
   const hookMark = join(p.dir, "..", `hook-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
-  const script = `#!/bin/sh\necho ran >> "${hookMark}"\n`;
+  const script = `#!/bin/sh\necho ran >> "${shPath(hookMark)}"\n`;
   mkdirSync(join(git, "hooks"), { recursive: true });
   for (const h of ["reference-transaction", "post-index-change", "pre-commit", "post-checkout", "pre-auto-gc"]) {
     writeFileSync(join(git, "hooks", h), script);
@@ -112,13 +112,20 @@ test("shadow repository: planted hooks and fsmonitor never run when Scenaria sav
   const fsm = join(p.dir, ".scenaria", "fsm.sh");
   writeFileSync(fsm, script);
   chmodSync(fsm, 0o755);
-  writeFileSync(join(git, "config"), `${readFileSync(join(git, "config"), "utf8")}\n[core]\n\tfsmonitor = ${fsm}\n\thooksPath = ${join(git, "hooks")}\n`);
+  writeFileSync(join(git, "config"), `${readFileSync(join(git, "config"), "utf8")}\n[core]\n\tfsmonitor = ${shPath(fsm)}\n\thooksPath = ${shPath(join(git, "hooks"))}\n`);
   const s2 = Scenaria.open(p.dir);
   p.write("a.txt", "2");
   const cp2 = s2.checkpoint({ title: "c2" });
   s2.diff(cp.id, cp2.id);
   s2.rewind(cp.id, {});
   assert.equal(existsSync(hookMark), false, "a program planted in .scenaria/shadow.git ran");
+  // Control: the plant is real on this system. The same repository, called by git WITHOUT Scenaria's options,
+  // does run the planted hook — so the lines above pass because of the options, not because nothing could run.
+  // (The refs live outside the project; the saved state itself is in this repository's objects.)
+  const sha = cp2.snapshot.commit;
+  assert.match(sha, /^[0-9a-f]{40}$/);
+  spawnSync("git", ["--git-dir", git, "update-ref", "refs/control/plant", sha], { encoding: "utf8" });
+  assert.equal(existsSync(hookMark), true, "control: without Scenaria's options git runs the planted hook");
 });
 
 /** Runs `fn` with another Scenaria home (the folder outside the project), then puts the old one back. */
@@ -148,11 +155,11 @@ test("shadow repository: its control files live outside the project folder", () 
   assert.match(readFileSync(join(control, "info", "exclude"), "utf8"), /node_modules/);
 });
 
-test("shadow repository: a filter driver planted in the project never runs, also not in a process that is already running", { skip: !posix }, () => {
+test("shadow repository: a filter driver planted in the project never runs, also not in a process that is already running", () => {
   const { p, s, cp } = project();
   const git = join(p.dir, ".scenaria", "shadow.git");
   const mark = join(p.dir, "..", `filter-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
-  const planted = `[core]\n\tbare = true\n[filter "x"]\n\tclean = sh -c 'echo ran >> "${mark}"; cat'\n\tsmudge = sh -c 'echo ran >> "${mark}"; cat'\n\tprocess = sh -c 'echo ran >> "${mark}"'\n[include]\n\tpath = ../evil.cfg\n`;
+  const planted = `[core]\n\tbare = true\n[filter "x"]\n\tclean = sh -c 'echo ran >> "${shPath(mark)}"; cat'\n\tsmudge = sh -c 'echo ran >> "${shPath(mark)}"; cat'\n\tprocess = sh -c 'echo ran >> "${shPath(mark)}"'\n[include]\n\tpath = ../evil.cfg\n`;
   const plant = () => {
     writeFileSync(join(git, "config"), planted);
     mkdirSync(join(git, "info"), { recursive: true });
@@ -265,7 +272,7 @@ test("shadow repository: a control folder that cannot be used switches saving of
     assert.ok(st.snapshotIssue.folder.startsWith(join(home, "shadow")));
     assert.match(st.snapshotIssue.message, /file snapshots are off/);
     assert.ok(st.snapshotIssue.message.includes(st.snapshotIssue.folder));
-    assert.match(st.snapshotIssue.message, posix ? /ls -ld .*chmod u\+rwx/ : /icacls .*Properties, Security/);
+    assert.match(st.snapshotIssue.message, process.platform !== "win32" ? /ls -ld .*chmod u\+rwx/ : /icacls .*Properties, Security/);
     // Nothing is saved, and Scenaria does not fall back to control files in the project.
     s.startMission({ title: "m" });
     const cp = s.checkpoint({ title: "c" });

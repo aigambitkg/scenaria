@@ -75,6 +75,9 @@ export class Ledger {
   read(): { lines: LedgerLine[]; brokenAt: number | null; torn: number } {
     if (!existsSync(this.file)) return { lines: [], brokenAt: null, torn: 0 };
     const st = statSync(this.file);
+    // Something that is not a file sits where the ledger belongs (a folder, a device): that is an error on every
+    // system. (Windows would open a folder and read nothing, which would look like an emptied ledger.)
+    if (!st.isFile()) throw new Error("the ledger is not a file");
     const hit = READ_CACHE.get(this.file);
     // Same file (inode) that only grew → parse just the new bytes; a replaced file → parse from scratch.
     // An in-place edit of older lines is still caught: a full re-parse at least every 30 s, and whenever

@@ -414,7 +414,7 @@ test("S2-1: --print-approval-link is refused without a person's terminal; the op
   const src = readFileSync(join(import.meta.dirname, "..", "src", "server.ts"), "utf8");
   assert.match(src, /"\/usr\/bin\/open"/, "macOS opener by absolute path");
   assert.match(src, /delete env\.BROWSER/, "no BROWSER redirect");
-  assert.match(src, /launch\(cmd, args, openerEnv\(\)\)/);
+  assert.match(src, /launch\(cmd, browserArgs\(url\), openerEnv\(\)\)/);
 });
 
 test("S2-3: changing the project id in config.json neither imports another project's rules nor unsigns this one's", () => {

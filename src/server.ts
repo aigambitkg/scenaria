@@ -564,7 +564,7 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
         // Batch E2: progress per task and for the project, each with its derivation (read-only, computed from evidence).
         if (req.method === "GET" && p === "/api/progress") return send(res, 200, projectProgress(s));
         // Batch E3a-1: how full the agents' context windows are, each number with its derivation (read-only, measured).
-        if (req.method === "GET" && p === "/api/windows") return send(res, 200, { ...windowStatus(s), progress: { ...windowProgress(s), hookWired: preToolHookWired(s.store.root, process.env.HOME) } });
+        if (req.method === "GET" && p === "/api/windows") return send(res, 200, { ...windowStatus(s), progress: { ...windowProgress(s), hookWired: preToolHookWired(s.store.root, homedir()) } });
         // E3b-1: the values of the context-window rule. Reading is open (rule 10: nothing secret); setting them is the
         // person's (POST under the personOnly prefix: approval session).
         if (req.method === "GET" && p === "/api/context-settings") {
@@ -722,7 +722,12 @@ export function createApp(s: Scenaria, opts: AppOptions = {}) {
           const lang = b?.lang === "en" ? "en" : "de";
           // The folder is checked BEFORE signing (review C4c-1 K3, K4): an absolute home, a real folder, writable,
           // and never inside a project (a Downloads link into the project would put the package there).
-          const home = homedir();
+          let home = "";
+          try {
+            home = homedir();
+          } catch {
+            /* no home folder known (Windows raises an error for a broken USERPROFILE): the answer below says so */
+          }
           if (!home || !isAbsolute(home)) return send(res, 400, { error: "Your home folder is not known: create the audit package with the CLI (scenaria audit-file export --out-dir <folder>).", code: "no_home" });
           const realDir = (d: string) => {
             try {
@@ -1350,6 +1355,15 @@ const APPROVAL_THEN = new Set(["settings"]);
 /** For tests: SCENARIA_NO_BROWSER=1 records the URL instead of opening a browser. */
 export const browserLog: string[] = [];
 
+/**
+ * The arguments that open a web address with the system's opener. On Windows the opener is `cmd /c start`,
+ * and cmd reads `&` as "next command": an address with a second parameter (…&then=settings) would be cut
+ * there, so every character cmd treats specially is escaped with `^`.
+ */
+export function browserArgs(url: string, platform: NodeJS.Platform = process.platform): string[] {
+  return platform === "win32" ? ["/c", "start", "", url.replace(/[&|<>^()%!"]/g, "^$&")] : [url];
+}
+
 function openBrowser(url: string): Promise<boolean> {
   if (process.env.SCENARIA_NO_BROWSER) {
     browserLog.push(url);
@@ -1357,8 +1371,7 @@ function openBrowser(url: string): Promise<boolean> {
   }
   const cmd = systemOpener();
   if (!cmd) return Promise.resolve(false);
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-  return launch(cmd, args, openerEnv());
+  return launch(cmd, browserArgs(url), openerEnv());
 }
 
 /** Open a local file with the system's own program (absolute paths only; tests: recorded in browserLog). */

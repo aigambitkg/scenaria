@@ -10,7 +10,7 @@ import { Scenaria } from "../dist/core/index.js";
 import { verifyAuditExport } from "../dist/core/auditexport.js";
 import { checkExportPath } from "../dist/core/auditpackage.js";
 import { createApp, browserLog } from "../dist/server.js";
-import { tempProject } from "./helpers.mjs";
+import { tempProject, setHome } from "./helpers.mjs";
 
 function project() {
   const p = tempProject("auditview-");
@@ -134,9 +134,8 @@ test("C4c auditor mode and dashboard package are refused in team mode", async ()
 test("C4c dashboard package: person-only, written to Downloads (else home), a valid package, no machine path in the answer", async () => {
   const { s } = project();
   const home = mkdtempSync(join(tmpdir(), "auditview-home-"));
-  const oldHome = process.env.HOME;
   const oldNo = process.env.SCENARIA_NO_BROWSER;
-  process.env.HOME = home;
+  const restoreHome = setHome(home);
   process.env.SCENARIA_NO_BROWSER = "1";
   const { server, post } = await serve(s);
   try {
@@ -173,7 +172,7 @@ test("C4c dashboard package: person-only, written to Downloads (else home), a va
     assert.equal(readdirSync(join(home, "Downloads")).length, before);
   } finally {
     server.close();
-    process.env.HOME = oldHome;
+    restoreHome();
     if (oldNo === undefined) delete process.env.SCENARIA_NO_BROWSER;
     else process.env.SCENARIA_NO_BROWSER = oldNo;
   }
@@ -268,7 +267,7 @@ test("C4c-1 K2: the auditor mode survives a project switch (one list for every a
 
 test("C4c-1 K3/K4: the package folder is checked before signing; never a path in an answer", async () => {
   const { p, s } = project();
-  const oldHome = process.env.HOME;
+  const restoreHome = setHome(process.env.SCENARIA_TEST_HOME);
   const oldNo = process.env.SCENARIA_NO_BROWSER;
   process.env.SCENARIA_NO_BROWSER = "1";
   const { server, post } = await serve(s);
@@ -276,13 +275,14 @@ test("C4c-1 K3/K4: the package folder is checked before signing; never a path in
   const person = { cookie: "scenaria_approval=sess" };
   try {
     // A relative home: refused (it would write into the server's working folder).
-    process.env.HOME = ".";
+    setHome(".");
     let r = await post("/api/audit-file/package", {}, person);
     assert.equal(r.status, 400);
-    assert.equal((await r.json()).code, "no_home");
+    const noHome = await r.json();
+    assert.equal(noHome.code, "no_home", JSON.stringify(noHome));
     // Downloads is a link into the project: refused, nothing signed.
     const home = mkdtempSync(join(tmpdir(), "auditview-home-"));
-    process.env.HOME = home;
+    setHome(home);
     const { symlinkSync } = await import("node:fs");
     symlinkSync(p.dir, join(home, "Downloads"));
     r = await post("/api/audit-file/package", {}, person);
@@ -294,7 +294,7 @@ test("C4c-1 K3/K4: the package folder is checked before signing; never a path in
     assert.ok(!readdirSync(p.dir).some((x) => x.startsWith("audit-package-")), "nothing written into the project");
     // Downloads is a file: the home folder is used instead.
     const home2 = mkdtempSync(join(tmpdir(), "auditview-home-"));
-    process.env.HOME = home2;
+    setHome(home2);
     const { writeFileSync } = await import("node:fs");
     writeFileSync(join(home2, "Downloads"), "x");
     r = await post("/api/audit-file/package", { open: false }, person);
@@ -302,7 +302,7 @@ test("C4c-1 K3/K4: the package folder is checked before signing; never a path in
     assert.equal((await r.json()).where, "home");
   } finally {
     server.close();
-    process.env.HOME = oldHome;
+    restoreHome();
     if (oldNo === undefined) delete process.env.SCENARIA_NO_BROWSER;
     else process.env.SCENARIA_NO_BROWSER = oldNo;
   }

@@ -6,7 +6,7 @@
 
 [English version](README.md) · [Ganzes Handbuch](docs/GUIDE.de.md) · [Änderungen](CHANGELOG.md)
 
-> **Stand: öffentliche Vorschau (0.9.x).** Scenaria ist nutzbar und gut getestet (mehr als 560 automatische Tests, auf Linux und macOS), wurde aber noch nicht von einer externen Sicherheitsfirma geprüft. Lies [Bekannte Grenzen](docs/KNOWN-LIMITS.md) und [SECURITY.md](SECURITY.md), bevor du es mit vertraulichen Unternehmensdaten einsetzt.
+> **Stand: öffentliche Vorschau (0.9.x).** Scenaria ist nutzbar und gut getestet (mehr als 580 automatische Tests, auf Linux, macOS und Windows), wurde aber noch nicht von einer externen Sicherheitsfirma geprüft. Lies [Bekannte Grenzen](docs/KNOWN-LIMITS.md) und [SECURITY.md](SECURITY.md), bevor du es mit vertraulichen Unternehmensdaten einsetzt.
 
 ## Was es kann
 
@@ -26,7 +26,7 @@ Scenaria braucht `git` (auf macOS: `xcode-select --install`).
 # macOS / Linux: eine Datei, kein Node.js nötig
 curl -fsSL https://raw.githubusercontent.com/aigambitkg/scenaria/main/install.sh | sh
 
-# Windows (PowerShell) – experimentell: 12 der automatischen Tests schlagen unter Windows noch fehl
+# Windows (PowerShell)
 irm https://raw.githubusercontent.com/aigambitkg/scenaria/main/install.ps1 | iex
 
 # oder mit Node.js ab Version 20

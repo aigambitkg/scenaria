@@ -7,7 +7,7 @@ import { createServer } from "node:http";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { tempProject } from "./helpers.mjs";
+import { tempProject, importUrl } from "./helpers.mjs";
 import { Scenaria } from "../dist/core/engine.js";
 import { callTool } from "../dist/tools.js";
 import { createApp } from "../dist/server.js";
@@ -368,14 +368,14 @@ test("K2: an agent can never replace the person's verdict; its report sits next 
 test("K3: SCENARIA_HOME inside a project is ignored; an audit agent registered in another home does not count here", () => {
   const { p, s, cp } = project();
   const inside = join(p.dir, ".scenaria", "fake-home");
-  const probe = spawnSync(process.execPath, ["--input-type=module", "-e", `import { globalConfigPath } from ${JSON.stringify(join(import.meta.dirname, "..", "dist", "core", "global.js"))}; console.log(globalConfigPath());`], { encoding: "utf8", env: { ...process.env, SCENARIA_HOME: inside } });
+  const probe = spawnSync(process.execPath, ["--input-type=module", "-e", `import { globalConfigPath } from ${JSON.stringify(importUrl(join(import.meta.dirname, "..", "dist", "core", "global.js")))}; console.log(globalConfigPath());`], { encoding: "utf8", env: { ...process.env, SCENARIA_HOME: inside } });
   assert.equal(probe.status, 0, probe.stderr);
   assert.ok(!probe.stdout.includes(inside), `trust material must not come from inside the project: ${probe.stdout}`);
   // An agent uses its own home OUTSIDE the project with its own registry: the verdict is recorded there…
   const otherHome = mkdtempSync(join(tmpdir(), "scenaria-otherhome-"));
   const k = auditorKeygen(mkdtempSync(join(tmpdir(), "scenaria-auditor-")));
   const env = { ...process.env, SCENARIA_HOME: otherHome };
-  const reg = spawnSync(process.execPath, ["--input-type=module", "-e", `import { addAuditor } from ${JSON.stringify(join(import.meta.dirname, "..", "dist", "core", "auditors.js"))}; addAuditor(${JSON.stringify(k.pub)}, "own");`], { encoding: "utf8", env });
+  const reg = spawnSync(process.execPath, ["--input-type=module", "-e", `import { addAuditor } from ${JSON.stringify(importUrl(join(import.meta.dirname, "..", "dist", "core", "auditors.js")))}; addAuditor(${JSON.stringify(k.pub)}, "own");`], { encoding: "utf8", env });
   assert.equal(reg.status, 0, reg.stderr);
   const req = spawnSync(process.execPath, [CLI, "auditor", "request", "verdict", cp.id, "--status", "passed"], { cwd: p.dir, encoding: "utf8", env });
   const signed = signAuditorRequest(req.stdout.trim(), readFileSync(k.keyFile, "utf8"));

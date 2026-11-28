@@ -78,7 +78,7 @@ const de: SiteText = {
   copied: "Kopiert",
   startGithub: "Zum Projekt auf GitHub",
   startGuide: "Handbuch lesen",
-  status: "Öffentliche Vorschau (0.9). Getestet auf macOS und Linux, Windows ist noch experimentell. Noch nicht von Dritten geprüft.",
+  status: "Öffentliche Vorschau (0.9). Die automatischen Tests laufen auf macOS, Linux und Windows; auf Windows ist Scenaria am jüngsten. Noch nicht von Dritten geprüft.",
   statusLink: "Was Scenaria nicht kann",
   foot: { license: "MIT-Lizenz", by: "Ein Projekt von AI Gambit", imprint: "Impressum", privacy: "Datenschutz", security: "Sicherheit", noTracking: "Diese Seite setzt keine Cookies und lädt nichts von fremden Servern." },
 };
@@ -114,7 +114,7 @@ const en: SiteText = {
   copied: "Copied",
   startGithub: "The project on GitHub",
   startGuide: "Read the guide",
-  status: "Public preview (0.9). Tested on macOS and Linux; Windows is still experimental. Not yet audited by a third party.",
+  status: "Public preview (0.9). The automated tests run on macOS, Linux and Windows; Windows support is the newest. Not yet audited by a third party.",
   statusLink: "What Scenaria does not do",
   foot: { license: "MIT License", by: "A project by AI Gambit", imprint: "Imprint", privacy: "Privacy", security: "Security", noTracking: "This page sets no cookies and loads nothing from other servers." },
 };

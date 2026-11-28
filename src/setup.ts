@@ -377,6 +377,16 @@ export function setupClaude(root: string, opts: { claudeMd?: boolean } = {}): st
 
 // ------------------------------------------------------------------ detection & global setup
 
+/**
+ * Start the Claude Code command line. On Windows npm installs it as `claude.cmd`, and a .cmd file can only be
+ * started through the shell; each argument is quoted for it (they are fixed words and paths of this installation).
+ */
+function runClaude(args: string[], opts: { stdio?: "ignore" } = {}) {
+  if (process.platform !== "win32") return spawnSync("claude", args, { ...opts, encoding: "utf8" });
+  const quote = (a: string) => (/^[A-Za-z0-9_\-=.:\\/]+$/.test(a) ? a : `"${a.replace(/"/g, '\\"')}"`);
+  return spawnSync(["claude", ...args].map(quote).join(" "), { ...opts, encoding: "utf8", shell: true, windowsHide: true });
+}
+
 function onPath(cmd: string): boolean {
   const r = spawnSync(process.platform === "win32" ? "where" : "which", [cmd], { stdio: "ignore" });
   return r.status === 0;
@@ -436,10 +446,10 @@ export function setupGlobal(targets: Target[], home = homedir()): SetupResult {
     if (onPath("claude")) {
       // Name BEFORE -e (the -e option is variadic); only replace an existing entry if adding fails because it exists.
       const addArgs = ["mcp", "add", "--scope", "user", "scenaria", "-e", "SCENARIA_AGENT=claude-code", "--", ...SELF, "mcp"];
-      let add = spawnSync("claude", addArgs, { encoding: "utf8" });
+      let add = runClaude(addArgs);
       if (add.status !== 0 && /already exists/i.test(`${add.stderr}${add.stdout}`)) {
-        spawnSync("claude", ["mcp", "remove", "--scope", "user", "scenaria"], { stdio: "ignore" });
-        add = spawnSync("claude", addArgs, { encoding: "utf8" });
+        runClaude(["mcp", "remove", "--scope", "user", "scenaria"], { stdio: "ignore" });
+        add = runClaude(addArgs);
       }
       if (add.status === 0) r.changes.push('Claude Code → MCP server "scenaria" (user scope, all projects)');
       else r.notes.push(`Could not run "claude mcp add" (${(add.stderr || "").trim()}). Run: claude mcp add --scope user scenaria -- ${CLI_DISPLAY} mcp`);

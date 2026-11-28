@@ -17,6 +17,13 @@ All notable changes to Scenaria. Versions follow `MAJOR.MINOR.PATCH`; before 1.0
 - If Scenaria cannot use its own folder, nothing is saved, and it says so clearly instead of working on quietly: a notice at the top of the dashboard (German and English) with what to check on Windows, macOS or Linux, and the same in `scenaria status`, `scenaria start` and the agents' status.
 - `scenaria mirror` writes the refs anew from the steps when some are missing on this machine.
 
+**Windows:**
+- **Windows:** the whole test suite now runs on Windows in CI and is required there (before: 16 failing tests).
+  - Fixed in Scenaria: the home folder is found the same way everywhere (`os.homedir()`; Windows has no `HOME`), so the warning about a missing hook and the audit package use the right folder; `scenaria setup --global --for claude` can start the Claude Code command when npm installed it as `claude.cmd`; an approval link with a second parameter reaches the browser whole (cmd cut it at `&`); something that is not a file in place of the ledger is an error on every system (Windows read a folder as an empty ledger).
+  - `.gitattributes`: line endings are LF everywhere.
+  - Tests: every test process gets a home folder of its own on every system (before, some tests wrote into the real home folder on Windows); the tests that planted git hooks and filter drivers never run now also run on Windows, with a control that the plant is real.
+  - Not yet tried by hand on a Windows desktop: the installer, the start icon, opening the browser, work with real agents (see `docs/KNOWN-LIMITS.md`).
+
 **For developers:** `ShadowRepo.controlDir` / `dataDir` / `objectDir` / `readEnv()` replace `gitDir`; `cleanShadowConfig` and the log entry `shadow_config_cleaned` are gone; `Scenaria.snapshotIssue`, `Scenaria.syncRefs()`; tests in `test/execguard.test.mjs`. New limits: [docs/KNOWN-LIMITS.md](docs/KNOWN-LIMITS.md).
 
 ## 0.9.24 — a dashboard without loose ends
