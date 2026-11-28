@@ -1,7 +1,7 @@
 {
   "name": "scenaria",
   "version": "0.9.24",
-  "description": "Quicksave & checkpoints for AI agents \u2014 any LLM, any framework. A decision tree you can rewind, fork and verify via MCP, HTTP, CLI, function calling and a visual scenario map.",
+  "description": "Approval and evidence for the work of AI agents: every step recorded, only the person approves (signed), an audit file ordered by ISO/IEC 42001 Annex A, and a way back to every earlier state. Any LLM, local first; MCP, HTTP, CLI and a dashboard.",
   "type": "module",
   "bin": {
     "scenaria": "dist/cli.js"
@@ -55,6 +55,9 @@
     "function-calling",
     "llm",
     "ai-governance",
+    "approval",
+    "audit-trail",
+    "iso-42001",
     "agent-observability",
     "context-engineering"
   ],

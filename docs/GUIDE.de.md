@@ -2,7 +2,7 @@
 
 [English version](GUIDE.md) · [Kurzüberblick](../README.de.md)
 
-**Quicksave für KI-Agenten – mit jedem LLM, in jedem Framework, eine Zeitleiste für Unterhaltungen, Entscheidungen und Dateien.** Scenaria hält jeden Entscheidungspunkt fest: Frage, Optionen, Wahl, Dateistand, die Unterhaltung dazu und eine kompakte Faktenkapsel. Halluziniert der Agent oder biegt falsch ab, springst du genau an diesen Punkt zurück – oder probierst die Option aus, die er nicht genommen hat.
+**Freigabe und Nachweis für die Arbeit von KI-Agenten – mit jedem Modell, eine Zeitleiste für Unterhaltungen, Entscheidungen und Dateien.** Scenaria hält jeden Entscheidungspunkt fest: Frage, Optionen, Wahl, Dateistand, die Unterhaltung dazu und eine kompakte Faktenkapsel. Halluziniert der Agent oder biegt falsch ab, springst du genau an diesen Punkt zurück – oder probierst die Option aus, die er nicht genommen hat.
 
 ![Scenaria Szenario-Karte](screenshot.png)
 

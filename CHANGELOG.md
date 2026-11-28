@@ -4,6 +4,7 @@ All notable changes to Scenaria. Versions follow `MAJOR.MINOR.PATCH`; before 1.0
 
 ## Unreleased
 
+- **What Scenaria is for, said first:** approval and evidence for the work of AI agents. README (German and English), the guides, the landing page, the package description and the command-line help now lead with it; going back to an earlier state is named as part of it. No function changed.
 - **Landing page** (`site/`, `npm run build:site`): one static page in German and English with the drawings of the introduction and the real Simple view as a live example in the browser. It loads nothing from other servers and sets no cookies. Published only when a person starts the “Landing page” workflow.
 - The example to try out is split into `DemoStage` (the example itself) and `Demo` (the overlay in the dashboard), so the landing page shows the same example.
 

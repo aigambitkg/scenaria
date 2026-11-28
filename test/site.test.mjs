@@ -29,6 +29,15 @@ test("landing page: German and English have the same texts, and none is empty", 
   assert.match(SITE.en.status, /preview[\s\S]*Windows[\s\S]*experimental[\s\S]*third party/);
   for (const lang of ["de", "en"]) assert.doesNotMatch(texts(SITE[lang]).join(" "), /zertifiziert|certified|100 ?%|garantiert|guaranteed|unhackable|manipulationssicher|tamper-proof/i);
   assert.match(SITE.de.forWhom[2].what, /kein Zertifikat/);
+  // What Scenaria is for comes first, in the same words everywhere: approval and evidence.
+  assert.match(SITE.de.title, /Freigabe und Nachweis/);
+  assert.match(SITE.en.title, /approval and evidence/);
+  assert.match(SITE.de.heroTitle.join(" ") + SITE.de.heroText, /gibst frei[\s\S]*Signatur[\s\S]*Nachweis[\s\S]*zurück/);
+  assert.match(SITE.en.heroTitle.join(" ") + SITE.en.heroText, /approve[\s\S]*signature[\s\S]*record[\s\S]*go back/);
+  assert.match(read("site/index.html"), /<title>Scenaria – Freigabe und Nachweis/);
+  assert.match(read("README.md").split("\n")[2], /^\*\*Approval and evidence for the work of AI agents/);
+  assert.match(read("README.de.md").split("\n")[2], /^\*\*Freigabe und Nachweis für die Arbeit von KI-Agenten/);
+  assert.match(pkg.description, /^Approval and evidence/);
 });
 
 test("landing page: shows the dashboard's own example and drawings, and loads nothing from other servers", () => {
