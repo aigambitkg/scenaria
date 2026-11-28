@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, constants as fsc, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { SAFE_GIT, cleanEnv, type ShadowRepo } from "./snapshot.js";
+import { SAFE_GIT, type ShadowRepo } from "./snapshot.js";
 import { slugify, versionLabel } from "./ids.js";
 import type { ScenariaNode, SnapshotFolderConfig } from "./types.js";
 
@@ -93,7 +93,7 @@ export class SnapshotFolders {
       const chunk = shas.slice(i, i + 400);
       const r = spawnSync("git", [...SAFE_GIT, "cat-file", "--batch"], {
         cwd: this.root,
-        env: { ...cleanEnv(), GIT_DIR: this.repo.gitDir },
+        env: this.repo.readEnv(),
         input: chunk.join("\n") + "\n",
         maxBuffer: 1024 * 1024 * 1024,
       });

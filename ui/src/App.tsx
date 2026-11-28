@@ -456,6 +456,14 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
     </div>
   );
 
+  // Nothing is being saved: said at the top of every view until the person fixed the folder.
+  const folderIssue = graph?.snapshotIssue?.code === "control_folder" ? graph.snapshotIssue : null;
+  const snapshotBanner = folderIssue && !error && !linkBanner && (
+    <div className="banner warn" role="alert">
+      {t.snapshotsOffFolder(folderIssue.folder ?? "", folderIssue.reason ?? "", folderIssue.platform ?? "")}
+    </div>
+  );
+
   return (
     <HelpContext.Provider value={helpCtx}>
     <ReadOnlyContext.Provider value={auditView !== false}>
@@ -666,6 +674,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
         <main className="main simple-main">
           {error && <div className="banner error">{error}</div>}
           {linkBanner}
+          {snapshotBanner}
           {editGoal !== null && (
             <form
               className="sv-goal-edit"
@@ -722,6 +731,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
         <section className="canvas" aria-label="Scenario map">
           {error && <div className="banner error">{error}</div>}
           {linkBanner}
+          {snapshotBanner}
           {graph && rootId ? (
             <ReactFlowProvider>
               <ScenarioMap nodes={graph.nodes} rootId={rootId} headId={headId} selectedKey={selected} onSelect={setSelected} folded={folded} onToggleFold={toggleFold} fidelity={fidelity?.points ?? null} confirmed={confirmedSet} t={t} />
@@ -855,7 +865,7 @@ export function App(props: { keys: SessionKeys; setKeys: Dispatch<SetStateAction
             {t.capsule} ≈ <strong>{fmtK(headCtx.tokens)}</strong> {t.tokens} <span className="muted">({t.insteadOf} ≈ {fmtK(headCtx.historyTokens)})</span>
           </span>
         )}
-        {graph && !graph.snapshots && <span className="warn">{t.snapshotsOff}</span>}
+        {graph && !graph.snapshots && <span className="warn">{folderIssue ? t.snapshotsOffFolderShort : t.snapshotsOff}</span>}
         <span className="root" title={graph?.root}>
           {graph?.root}
         </span>
