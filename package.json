@@ -29,6 +29,8 @@
     "build": "npm run build:core && npm run build:ui",
     "build:core": "tsc -p tsconfig.json && node scripts/chmod-bin.mjs",
     "build:ui": "vite build --config ui/vite.config.ts",
+    "build:site": "vite build --config site/vite.config.ts",
+    "dev:site": "vite --config site/vite.config.ts",
     "dev:ui": "vite --config ui/vite.config.ts",
     "test": "node --test --test-concurrency=1 test/*.test.mjs",
     "demo": "node scripts/demo.mjs",
