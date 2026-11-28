@@ -14,6 +14,7 @@ All notable changes to Scenaria. Versions follow `MAJOR.MINOR.PATCH`; before 1.0
 - The example to try out is split into `DemoStage` (the example itself) and `Demo` (the overlay in the dashboard), so the landing page shows the same example.
 
 **Changed:**
+- **What Scenaria is for, said first:** approval and evidence for the work of AI agents. README (German and English), the guides, the landing page, the package description and the command-line help now lead with it; going back to an earlier state is named as part of it. No function changed.
 - If Scenaria cannot use its own folder, nothing is saved, and it says so clearly instead of working on quietly: a notice at the top of the dashboard (German and English) with what to check on Windows, macOS or Linux, and the same in `scenaria status`, `scenaria start` and the agents' status.
 - `scenaria mirror` writes the refs anew from the steps when some are missing on this machine.
 

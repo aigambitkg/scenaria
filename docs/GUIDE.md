@@ -1,6 +1,6 @@
 # Scenaria — the full guide
 
-**Quicksave for AI agents — any LLM, any framework, one timeline for conversations, decisions and files.** Scenaria records every decision point of an agent run: the question, the options, the choice, the files and a compact fact capsule. When an agent hallucinates or takes a wrong turn, you jump back to exactly that point, or try the option it didn't take.
+**Approval and evidence for the work of AI agents — any model, one timeline for conversations, decisions and files.** Scenaria records every decision point of an agent run: the question, the options, the choice, the files and a compact fact capsule. When an agent hallucinates or takes a wrong turn, you jump back to exactly that point, or try the option it didn't take.
 
 The model doesn't matter. Claude, GPT, Gemini, Mistral, Llama via Ollama, or your own fine-tune: they all share the same decision tree, the same verification and the same audit trail. A local dashboard draws the run as a scenario tree.
 

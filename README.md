@@ -1,6 +1,6 @@
 # Scenaria
 
-**Quicksave for AI agents — any LLM, any framework.** Scenaria records every decision point of an agent run: the question, the options, the choice, the files and a short summary of the facts. When an agent takes a wrong turn, you go back to exactly that point, or try the option it did not take.
+**Approval and evidence for the work of AI agents — any model, on your own machine.** Scenaria records every step and every decision of an agent run. What counts as verified is decided by you alone, signed with a key that stays outside the project, and the record becomes an audit file you can hand over. Every earlier state stays within reach: when an agent takes a wrong turn, you go back to exactly that point, or try the option it did not take.
 
 ![Scenaria scenario map](docs/screenshot.png)
 
@@ -10,12 +10,12 @@
 
 ## What it does
 
+- **Only you can say "verified".** An agent's own "passed" is shown as self-reported and never counts. Your approvals and verdicts are signed with a key that stays outside the project.
+- **Evidence for audits.** An audit file ordered by the Annex A controls of ISO/IEC 42001, signed and exportable. The mapping is the project's own work, not a certificate.
+- **One tree for every model.** Claude, GPT, Gemini, Mistral, local models via Ollama: they share one decision tree and one record of who did what.
 - **Go back to a decision, not to a time.** Each decision point holds the question, all options, the chosen one and the reason. Going back restores the files *and* gives the agent a short summary of only the path that led there, so a mistake does not leak into the next attempt.
 - **Nothing gets lost.** Unsaved work is saved before every step back, so a step back can be undone too.
-- **One tree for every model.** Claude, GPT, Gemini, Mistral, local models via Ollama: they share one decision tree and one record of who did what.
-- **Only you can say "verified".** An agent's own "passed" is shown as self-reported and never counts. Your approvals and verdicts are signed with a key that stays outside the project.
 - **A dashboard in plain words.** Three views on the same data: *Simple* for everyday use, *Audit* for checking, *Manage* for settings and analysis. German and English.
-- **Evidence for audits.** An audit file ordered by the Annex A controls of ISO/IEC 42001, signed and exportable. The mapping is the project's own work, not a certificate.
 - **Local first, no telemetry.** Everything lives in `.scenaria/` inside your project. Nothing leaves your machine unless you run a team server.
 
 ## Install

@@ -25,7 +25,7 @@ import { isUnconfirmedPass, verdictOrigin } from "./core/verdict.js";
 import { buildAuditFile, parsePeriod } from "./core/auditfile.js";
 import { AUDIT_ACCESS_MODES, readAuditAccess, setAuditAccess, type AuditAccessMode } from "./core/auditaccess.js";
 
-const HELP = `Scenaria — quicksave & checkpoints for AI agents (any LLM, any framework)
+const HELP = `Scenaria — approval and evidence for the work of AI agents (any LLM, any framework)
 
 Usage: scenaria <command> [options]
 
